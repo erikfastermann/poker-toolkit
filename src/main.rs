@@ -11,11 +11,11 @@ mod suite;
 
 use std::sync::Arc;
 
-use crate::equity::Equity;
 use crate::cards::Cards;
+use crate::equity::Equity;
+use crate::hand::Hand;
 use crate::range::RangeTable;
 use crate::result::Result;
-use crate::hand::Hand;
 
 const INVALID_COMMAND_ERROR: &'static str = "Invalid command. See README for usage.";
 
@@ -38,7 +38,8 @@ fn enumerate(args: &[String]) -> Result<()> {
     };
     let community_cards = Cards::from_str(community_cards_raw)?;
     let hero_hand = Hand::from_str(hero_hand_raw)?;
-    let villain_ranges = args[2..].iter()
+    let villain_ranges = args[2..]
+        .iter()
         .map(|raw_range| RangeTable::parse(&raw_range))
         .map(|r| r.map(Arc::new))
         .collect::<Result<Vec<_>>>()?;
@@ -50,19 +51,20 @@ fn enumerate(args: &[String]) -> Result<()> {
 }
 
 fn simulate(args: &[String]) -> Result<()> {
-    let [community_cards_raw, hero_hand_raw, villain_count_raw, rounds_raw] = args else {
+    let [rounds_raw, community_cards_raw, hero_hand_raw, ..] = args else {
         return Err(INVALID_COMMAND_ERROR.into());
     };
+    let rounds: u64 = rounds_raw.parse()?;
     let community_cards = Cards::from_str(community_cards_raw)?;
     let hero_hand = Hand::from_str(hero_hand_raw)?;
-    let villain_count: usize = villain_count_raw.parse()?;
-    let rounds: u64 = rounds_raw.parse()?;
-    let Some(equities) = Equity::simulate(
-        community_cards,
-        hero_hand,
-        villain_count,
-        rounds,
-    ) else {
+    let villain_ranges = args[3..]
+        .iter()
+        .map(|raw_range| RangeTable::parse(&raw_range))
+        .map(|r| r.map(Arc::new))
+        .collect::<Result<Vec<_>>>()?;
+    let Some(equities) =
+        Equity::simulate_ranges(community_cards, hero_hand, &villain_ranges, rounds)
+    else {
         return Err("simulate failed: invalid input".into());
     };
     print_equities(&equities);
@@ -73,6 +75,6 @@ fn print_equities(equities: &[Equity]) {
     assert!(equities.len() >= 2);
     println!("hero:      {}", equities[0]);
     for (i, equity) in equities[1..].iter().enumerate() {
-        println!("villain {}: {}", i+1, equity);
+        println!("villain {}: {}", i + 1, equity);
     }
 }

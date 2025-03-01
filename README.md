@@ -23,6 +23,8 @@ cargo run --release -- enumerate AsTd3h      AhTh   AKo+,AKs+,TT+,33 full
 
 ### Simulate
 
+TODO: Update for ranges.
+
 Calculate the equity via Monte Carlo simulation
 with the given community cards, hero hand, villain count
 and number of rounds.
