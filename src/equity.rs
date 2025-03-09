@@ -176,23 +176,17 @@ impl Equity {
             scores[0] = seen_cards.score_fast();
             let mut factor = u128::from(community_card_factor);
             for (i, range) in villain_full_ranges.iter_mut().enumerate() {
-                range.truncate(0);
-                range.extend(
-                    villain_full_ranges_original[i]
-                        .iter()
-                        .copied()
-                        .filter(|hand| !seen_cards.has(hand.high()) && !seen_cards.has(hand.low())),
-                );
+                let range = filter_hands(&villain_full_ranges_original[i], range, seen_cards);
                 factor *= u128::try_from(range.len()).unwrap();
                 let Some(hand) = range.choose(&mut rng).copied() else {
                     continue 'outer;
                 };
                 scores[i + 1] = community_cards
-                    .with(hand.high())
-                    .with(hand.low())
+                    .with_unchecked(hand.high())
+                    .with_unchecked(hand.low())
                     .score_fast();
-                seen_cards.add(hand.high());
-                seen_cards.add(hand.low());
+                seen_cards.try_add(hand.high());
+                seen_cards.try_add(hand.low());
             }
 
             // We accept that this might loose precision here.
@@ -219,6 +213,20 @@ impl Equity {
     pub fn tie_percent(self) -> f64 {
         self.tie_percent
     }
+}
+
+fn filter_hands<'a>(
+    original_range: &[Hand],
+    output_range: &'a mut [Hand],
+    seen_cards: Cards,
+) -> &'a [Hand] {
+    let mut out_index = 0;
+    for hand in original_range.iter().copied() {
+        output_range[out_index] = hand;
+        let valid = !seen_cards.has(hand.high()) & !seen_cards.has(hand.low());
+        out_index += usize::from(valid);
+    }
+    &output_range[..out_index]
 }
 
 struct EquityCalculator<'a, RT: AsRef<RangeTable>> {
