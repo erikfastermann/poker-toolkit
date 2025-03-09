@@ -62,8 +62,7 @@ fn simulate(args: &[String]) -> Result<()> {
         .map(|raw_range| RangeTable::parse(&raw_range))
         .map(|r| r.map(Arc::new))
         .collect::<Result<Vec<_>>>()?;
-    let Some(equities) =
-        Equity::simulate_ranges(community_cards, hero_hand, &villain_ranges, rounds)
+    let Some(equities) = Equity::simulate(community_cards, hero_hand, &villain_ranges, rounds)
     else {
         return Err("simulate failed: invalid input".into());
     };

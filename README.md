@@ -23,22 +23,20 @@ cargo run --release -- enumerate AsTd3h      AhTh   AKo+,AKs+,TT+,33 full
 
 ### Simulate
 
-TODO: Update for ranges.
-
 Calculate the equity via Monte Carlo simulation
-with the given community cards, hero hand, villain count
-and number of rounds.
-Not exact, but usually close enough (with 1000000+ rounds
-about a 0.1% difference should be expected).
-Villain ranges are currently not supported.
+with the given community cards, hero hand, villain ranges
+and number of rounds (use at least 100000 for reasonable results).
+Not exact, but usually close enough. With more villains
+and larger ranges, the precision decreases.
 E.g.:
 
 ```
-cargo run --release -- simulate  AsTd3h      AhTh   2               1000000
-#                                ^           ^      ^               ^
-#                                community   hero   villain count   rounds
+cargo run --release -- simulate  1000000 AsTd3h      AhTh   AKo+,AKs+,TT+,33 full        full
+#                                ^       ^           ^      ^                ^           ^
+#                                rounds  community   hero   villain 1        villain 2   villain 3 ...
 # Output:
-# hero:      equity=87.96 win=87.50 tie=0.46
-# villain 1: equity=6.02 win=5.68 tie=0.34
-# villain 2: equity=6.02 win=5.68 tie=0.34
+# hero:      equity=68.82 win=68.47 tie=0.35
+# villain 1: equity=20.48 win=20.29 tie=0.19
+# villain 2: equity=5.37 win=5.05 tie=0.31
+# villain 3: equity=5.33 win=5.01 tie=0.32
 ```

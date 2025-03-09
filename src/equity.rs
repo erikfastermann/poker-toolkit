@@ -1,5 +1,4 @@
 use core::fmt;
-use std::cmp::min;
 
 use rand::{rngs::SmallRng, seq::SliceRandom, Rng, SeedableRng};
 
@@ -65,8 +64,6 @@ pub fn total_combos_upper_bound(
     community_cards: Cards,
     villain_ranges: &[impl AsRef<RangeTable>],
 ) -> u128 {
-    // TODO: Refactor this.
-
     assert!(villain_ranges.len() <= 8);
     assert!(villain_ranges
         .iter()
@@ -84,21 +81,13 @@ pub fn total_combos_upper_bound(
         remaining_cards -= 1;
     }
 
-    let mut max_count = count;
-    for _ in 0..villain_ranges.len() * 2 {
-        max_count *= remaining_cards;
-        remaining_cards -= 1;
-    }
-
     for range in villain_ranges {
-        let next_count = count.checked_mul(u128::from(range.as_ref().count_hands()));
-        match next_count {
-            Some(n) => count = n,
-            None => return u128::MAX,
-        };
+        count = count
+            .checked_mul(u128::from(range.as_ref().count_hands()))
+            .unwrap();
     }
 
-    min(count, max_count)
+    count
 }
 
 impl Equity {
@@ -140,53 +129,6 @@ impl Equity {
     pub fn simulate(
         start_community_cards: Cards,
         hero_hand: Hand,
-        villain_count: usize,
-        rounds: u64,
-    ) -> Option<Vec<Equity>> {
-        let hero_cards = hero_hand.to_cards();
-        if !valid_input_without_ranges(start_community_cards, hero_cards, villain_count) {
-            return None;
-        }
-        if rounds == 0 {
-            return None;
-        }
-
-        let mut rng = SmallRng::from_entropy();
-        let remaining_community_cards = 5 - start_community_cards.count();
-        let player_count = villain_count + 1;
-
-        let mut scores = vec![Score::ZERO; player_count];
-        let mut wins = vec![0u64; player_count];
-        let mut ties = vec![0.0; player_count];
-        let mut deck = Deck::from_cards(&mut rng, start_community_cards | hero_cards);
-
-        for _ in 0..rounds {
-            deck.reset();
-
-            let community_cards = {
-                let mut community_cards = start_community_cards;
-                for _ in 0..remaining_community_cards {
-                    community_cards.add(deck.draw(&mut rng).unwrap());
-                }
-                community_cards
-            };
-
-            scores[0] = (community_cards | hero_cards).score_fast();
-            for i in 1..player_count {
-                let hand = deck.hand(&mut rng).unwrap();
-                let player_cards = community_cards.with(hand.high()).with(hand.low());
-                scores[i] = player_cards.score_fast();
-            }
-
-            showdown(&scores, &mut wins, &mut ties);
-        }
-
-        Some(Self::from_total_wins_ties(rounds, &wins, &ties))
-    }
-
-    pub fn simulate_ranges(
-        start_community_cards: Cards,
-        hero_hand: Hand,
         villain_ranges: &[impl AsRef<RangeTable>],
         rounds: u64,
     ) -> Option<Vec<Equity>> {
@@ -216,11 +158,8 @@ impl Equity {
                 - u64::from((start_community_cards | hero_cards).count());
             ((x - u64::from(remaining_community_cards))..x).product()
         };
-        let upper_bound = {
-            let upper_bound = total_combos_upper_bound(start_community_cards, villain_ranges);
-            let upper_bound = u64::try_from(upper_bound).ok()?;
-            try_u64_to_f64(upper_bound)?
-        };
+        // We accept that this might loose precision here.
+        let upper_bound = total_combos_upper_bound(start_community_cards, villain_ranges) as f64;
 
         'outer: for _ in 0..rounds {
             deck.reset();
@@ -235,7 +174,7 @@ impl Equity {
 
             let mut seen_cards = community_cards | hero_cards;
             scores[0] = seen_cards.score_fast();
-            let mut factor = community_card_factor;
+            let mut factor = u128::from(community_card_factor);
             for (i, range) in villain_full_ranges.iter_mut().enumerate() {
                 range.truncate(0);
                 range.extend(
@@ -244,7 +183,7 @@ impl Equity {
                         .copied()
                         .filter(|hand| !seen_cards.has(hand.high()) && !seen_cards.has(hand.low())),
                 );
-                factor *= u64::try_from(range.len()).unwrap();
+                factor *= u128::try_from(range.len()).unwrap();
                 let Some(hand) = range.choose(&mut rng).copied() else {
                     continue 'outer;
                 };
@@ -256,7 +195,8 @@ impl Equity {
                 seen_cards.add(hand.low());
             }
 
-            let diff = try_u64_to_f64(factor).unwrap() / upper_bound;
+            // We accept that this might loose precision here.
+            let diff = factor as f64 / upper_bound;
             showdown_simulate(&scores, &mut wins, &mut ties, diff);
             total += diff;
         }
