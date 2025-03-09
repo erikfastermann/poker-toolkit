@@ -1,6 +1,9 @@
 use std::{cmp::Ordering, fmt};
 
-use rand::{distributions::{Distribution, Standard}, Rng};
+use rand::{
+    distributions::{Distribution, Standard},
+    Rng,
+};
 
 use crate::{cards::Cards, rank::Rank, result::Result, suite::Suite};
 
@@ -37,11 +40,21 @@ impl Card {
     pub fn from_index(index: i8) -> Option<Self> {
         if index < 0 || index > 63 {
             None
-        } else if Cards::MASK_FULL&(1u64 << u64::try_from(index).unwrap()) == 0 {
+        } else if Cards::MASK_FULL & (1u64 << u64::try_from(index).unwrap()) == 0 {
             None
         } else {
             Some(Self(index))
-        }      
+        }
+    }
+
+    pub fn from_index_52(index: i8) -> Option<Self> {
+        if index < 0 || index > 51 {
+            None
+        } else {
+            let suite = Suite::try_from(index / 13).ok()?;
+            let rank = Rank::try_from(index % 13).ok()?;
+            Some(Self::of(rank, suite))
+        }
     }
 
     pub fn from_str(s: &str) -> Result<Self> {
@@ -50,13 +63,14 @@ impl Card {
                 let rank = Rank::from_ascii(*rank_raw)?;
                 let suite = Suite::from_ascii(*suite_raw)?;
                 Ok(Self::of(rank, suite))
-            },
+            }
             _ => Err(format!("invalid card '{s}': bad length").into()),
         }
     }
 
     pub fn all() -> impl Iterator<Item = Self> {
-        Suite::SUITES.iter()
+        Suite::SUITES
+            .iter()
             .flat_map(|suite| Rank::RANKS.iter().map(|rank| Self::of(*rank, *suite)))
     }
 
@@ -72,6 +86,10 @@ impl Card {
         self.0
     }
 
+    pub fn to_index_52(self) -> usize {
+        self.suite().to_usize() * 13 + self.rank().to_usize()
+    }
+
     pub fn to_index_u64(self) -> u64 {
         self.to_index() as u64
     }
@@ -81,7 +99,8 @@ impl Card {
     }
 
     pub fn cmp_by_rank(self, other: Self) -> Ordering {
-        self.rank().cmp(&other.rank())
+        self.rank()
+            .cmp(&other.rank())
             .then_with(|| self.suite().to_usize().cmp(&other.suite().to_usize()))
     }
 }

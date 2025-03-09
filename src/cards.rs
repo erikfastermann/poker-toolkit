@@ -1,4 +1,10 @@
-use std::{cmp::Ordering, collections::HashMap, fmt, ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, Not, Shl}, ptr::addr_of_mut};
+use std::{
+    cmp::Ordering,
+    collections::HashMap,
+    fmt,
+    ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, Not, Shl},
+    ptr::addr_of_mut,
+};
 
 use crate::{card::Card, hand::Hand, rank::Rank, result::Result, suite::Suite};
 
@@ -10,11 +16,11 @@ impl Score {
 
     fn from_ranking_cards(ranking: HandRanking, cards: Cards) -> Self {
         let hand_ranking = ranking.to_u16();
-        debug_assert_eq!(hand_ranking&0xfff, hand_ranking);
+        debug_assert_eq!(hand_ranking & 0xfff, hand_ranking);
         let mut n = u32::from(hand_ranking) << 20;
         assert!(cards.count() <= 5);
         for (i, rank) in cards.by_rank().iter().enumerate() {
-            n |= rank.to_u32() << (16 - i*4);
+            n |= rank.to_u32() << (16 - i * 4);
         }
         Score(n)
     }
@@ -25,7 +31,7 @@ impl Score {
         for rank in Rank::RANKS.iter().copied() {
             for _ in 0..counts[rank.to_usize()] {
                 cards.add(Card::of(rank, suite));
-                let next_suite_index = (suite.to_usize()+1) % Suite::COUNT;
+                let next_suite_index = (suite.to_usize() + 1) % Suite::COUNT;
                 suite = Suite::try_from(i8::try_from(next_suite_index).unwrap()).unwrap();
             }
         }
@@ -39,7 +45,7 @@ impl Score {
             top5.ranking,
             HandRanking::HighCard
                 | HandRanking::OnePair(_)
-                | HandRanking::TwoPair{ .. }
+                | HandRanking::TwoPair { .. }
                 | HandRanking::ThreeOfAKind(_)
                 | HandRanking::Straight
                 | HandRanking::FullHouse { .. }
@@ -53,7 +59,7 @@ impl Score {
     }
 
     fn to_hand_ranking(self) -> HandRanking {
-        let n = u16::try_from((self.0>>20) & 0xfff).unwrap();
+        let n = u16::try_from((self.0 >> 20) & 0xfff).unwrap();
         HandRanking::from_u16(n).unwrap()
     }
 }
@@ -80,13 +86,13 @@ impl HandRanking {
             HandRanking::OnePair(pair) => (1 << 8) | pair.to_u16(),
             HandRanking::TwoPair { first, second } => {
                 (2 << 8) | (first.to_u16() << 4) | second.to_u16()
-            },
+            }
             HandRanking::ThreeOfAKind(trips) => (3 << 8) | trips.to_u16(),
             HandRanking::Straight => 4 << 8,
             HandRanking::Flush => 5 << 8,
             HandRanking::FullHouse { trips, pair } => {
                 (6 << 8) | (trips.to_u16() << 4) | pair.to_u16()
-            },
+            }
             HandRanking::FourOfAKind(quads) => (7 << 8) | quads.to_u16(),
             HandRanking::StraightFlush => 8 << 8,
             HandRanking::RoyalFlush => 9 << 8,
@@ -97,29 +103,29 @@ impl HandRanking {
         let ranking = match n >> 8 {
             0 => HandRanking::HighCard,
             1 => {
-                let pair = Rank::try_from(i8::try_from(n&0xf).unwrap()).ok()?;
+                let pair = Rank::try_from(i8::try_from(n & 0xf).unwrap()).ok()?;
                 HandRanking::OnePair(pair)
-            },
+            }
             2 => {
-                let first = Rank::try_from(i8::try_from((n>>4)&0xf).unwrap()).ok()?;
-                let second = Rank::try_from(i8::try_from(n&0xf).unwrap()).ok()?;
+                let first = Rank::try_from(i8::try_from((n >> 4) & 0xf).unwrap()).ok()?;
+                let second = Rank::try_from(i8::try_from(n & 0xf).unwrap()).ok()?;
                 HandRanking::TwoPair { first, second }
-            },
+            }
             3 => {
-                let trips = Rank::try_from(i8::try_from(n&0xf).unwrap()).ok()?;
+                let trips = Rank::try_from(i8::try_from(n & 0xf).unwrap()).ok()?;
                 HandRanking::ThreeOfAKind(trips)
-            },
+            }
             4 => HandRanking::Straight,
             5 => HandRanking::Flush,
             6 => {
-                let trips = Rank::try_from(i8::try_from((n>>4)&0xf).unwrap()).ok()?;
-                let pair = Rank::try_from(i8::try_from(n&0xf).unwrap()).ok()?;
+                let trips = Rank::try_from(i8::try_from((n >> 4) & 0xf).unwrap()).ok()?;
+                let pair = Rank::try_from(i8::try_from(n & 0xf).unwrap()).ok()?;
                 HandRanking::FullHouse { trips, pair }
-            },
+            }
             7 => {
-                let quads = Rank::try_from(i8::try_from(n&0xf).unwrap()).ok()?;
+                let quads = Rank::try_from(i8::try_from(n & 0xf).unwrap()).ok()?;
                 HandRanking::FourOfAKind(quads)
-            },
+            }
             8 => HandRanking::StraightFlush,
             9 => HandRanking::RoyalFlush,
             _ => return None,
@@ -142,7 +148,8 @@ impl Top5 {
             Card::of(Rank::Four, Suite::Hearts),
             Card::of(Rank::Three, Suite::Spades),
             Card::of(Rank::Two, Suite::Clubs),
-        ]).unwrap();
+        ])
+        .unwrap();
         let top5 = cards.top5();
         debug_assert!(matches!(top5.ranking, HandRanking::HighCard));
         debug_assert!(top5.cards.by_rank().highest_rank() == Some(Rank::Seven));
@@ -167,7 +174,7 @@ impl Top5 {
                     }
                 }
                 Ordering::Equal
-            },
+            }
             o => o,
         }
     }
@@ -261,7 +268,7 @@ impl Cards {
             return Ok(Cards::EMPTY);
         }
 
-        if s.len()%2 != 0 {
+        if s.len() % 2 != 0 {
             return Err(format!("invalid cards '{s}': bad length").into());
         }
         if !s.is_ascii() {
@@ -269,7 +276,7 @@ impl Cards {
         }
         let mut cards = Self::EMPTY;
         for i in (0..s.len()).step_by(2) {
-            let card_raw = &s[i..i+2];
+            let card_raw = &s[i..i + 2];
             let card = Card::from_str(card_raw)?;
             if !cards.try_add(card) {
                 return Err(format!("invalid cards '{s}': duplicate card {card}").into());
@@ -295,7 +302,8 @@ impl Cards {
             Card::of(rank, Suite::Spades),
             Card::of(rank, Suite::Hearts),
             Card::of(rank, Suite::Clubs),
-        ]).unwrap()
+        ])
+        .unwrap()
     }
 
     pub fn to_hand(self) -> Option<Hand> {
@@ -339,6 +347,10 @@ impl Cards {
 
     pub fn with(self, card: Card) -> Self {
         assert!(!self.has(card));
+        self.with_unchecked(card)
+    }
+
+    pub fn with_unchecked(self, card: Card) -> Self {
         Self(self.0 | (1 << card.to_index_u64()))
     }
 
@@ -368,7 +380,8 @@ impl Cards {
     }
 
     fn suites(self) -> impl Iterator<Item = (Suite, CardsByRank)> {
-        Suite::SUITES.iter()
+        Suite::SUITES
+            .iter()
             .copied()
             .map(move |suite| (suite, CardsByRank::from_cards_suite(self, suite)))
     }
@@ -423,9 +436,10 @@ impl Cards {
                 let cards = CardsByRank::from_raw(i16::try_from(n).unwrap())
                     .to_cards_suite(Suite::Diamonds);
                 let top5 = cards.top5();
-                assert!(matches!(top5.ranking, HandRanking::Flush
-                    | HandRanking::StraightFlush
-                    | HandRanking::RoyalFlush));
+                assert!(matches!(
+                    top5.ranking,
+                    HandRanking::Flush | HandRanking::StraightFlush | HandRanking::RoyalFlush
+                ));
                 map[n] = top5.to_score();
             }
         }
@@ -433,12 +447,7 @@ impl Cards {
 
     fn build_score_map() -> HashMap<u64, Score> {
         let mut map = HashMap::new();
-        Self::score_map_recursive(
-            &mut map,
-            0,
-            &mut [0u8; Rank::COUNT],
-            Rank::COUNT,
-        );
+        Self::score_map_recursive(&mut map, 0, &mut [0u8; Rank::COUNT], Rank::COUNT);
         map
     }
 
@@ -463,7 +472,7 @@ impl Cards {
                 if next_count > 7 {
                     break;
                 }
-                Self::score_map_recursive(map, next_count, counts, remainder-1);
+                Self::score_map_recursive(map, next_count, counts, remainder - 1);
             }
         }
     }
@@ -471,7 +480,7 @@ impl Cards {
     fn counts_n(counts: &[u8; Rank::COUNT]) -> u64 {
         let mut counts_n = 0u64;
         for (index, count) in counts.iter().copied().enumerate() {
-            counts_n |= u64::from(count) << (index*4);
+            counts_n |= u64::from(count) << (index * 4);
         }
         counts_n
     }
@@ -480,9 +489,9 @@ impl Cards {
         let mut counts_n = 0u64;
         for suite in Suite::SUITES {
             let cards = CardsByRank::from_cards_suite(self, suite);
-            let n = interleave_first_32_bits_with_zeros(
-                interleave_first_32_bits_with_zeros(cards.to_u64()),
-            );
+            let n = interleave_first_32_bits_with_zeros(interleave_first_32_bits_with_zeros(
+                cards.to_u64(),
+            ));
             counts_n += n;
         }
         debug_assert_eq!(counts_n, Self::counts_n(&self.counts()));
@@ -543,12 +552,13 @@ impl Cards {
                     let kickers = self.without_rank(first_pair_rank).kickers(3);
                     let cards = first_pair | kickers;
                     return Some(Top5::of(HandRanking::OnePair(first_pair_rank), cards));
-                },
+                }
             }
         };
         let second_pair = (self & Cards::of_rank(second_pair_rank)).take_n(2);
 
-        let kicker = self.without_rank(first_pair_rank)
+        let kicker = self
+            .without_rank(first_pair_rank)
             .without_rank(second_pair_rank)
             .kickers(1);
         let cards = first_pair | second_pair | kicker;
@@ -563,7 +573,7 @@ impl Cards {
         if let Some(trips_rank) = Self::best_n(counts, 3) {
             let trips = (self & Cards::of_rank(trips_rank)).take_n(3);
             let kickers = self.without_rank(trips_rank).kickers(2);
-            Some((trips_rank, trips|kickers))
+            Some((trips_rank, trips | kickers))
         } else {
             None
         }
@@ -614,7 +624,7 @@ impl Cards {
         };
         let trips = (self & Cards::of_rank(trips_rank)).take_n(3);
         let pair = (self & Cards::of_rank(pair_rank)).take_n(2);
-        Some((trips_rank, pair_rank, trips|pair))
+        Some((trips_rank, pair_rank, trips | pair))
     }
 
     fn quads(self, counts: [u8; Rank::COUNT]) -> Option<(Rank, Self)> {
@@ -676,7 +686,7 @@ impl Iterator for CardsIter {
             Some(card) => {
                 self.0.remove(card);
                 Some(card)
-            },
+            }
             None => None,
         }
     }
@@ -747,7 +757,7 @@ impl CardsByRank {
             false
         } else {
             let n_u64 = u64::try_from(n).unwrap();
-            Cards::MASK_SINGLE&n_u64 == n_u64
+            Cards::MASK_SINGLE & n_u64 == n_u64
         });
         CardsByRank(n)
     }
@@ -804,12 +814,12 @@ impl CardsByRank {
 
     fn straight(self) -> Option<Self> {
         let mut best_cards = None;
-        if self&Self::WHEEL == Self::WHEEL {
+        if self & Self::WHEEL == Self::WHEEL {
             best_cards = Some(Self::WHEEL);
         }
-        for shift in 0..=13-5 {
+        for shift in 0..=13 - 5 {
             let straight = Self::STRAIGHT_SIX_HIGH << shift;
-            if self&straight == straight {
+            if self & straight == straight {
                 best_cards = Some(straight);
             }
         }
@@ -851,7 +861,7 @@ impl Iterator for CardsByRankIter {
             Some(rank) => {
                 self.0.remove(rank);
                 Some(rank)
-            },
+            }
             None => None,
         }
     }

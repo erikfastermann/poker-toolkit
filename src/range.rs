@@ -63,11 +63,7 @@ impl fmt::Display for RangeTable {
                     low: min(row, column),
                     suited: column < row,
                 };
-                let contains = if self.contains_entry(entry) {
-                    "T"
-                } else {
-                    "F"
-                };
+                let contains = if self.contains_entry(entry) { "T" } else { "F" };
                 write!(f, "{} ({})", entry, contains)?;
                 if iter.peek().is_some() {
                     write!(f, " ")?;
@@ -81,7 +77,9 @@ impl fmt::Display for RangeTable {
 
 impl RangeTable {
     pub fn empty() -> Self {
-        Self { table: [CardsByRank::EMPTY; Rank::COUNT] }
+        Self {
+            table: [CardsByRank::EMPTY; Rank::COUNT],
+        }
     }
 
     pub fn full() -> Self {
@@ -118,10 +116,9 @@ impl RangeTable {
             if let Err(err) = result {
                 return Err(format!(
                     "invalid range '{}': invalid entry '{}': {}",
-                    range_str,
-                    def,
-                    err,
-                ).into())
+                    range_str, def, err,
+                )
+                .into());
             }
         }
 
@@ -157,7 +154,7 @@ impl RangeTable {
                     }
                 } else {
                     for suite_a in Suite::SUITES {
-                        for suite_b in Suite::SUITES[suite_a.to_usize()+1..].iter().copied() {
+                        for suite_b in Suite::SUITES[suite_a.to_usize() + 1..].iter().copied() {
                             let hand = Hand::of_two_cards(
                                 Card::of(row_rank, suite_a),
                                 Card::of(column_rank, suite_b),
@@ -203,9 +200,9 @@ impl RangeTable {
         self.table.iter().map(|row| row.count_u8()).sum()
     }
 
-    pub fn count_cards(&self) -> u32 {
+    pub fn count_hands(&self) -> u32 {
         let mut count = 0u32;
-        self.for_each_hand(|_| count += 2);
+        self.for_each_hand(|_| count += 1);
         count
     }
 
@@ -216,6 +213,12 @@ impl RangeTable {
             cards.try_add(hand.low());
         });
         cards
+    }
+
+    pub fn to_vec(&self) -> Vec<Hand> {
+        let mut hands = Vec::new();
+        self.for_each_hand(|hand| hands.push(hand));
+        hands
     }
 
     pub fn to_set(&self) -> HashSet<Hand> {
@@ -231,10 +234,8 @@ impl RangeTable {
                         if !self.contains_entry(RangeEntry { high, low, suited }) {
                             continue;
                         }
-                        let hand = Hand::of_two_cards(
-                            Card::of(high, suite_a),
-                            Card::of(low, suite_b),
-                        );
+                        let hand =
+                            Hand::of_two_cards(Card::of(high, suite_a), Card::of(low, suite_b));
                         hands.insert(hand);
                     }
                 }
@@ -245,14 +246,22 @@ impl RangeTable {
 
     fn parse_pair(&mut self, raw_rank: u8) -> Result<()> {
         let rank = Rank::from_ascii(raw_rank)?;
-        self.try_add(RangeEntry { high: rank, low: rank, suited: false })?;
+        self.try_add(RangeEntry {
+            high: rank,
+            low: rank,
+            suited: false,
+        })?;
         Ok(())
     }
 
     fn parse_pairs_asc(&mut self, raw_rank: u8) -> Result<()> {
         let from = Rank::from_ascii(raw_rank)?;
         for rank in Rank::range(from, Rank::Ace) {
-            let entry = RangeEntry { high: rank, low: rank, suited: false };
+            let entry = RangeEntry {
+                high: rank,
+                low: rank,
+                suited: false,
+            };
             self.try_add(entry)?;
         }
         Ok(())
@@ -275,7 +284,11 @@ impl RangeTable {
             return Err("low greater or equals to high".into());
         }
         for rank in Rank::range(low, high.predecessor().unwrap()) {
-            self.try_add(RangeEntry { high, low: rank, suited })?;
+            self.try_add(RangeEntry {
+                high,
+                low: rank,
+                suited,
+            })?;
         }
         Ok(())
     }
