@@ -4,6 +4,7 @@ mod card;
 mod cards;
 mod equity;
 mod hand;
+mod init;
 mod range;
 mod rank;
 mod result;
@@ -20,7 +21,7 @@ use crate::result::Result;
 const INVALID_COMMAND_ERROR: &'static str = "Invalid command. See README for usage.";
 
 fn main() -> Result<()> {
-    unsafe { Cards::init() };
+    unsafe { crate::init::init() };
 
     let args: Vec<_> = std::env::args().collect();
     if args.get(1).is_some_and(|cmd| cmd == "enumerate") {

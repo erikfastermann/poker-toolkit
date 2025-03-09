@@ -74,6 +74,12 @@ impl Card {
             .flat_map(|suite| Rank::RANKS.iter().map(|rank| Self::of(*rank, *suite)))
     }
 
+    pub fn all_by_rank() -> impl Iterator<Item = Self> {
+        Rank::RANKS
+            .iter()
+            .flat_map(|rank| Suite::SUITES.iter().map(|suite| Self::of(*rank, *suite)))
+    }
+
     pub fn rank(self) -> Rank {
         Rank::try_from(self.0 % 16).unwrap()
     }
@@ -87,7 +93,11 @@ impl Card {
     }
 
     pub fn to_index_52(self) -> usize {
-        self.suite().to_usize() * 13 + self.rank().to_usize()
+        self.suite().to_usize() * Rank::COUNT + self.rank().to_usize()
+    }
+
+    pub fn to_index_52_by_rank(self) -> usize {
+        self.rank().to_usize() * Suite::COUNT + self.suite().to_usize()
     }
 
     pub fn to_index_u64(self) -> u64 {

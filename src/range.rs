@@ -1,6 +1,9 @@
-use core::fmt;
 use std::cmp::{max, min};
 use std::collections::HashSet;
+use std::fmt;
+use std::ops::BitAndAssign;
+
+use rand::Rng;
 
 use crate::card::Card;
 use crate::cards::{Cards, CardsByRank};
@@ -291,5 +294,162 @@ impl RangeTable {
             })?;
         }
         Ok(())
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct FullRangeTable {
+    table: [u64; 21],
+}
+
+static mut HANDS: [Hand; FullRangeTable::COUNT] = [Hand::MIN; FullRangeTable::COUNT];
+
+impl FullRangeTable {
+    pub const EMPTY: Self = Self { table: [0; 21] };
+
+    pub const FULL: Self = {
+        let mut table = [u64::MAX; 21];
+        table[20] = u64::MAX >> 64 - (Self::COUNT - 20 * 64);
+        Self { table }
+    };
+
+    pub const COUNT: usize = 52 * 51 / 2;
+
+    pub unsafe fn init() {
+        let mut index = 0;
+        Self::FULL.for_each_hand(|hand| {
+            HANDS[index] = hand;
+            index += 1;
+        });
+        assert_eq!(index, Self::COUNT);
+    }
+
+    pub fn from_range_table(table: &RangeTable) -> Self {
+        let mut out = FullRangeTable::EMPTY;
+        table.for_each_hand(|hand| out.add_hand(hand));
+        out
+    }
+
+    pub fn has_hand(&self, hand: Hand) -> bool {
+        let index = Self::hand_to_index(hand);
+        self.has_index(index)
+    }
+
+    fn has_index(&self, index: usize) -> bool {
+        let u = self.table[index / 64];
+        (u & (1 << index % 64)) != 0
+    }
+
+    fn add_index_unchecked(&mut self, index: usize) {
+        self.table[index / 64] |= 1 << index % 64;
+    }
+
+    pub fn add_hand(&mut self, hand: Hand) {
+        let index = Self::hand_to_index(hand);
+        assert!(!self.has_index(index));
+        self.add_index_unchecked(index);
+    }
+
+    pub fn add_hand_unchecked(&mut self, hand: Hand) {
+        let index = Self::hand_to_index(hand);
+        self.add_index_unchecked(index);
+    }
+
+    fn hand_to_index(hand: Hand) -> usize {
+        let low = hand.low().to_index_52_by_rank() as isize;
+        let high = hand.high().to_index_52_by_rank() as isize;
+        let start = 52 - low;
+        let end = 51;
+        let n = end - start + 1;
+        let low_index = n * (start + end) / 2;
+        let high_index = high - low - 1;
+        (low_index + high_index) as usize
+    }
+
+    fn index_to_hand(index: usize) -> Hand {
+        unsafe { HANDS[index] }
+    }
+
+    fn for_each_hand(&self, mut f: impl FnMut(Hand)) {
+        for a in Card::all_by_rank() {
+            for b in Card::all_by_rank() {
+                if b.cmp_by_rank(a).is_gt() {
+                    f(Hand::of_two_cards(a, b));
+                }
+            }
+        }
+    }
+
+    pub fn count(&self) -> u32 {
+        self.table.iter().map(|u| u.count_ones()).sum()
+    }
+
+    pub fn random_hand(&self, rng: &mut impl Rng) -> Option<Hand> {
+        let nth_range = 0..self.count();
+        if nth_range.is_empty() {
+            return None;
+        }
+        let nth = rng.gen_range(nth_range);
+        // TODO: Fast version
+        self.into_iter().nth(usize::try_from(nth).unwrap())
+    }
+}
+
+impl<'a> IntoIterator for &'a FullRangeTable {
+    type Item = Hand;
+
+    type IntoIter = RangeTableIter<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        RangeTableIter {
+            table: self,
+            index: 0,
+        }
+    }
+}
+
+pub struct RangeTableIter<'a> {
+    table: &'a FullRangeTable,
+    index: usize,
+}
+
+impl<'a> Iterator for RangeTableIter<'a> {
+    type Item = Hand;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.index < FullRangeTable::COUNT {
+            let has_hand = self.table.has_index(self.index);
+            let hand = FullRangeTable::index_to_hand(self.index);
+            self.index += 1;
+            if has_hand {
+                return Some(hand);
+            }
+        }
+        None
+    }
+}
+
+impl FromIterator<Hand> for FullRangeTable {
+    fn from_iter<T: IntoIterator<Item = Hand>>(iter: T) -> Self {
+        let mut t = Self::EMPTY;
+        for hand in iter {
+            t.add_hand_unchecked(hand);
+        }
+        t
+    }
+}
+
+impl BitAndAssign for FullRangeTable {
+    fn bitand_assign(&mut self, rhs: Self) {
+        for i in 0..self.table.len() {
+            self.table[i] &= rhs.table[i];
+        }
+    }
+}
+
+impl fmt::Debug for FullRangeTable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let v: Vec<_> = self.into_iter().collect();
+        fmt::Debug::fmt(&v, f)
     }
 }
