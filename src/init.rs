@@ -1,6 +1,6 @@
-use crate::{cards::Cards, range::FullRangeTable};
+use crate::{cards::Cards, range::RangeTable};
 
 pub unsafe fn init() {
     Cards::init();
-    FullRangeTable::init();
+    RangeTable::init();
 }

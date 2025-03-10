@@ -50,11 +50,11 @@ impl RangeEntry {
 }
 
 #[derive(Clone)]
-pub struct RangeTable {
+pub struct PreFlopRangeTable {
     table: [CardsByRank; Rank::COUNT],
 }
 
-impl fmt::Display for RangeTable {
+impl fmt::Display for PreFlopRangeTable {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for row in Rank::RANKS.iter().rev().copied() {
             let mut iter = Rank::RANKS.iter().rev().copied().peekable();
@@ -76,7 +76,7 @@ impl fmt::Display for RangeTable {
     }
 }
 
-impl RangeTable {
+impl PreFlopRangeTable {
     pub fn empty() -> Self {
         Self {
             table: [CardsByRank::EMPTY; Rank::COUNT],
@@ -296,13 +296,13 @@ impl RangeTable {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub struct FullRangeTable {
+pub struct RangeTable {
     table: [u64; 21],
 }
 
-static mut HANDS: [Hand; FullRangeTable::COUNT] = [Hand::MIN; FullRangeTable::COUNT];
+static mut HANDS: [Hand; RangeTable::COUNT] = [Hand::MIN; RangeTable::COUNT];
 
-impl FullRangeTable {
+impl RangeTable {
     pub const EMPTY: Self = Self { table: [0; 21] };
 
     pub const FULL: Self = {
@@ -322,8 +322,8 @@ impl FullRangeTable {
         assert_eq!(index, Self::COUNT);
     }
 
-    pub fn from_range_table(table: &RangeTable) -> Self {
-        let mut out = FullRangeTable::EMPTY;
+    pub fn from_range_table(table: &PreFlopRangeTable) -> Self {
+        let mut out = RangeTable::EMPTY;
         table.for_each_hand(|hand| out.add_hand(hand));
         out
     }
@@ -489,7 +489,7 @@ impl FullRangeTable {
     }
 }
 
-impl<'a> IntoIterator for &'a FullRangeTable {
+impl<'a> IntoIterator for &'a RangeTable {
     type Item = Hand;
 
     type IntoIter = RangeTableIter<'a>;
@@ -503,7 +503,7 @@ impl<'a> IntoIterator for &'a FullRangeTable {
 }
 
 pub struct RangeTableIter<'a> {
-    table: &'a FullRangeTable,
+    table: &'a RangeTable,
     index: usize,
 }
 
@@ -511,9 +511,9 @@ impl<'a> Iterator for RangeTableIter<'a> {
     type Item = Hand;
 
     fn next(&mut self) -> Option<Self::Item> {
-        while self.index < FullRangeTable::COUNT {
+        while self.index < RangeTable::COUNT {
             let has_hand = self.table.has_index(self.index);
-            let hand = FullRangeTable::index_to_hand(self.index);
+            let hand = RangeTable::index_to_hand(self.index);
             self.index += 1;
             if has_hand {
                 return Some(hand);
@@ -523,7 +523,7 @@ impl<'a> Iterator for RangeTableIter<'a> {
     }
 }
 
-impl FromIterator<Hand> for FullRangeTable {
+impl FromIterator<Hand> for RangeTable {
     fn from_iter<T: IntoIterator<Item = Hand>>(iter: T) -> Self {
         let mut t = Self::EMPTY;
         for hand in iter {
@@ -533,7 +533,7 @@ impl FromIterator<Hand> for FullRangeTable {
     }
 }
 
-impl BitAndAssign for FullRangeTable {
+impl BitAndAssign for RangeTable {
     fn bitand_assign(&mut self, rhs: Self) {
         for i in 0..self.table.len() {
             self.table[i] &= rhs.table[i];
@@ -541,7 +541,7 @@ impl BitAndAssign for FullRangeTable {
     }
 }
 
-impl fmt::Debug for FullRangeTable {
+impl fmt::Debug for RangeTable {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let v: Vec<_> = self.into_iter().collect();
         fmt::Debug::fmt(&v, f)

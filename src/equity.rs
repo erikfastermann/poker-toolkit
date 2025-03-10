@@ -6,7 +6,7 @@ use crate::{
     card::Card,
     cards::{Cards, Score},
     hand::Hand,
-    range::FullRangeTable,
+    range::RangeTable,
 };
 
 fn try_u64_to_f64(n: u64) -> Option<f64> {
@@ -36,17 +36,14 @@ impl fmt::Display for Equity {
     }
 }
 
-fn valid_input(community_cards: Cards, ranges: &[impl AsRef<FullRangeTable>]) -> bool {
+fn valid_input(community_cards: Cards, ranges: &[impl AsRef<RangeTable>]) -> bool {
     community_cards.count() <= 5
         && ranges.len() >= 2
         && ranges.len() <= 9
         && ranges.iter().all(|range| !range.as_ref().is_empty())
 }
 
-pub fn total_combos_upper_bound(
-    community_cards: Cards,
-    ranges: &[impl AsRef<FullRangeTable>],
-) -> u128 {
+pub fn total_combos_upper_bound(community_cards: Cards, ranges: &[impl AsRef<RangeTable>]) -> u128 {
     assert!(ranges.len() <= 9);
     assert!(ranges.iter().all(|range| !range.as_ref().is_empty()));
     let community_cards_count = community_cards.count();
@@ -101,14 +98,14 @@ impl Equity {
 
     pub fn enumerate(
         community_cards: Cards,
-        ranges: &[impl AsRef<FullRangeTable>],
+        ranges: &[impl AsRef<RangeTable>],
     ) -> Option<Vec<Equity>> {
         EquityCalculator::new(community_cards, ranges)?.enumerate()
     }
 
     pub fn simulate(
         start_community_cards: Cards,
-        ranges: &[impl AsRef<FullRangeTable>],
+        ranges: &[impl AsRef<RangeTable>],
         rounds: u64,
     ) -> Option<Vec<Equity>> {
         if !valid_input(start_community_cards, ranges) {
@@ -136,7 +133,7 @@ impl Equity {
         let community_card_factor: u64 = {
             let x =
                 u64::try_from(Card::COUNT).unwrap() - u64::from((start_community_cards).count());
-            ((x - u64::from(remaining_community_cards))..x).product()
+            ((x - u64::from(remaining_community_cards)) + 1..=x).product()
         };
         // We accept that this might loose precision here.
         let upper_bound = total_combos_upper_bound(start_community_cards, ranges) as f64;
@@ -208,7 +205,7 @@ fn filter_hands<'a>(
     &output_range[..out_index]
 }
 
-struct EquityCalculator<'a, RT: AsRef<FullRangeTable>> {
+struct EquityCalculator<'a, RT: AsRef<RangeTable>> {
     known_cards: Cards,
     visited_community_cards: Cards,
     community_cards: Cards,
@@ -219,7 +216,7 @@ struct EquityCalculator<'a, RT: AsRef<FullRangeTable>> {
     ties: Vec<f64>,
 }
 
-impl<'a, RT: AsRef<FullRangeTable>> EquityCalculator<'a, RT> {
+impl<'a, RT: AsRef<RangeTable>> EquityCalculator<'a, RT> {
     fn new(community_cards: Cards, ranges: &'a [RT]) -> Option<Self> {
         if !valid_input(community_cards, ranges) {
             None

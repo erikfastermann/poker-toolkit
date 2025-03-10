@@ -12,7 +12,7 @@ mod suite;
 
 use crate::cards::Cards;
 use crate::equity::Equity;
-use crate::range::FullRangeTable;
+use crate::range::RangeTable;
 use crate::result::Result;
 
 const INVALID_COMMAND_ERROR: &'static str = "Invalid command. See README for usage.";
@@ -37,7 +37,7 @@ fn enumerate(args: &[String]) -> Result<()> {
     let community_cards = Cards::from_str(community_cards_raw)?;
     let ranges = args[1..]
         .iter()
-        .map(|raw_range| FullRangeTable::parse(&raw_range))
+        .map(|raw_range| RangeTable::parse(&raw_range))
         .map(|r| r.map(Box::new))
         .collect::<Result<Vec<_>>>()?;
     let Some(equities) = Equity::enumerate(community_cards, &ranges) else {
@@ -55,7 +55,7 @@ fn simulate(args: &[String]) -> Result<()> {
     let community_cards = Cards::from_str(community_cards_raw)?;
     let ranges = args[2..]
         .iter()
-        .map(|raw_range| FullRangeTable::parse(&raw_range))
+        .map(|raw_range| RangeTable::parse(&raw_range))
         .map(|r| r.map(Box::new))
         .collect::<Result<Vec<_>>>()?;
     let Some(equities) = Equity::simulate(community_cards, &ranges, rounds) else {
