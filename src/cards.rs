@@ -428,16 +428,17 @@ impl Cards {
     }
 
     pub unsafe fn init() {
-        unsafe {
+        {
             assert_eq!(CARDS_FLUSH_MAP[0b11111], Score::ZERO);
             let flush_map = &mut (*addr_of_mut!(CARDS_FLUSH_MAP));
             Self::init_flush_map(flush_map);
-        };
-        let score_map = Self::build_score_map();
-        unsafe {
-            assert!(CARDS_SCORE_MAP.is_none());
-            CARDS_SCORE_MAP = Some(Box::leak(Box::new(score_map)));
         }
+        let score_map = Self::build_score_map();
+        {
+            let score_map = &(*addr_of_mut!(CARDS_SCORE_MAP));
+            assert!(score_map.is_none());
+        }
+        CARDS_SCORE_MAP = Some(Box::leak(Box::new(score_map)));
     }
 
     fn init_flush_map(map: &mut [Score; FLUSH_MAP_SIZE]) {
