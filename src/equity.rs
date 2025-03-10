@@ -6,7 +6,7 @@ use crate::{
     card::Card,
     cards::{Cards, Score},
     hand::Hand,
-    range::RangeTable,
+    range::FullRangeTable,
 };
 
 fn try_u64_to_f64(n: u64) -> Option<f64> {
@@ -36,42 +36,23 @@ impl fmt::Display for Equity {
     }
 }
 
-fn valid_input(
-    community_cards: Cards,
-    hero_cards: Cards,
-    villain_ranges: &[impl AsRef<RangeTable>],
-) -> bool {
-    valid_input_without_ranges(community_cards, hero_cards, villain_ranges.len())
-        && villain_ranges
-            .iter()
-            .all(|range| !range.as_ref().is_empty())
-}
-
-fn valid_input_without_ranges(
-    community_cards: Cards,
-    hero_cards: Cards,
-    villain_count: usize,
-) -> bool {
-    let known_cards = community_cards | hero_cards;
-    hero_cards.count() == 2
-        && community_cards.count() <= 5
-        && known_cards.count() == community_cards.count() + hero_cards.count()
-        && villain_count >= 1
-        && villain_count <= 8
+fn valid_input(community_cards: Cards, ranges: &[impl AsRef<FullRangeTable>]) -> bool {
+    community_cards.count() <= 5
+        && ranges.len() >= 2
+        && ranges.len() <= 9
+        && ranges.iter().all(|range| !range.as_ref().is_empty())
 }
 
 pub fn total_combos_upper_bound(
     community_cards: Cards,
-    villain_ranges: &[impl AsRef<RangeTable>],
+    ranges: &[impl AsRef<FullRangeTable>],
 ) -> u128 {
-    assert!(villain_ranges.len() <= 8);
-    assert!(villain_ranges
-        .iter()
-        .all(|range| !range.as_ref().is_empty()));
+    assert!(ranges.len() <= 9);
+    assert!(ranges.iter().all(|range| !range.as_ref().is_empty()));
     let community_cards_count = community_cards.count();
     assert!(community_cards_count <= 5);
     let mut remaining_cards = {
-        let remaining_cards = Card::COUNT - usize::from(community_cards_count) - 2;
+        let remaining_cards = Card::COUNT - usize::from(community_cards_count);
         u128::try_from(remaining_cards).unwrap()
     };
     let mut count = 1u128;
@@ -81,9 +62,9 @@ pub fn total_combos_upper_bound(
         remaining_cards -= 1;
     }
 
-    for range in villain_ranges {
+    for range in ranges {
         count = count
-            .checked_mul(u128::from(range.as_ref().count_hands()))
+            .checked_mul(u128::from(range.as_ref().count()))
             .unwrap();
     }
 
@@ -120,20 +101,17 @@ impl Equity {
 
     pub fn enumerate(
         community_cards: Cards,
-        hero_hand: Hand,
-        villain_ranges: &[impl AsRef<RangeTable>],
+        ranges: &[impl AsRef<FullRangeTable>],
     ) -> Option<Vec<Equity>> {
-        EquityCalculator::new(community_cards, hero_hand.to_cards(), villain_ranges)?.enumerate()
+        EquityCalculator::new(community_cards, ranges)?.enumerate()
     }
 
     pub fn simulate(
         start_community_cards: Cards,
-        hero_hand: Hand,
-        villain_ranges: &[impl AsRef<RangeTable>],
+        ranges: &[impl AsRef<FullRangeTable>],
         rounds: u64,
     ) -> Option<Vec<Equity>> {
-        let hero_cards = hero_hand.to_cards();
-        if !valid_input(start_community_cards, hero_cards, villain_ranges) {
+        if !valid_input(start_community_cards, ranges) {
             return None;
         }
         if rounds == 0 {
@@ -142,24 +120,26 @@ impl Equity {
 
         let mut rng = SmallRng::from_entropy();
         let remaining_community_cards = 5 - start_community_cards.count();
-        let player_count = villain_ranges.len() + 1;
-        let villain_full_ranges_original: Vec<_> =
-            villain_ranges.iter().map(|r| r.as_ref().to_vec()).collect();
-        let mut villain_full_ranges = villain_full_ranges_original.clone();
+        let player_count = ranges.len();
+        let full_ranges_original: Vec<_> = ranges
+            .iter()
+            .map(|r| r.as_ref().into_iter().collect::<Vec<_>>())
+            .collect();
+        let mut full_ranges = full_ranges_original.clone();
 
         let mut scores = vec![Score::ZERO; player_count];
         let mut wins = vec![0.0; player_count];
         let mut ties = vec![0.0; player_count];
-        let mut deck = Deck::from_cards(&mut rng, start_community_cards | hero_cards);
+        let mut deck = Deck::from_cards(&mut rng, start_community_cards);
         let mut total = 0.0;
 
         let community_card_factor: u64 = {
-            let x = u64::try_from(Card::COUNT).unwrap()
-                - u64::from((start_community_cards | hero_cards).count());
+            let x =
+                u64::try_from(Card::COUNT).unwrap() - u64::from((start_community_cards).count());
             ((x - u64::from(remaining_community_cards))..x).product()
         };
         // We accept that this might loose precision here.
-        let upper_bound = total_combos_upper_bound(start_community_cards, villain_ranges) as f64;
+        let upper_bound = total_combos_upper_bound(start_community_cards, ranges) as f64;
 
         'outer: for _ in 0..rounds {
             deck.reset();
@@ -172,16 +152,15 @@ impl Equity {
                 community_cards
             };
 
-            let mut seen_cards = community_cards | hero_cards;
-            scores[0] = seen_cards.score_fast();
+            let mut seen_cards = community_cards;
             let mut factor = u128::from(community_card_factor);
-            for (i, range) in villain_full_ranges.iter_mut().enumerate() {
-                let range = filter_hands(&villain_full_ranges_original[i], range, seen_cards);
+            for (i, range) in full_ranges.iter_mut().enumerate() {
+                let range = filter_hands(&full_ranges_original[i], range, seen_cards);
                 factor *= u128::try_from(range.len()).unwrap();
                 let Some(hand) = range.choose(&mut rng).copied() else {
                     continue 'outer;
                 };
-                scores[i + 1] = community_cards
+                scores[i] = community_cards
                     .with_unchecked(hand.high())
                     .with_unchecked(hand.low())
                     .score_fast();
@@ -229,39 +208,37 @@ fn filter_hands<'a>(
     &output_range[..out_index]
 }
 
-struct EquityCalculator<'a, RT: AsRef<RangeTable>> {
+struct EquityCalculator<'a, RT: AsRef<FullRangeTable>> {
     known_cards: Cards,
-    hero_cards: Cards,
     visited_community_cards: Cards,
     community_cards: Cards,
-    villain_ranges: &'a [RT],
+    ranges: &'a [RT],
     hand_ranking_scores: Vec<Score>,
     total: u64,
     wins: Vec<u64>,
     ties: Vec<f64>,
 }
 
-impl<'a, RT: AsRef<RangeTable>> EquityCalculator<'a, RT> {
-    fn new(community_cards: Cards, hero_cards: Cards, villain_ranges: &'a [RT]) -> Option<Self> {
-        if !valid_input(community_cards, hero_cards, villain_ranges) {
+impl<'a, RT: AsRef<FullRangeTable>> EquityCalculator<'a, RT> {
+    fn new(community_cards: Cards, ranges: &'a [RT]) -> Option<Self> {
+        if !valid_input(community_cards, ranges) {
             None
         } else {
             Some(Self {
                 known_cards: Cards::EMPTY,
-                hero_cards,
                 community_cards,
-                visited_community_cards: community_cards | hero_cards,
-                villain_ranges,
-                hand_ranking_scores: vec![Score::ZERO; villain_ranges.len() + 1],
+                visited_community_cards: community_cards,
+                ranges,
+                hand_ranking_scores: vec![Score::ZERO; ranges.len()],
                 total: 0,
-                wins: vec![0; villain_ranges.len() + 1],
-                ties: vec![0.0; villain_ranges.len() + 1],
+                wins: vec![0; ranges.len()],
+                ties: vec![0.0; ranges.len()],
             })
         }
     }
 
     fn enumerate(mut self) -> Option<Vec<Equity>> {
-        let upper_bound = total_combos_upper_bound(self.community_cards, self.villain_ranges);
+        let upper_bound = total_combos_upper_bound(self.community_cards, self.ranges);
         if u64::try_from(upper_bound).is_err() {
             return None;
         }
@@ -278,10 +255,8 @@ impl<'a, RT: AsRef<RangeTable>> EquityCalculator<'a, RT> {
 
     fn community_cards(&mut self, remainder: usize) {
         if remainder == 0 {
-            let known_cards = self.hero_cards | self.community_cards;
-            self.hand_ranking_scores[0] = known_cards.top5().to_score();
-            self.known_cards = known_cards;
-            self.players(self.villain_ranges.len() - 1);
+            self.known_cards = self.community_cards;
+            self.players(self.ranges.len() - 1);
             return;
         }
 
@@ -296,15 +271,14 @@ impl<'a, RT: AsRef<RangeTable>> EquityCalculator<'a, RT> {
     }
 
     fn players(&mut self, remainder: usize) {
-        let player_index = self.villain_ranges.len() - remainder - 1;
-        let villain = self.villain_ranges[player_index].as_ref();
+        let player_index = self.ranges.len() - remainder - 1;
         let current_known_cards = self.known_cards;
-        villain.for_each_hand(|hand| {
+        for hand in self.ranges[player_index].as_ref().into_iter() {
             if current_known_cards.has(hand.high()) || current_known_cards.has(hand.low()) {
-                return;
+                continue;
             }
 
-            self.hand_ranking_scores[player_index + 1] = self
+            self.hand_ranking_scores[player_index] = self
                 .community_cards
                 .with(hand.high())
                 .with(hand.low())
@@ -316,7 +290,7 @@ impl<'a, RT: AsRef<RangeTable>> EquityCalculator<'a, RT> {
             } else {
                 self.showdown();
             }
-        });
+        }
     }
 
     fn showdown(&mut self) {

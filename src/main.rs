@@ -10,12 +10,9 @@ mod rank;
 mod result;
 mod suite;
 
-use std::sync::Arc;
-
 use crate::cards::Cards;
 use crate::equity::Equity;
-use crate::hand::Hand;
-use crate::range::RangeTable;
+use crate::range::FullRangeTable;
 use crate::result::Result;
 
 const INVALID_COMMAND_ERROR: &'static str = "Invalid command. See README for usage.";
@@ -34,17 +31,16 @@ fn main() -> Result<()> {
 }
 
 fn enumerate(args: &[String]) -> Result<()> {
-    let [community_cards_raw, hero_hand_raw, ..] = args else {
+    let [community_cards_raw, ..] = args else {
         return Err(INVALID_COMMAND_ERROR.into());
     };
     let community_cards = Cards::from_str(community_cards_raw)?;
-    let hero_hand = Hand::from_str(hero_hand_raw)?;
-    let villain_ranges = args[2..]
+    let ranges = args[1..]
         .iter()
-        .map(|raw_range| RangeTable::parse(&raw_range))
-        .map(|r| r.map(Arc::new))
+        .map(|raw_range| FullRangeTable::parse(&raw_range))
+        .map(|r| r.map(Box::new))
         .collect::<Result<Vec<_>>>()?;
-    let Some(equities) = Equity::enumerate(community_cards, hero_hand, &villain_ranges) else {
+    let Some(equities) = Equity::enumerate(community_cards, &ranges) else {
         return Err("enumerate failed: invalid input or expected sample to large".into());
     };
     print_equities(&equities);
@@ -52,19 +48,17 @@ fn enumerate(args: &[String]) -> Result<()> {
 }
 
 fn simulate(args: &[String]) -> Result<()> {
-    let [rounds_raw, community_cards_raw, hero_hand_raw, ..] = args else {
+    let [rounds_raw, community_cards_raw, ..] = args else {
         return Err(INVALID_COMMAND_ERROR.into());
     };
     let rounds: u64 = rounds_raw.parse()?;
     let community_cards = Cards::from_str(community_cards_raw)?;
-    let hero_hand = Hand::from_str(hero_hand_raw)?;
-    let villain_ranges = args[3..]
+    let ranges = args[2..]
         .iter()
-        .map(|raw_range| RangeTable::parse(&raw_range))
-        .map(|r| r.map(Arc::new))
+        .map(|raw_range| FullRangeTable::parse(&raw_range))
+        .map(|r| r.map(Box::new))
         .collect::<Result<Vec<_>>>()?;
-    let Some(equities) = Equity::simulate(community_cards, hero_hand, &villain_ranges, rounds)
-    else {
+    let Some(equities) = Equity::simulate(community_cards, &ranges, rounds) else {
         return Err("simulate failed: invalid input".into());
     };
     print_equities(&equities);
@@ -73,8 +67,7 @@ fn simulate(args: &[String]) -> Result<()> {
 
 fn print_equities(equities: &[Equity]) {
     assert!(equities.len() >= 2);
-    println!("hero:      {}", equities[0]);
-    for (i, equity) in equities[1..].iter().enumerate() {
-        println!("villain {}: {}", i + 1, equity);
+    for (i, equity) in equities.iter().enumerate() {
+        println!("player {}: {}", i + 1, equity);
     }
 }

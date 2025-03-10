@@ -57,14 +57,14 @@ impl Card {
         }
     }
 
-    pub fn from_str(s: &str) -> Result<Self> {
-        match s.as_bytes() {
+    pub fn from_bytes(s: &[u8]) -> Result<Self> {
+        match s {
             [rank_raw, suite_raw] => {
                 let rank = Rank::from_ascii(*rank_raw)?;
                 let suite = Suite::from_ascii(*suite_raw)?;
                 Ok(Self::of(rank, suite))
             }
-            _ => Err(format!("invalid card '{s}': bad length").into()),
+            _ => Err(format!("invalid card '{}': bad length", String::from_utf8_lossy(s)).into()),
         }
     }
 

@@ -3,8 +3,6 @@ use std::collections::HashSet;
 use std::fmt;
 use std::ops::BitAndAssign;
 
-use rand::Rng;
-
 use crate::card::Card;
 use crate::cards::{Cards, CardsByRank};
 use crate::hand::Hand;
@@ -330,6 +328,98 @@ impl FullRangeTable {
         out
     }
 
+    pub fn parse(range_str: &str) -> Result<Self> {
+        let range_str = range_str.trim();
+        if range_str == "full" {
+            return Ok(Self::FULL);
+        }
+
+        let mut range = Self::EMPTY;
+        for def in range_str.split(',') {
+            let result = match def.as_bytes() {
+                [pair_a, pair_b] if pair_a == pair_b => range.parse_pair(*pair_a),
+                [pair_a, pair_b, b'+'] if pair_a == pair_b => range.parse_pairs_asc(*pair_a),
+                [high, low, b'o'] => range.parse_one(*high, *low, false),
+                [high, low, b'o', b'+'] => range.parse_asc(*high, *low, false),
+                [high, low, b's'] => range.parse_one(*high, *low, true),
+                [high, low, b's', b'+'] => range.parse_asc(*high, *low, true),
+                hand if def.len() == 4 => range.parse_hand(hand),
+                _ => Err("parsing failed".into()),
+            };
+
+            if let Err(err) = result {
+                return Err(format!(
+                    "invalid range '{}': invalid entry '{}': {}",
+                    range_str, def, err,
+                )
+                .into());
+            }
+        }
+
+        Ok(range)
+    }
+
+    fn parse_pair(&mut self, raw_rank: u8) -> Result<()> {
+        let rank = Rank::from_ascii(raw_rank)?;
+        self.add_pairs(rank)
+    }
+
+    fn parse_pairs_asc(&mut self, raw_rank: u8) -> Result<()> {
+        let from = Rank::from_ascii(raw_rank)?;
+        for rank in Rank::range(from, Rank::Ace) {
+            self.add_pairs(rank)?;
+        }
+        Ok(())
+    }
+
+    fn parse_one(&mut self, raw_high: u8, raw_low: u8, suited: bool) -> Result<()> {
+        let high = Rank::from_ascii(raw_high)?;
+        let low = Rank::from_ascii(raw_low)?;
+        self.add_unpaired(high, low, suited)
+    }
+
+    fn parse_asc(&mut self, raw_high: u8, raw_low: u8, suited: bool) -> Result<()> {
+        let high = Rank::from_ascii(raw_high)?;
+        let low = Rank::from_ascii(raw_low)?;
+        for rank in Rank::range(low, high.predecessor().unwrap()) {
+            self.add_unpaired(high, rank, suited)?;
+        }
+        Ok(())
+    }
+
+    fn parse_hand(&mut self, hand: &[u8]) -> Result<()> {
+        let hand = Hand::from_bytes(hand)?;
+        self.try_add_hand(hand)
+    }
+
+    fn add_pairs(&mut self, rank: Rank) -> Result<()> {
+        for suite_a in Suite::SUITES {
+            for suite_b in Suite::SUITES {
+                if suite_b.to_usize() > suite_a.to_usize() {
+                    let hand = Hand::of_two_cards(Card::of(rank, suite_a), Card::of(rank, suite_b));
+                    self.try_add_hand(hand)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn add_unpaired(&mut self, high: Rank, low: Rank, suited: bool) -> Result<()> {
+        if low >= high {
+            return Err(format!("{low} >= {high}").into());
+        }
+        for suite_low in Suite::SUITES {
+            for suite_high in Suite::SUITES {
+                if (suite_low == suite_high) != suited {
+                    continue;
+                }
+                let hand = Hand::of_two_cards(Card::of(high, suite_high), Card::of(low, suite_low));
+                self.try_add_hand(hand)?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn has_hand(&self, hand: Hand) -> bool {
         let index = Self::hand_to_index(hand);
         self.has_index(index)
@@ -353,6 +443,16 @@ impl FullRangeTable {
     pub fn add_hand_unchecked(&mut self, hand: Hand) {
         let index = Self::hand_to_index(hand);
         self.add_index_unchecked(index);
+    }
+
+    pub fn try_add_hand(&mut self, hand: Hand) -> Result<()> {
+        let index = Self::hand_to_index(hand);
+        if self.has_index(index) {
+            Err(format!("range table add failed: duplicate hand {}", hand).into())
+        } else {
+            self.add_index_unchecked(index);
+            Ok(())
+        }
     }
 
     fn hand_to_index(hand: Hand) -> usize {
@@ -384,14 +484,8 @@ impl FullRangeTable {
         self.table.iter().map(|u| u.count_ones()).sum()
     }
 
-    pub fn random_hand(&self, rng: &mut impl Rng) -> Option<Hand> {
-        let nth_range = 0..self.count();
-        if nth_range.is_empty() {
-            return None;
-        }
-        let nth = rng.gen_range(nth_range);
-        // TODO: Fast version
-        self.into_iter().nth(usize::try_from(nth).unwrap())
+    pub fn is_empty(&self) -> bool {
+        self == &Self::EMPTY
     }
 }
 

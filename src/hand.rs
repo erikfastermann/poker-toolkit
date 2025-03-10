@@ -41,7 +41,11 @@ impl Hand {
     }
 
     pub fn from_str(s: &str) -> Result<Self> {
-        Self::from_cards(Cards::from_str(s)?)
+        Self::from_bytes(s.as_bytes())
+    }
+
+    pub fn from_bytes(s: &[u8]) -> Result<Self> {
+        Self::from_cards(Cards::from_bytes(s)?)
     }
 
     pub fn high(self) -> Card {
@@ -57,10 +61,22 @@ impl Hand {
     }
 
     pub fn cmp_by_rank(self, other: Self) -> Ordering {
-        self.high().rank().cmp(&other.high().rank())
+        self.high()
+            .rank()
+            .cmp(&other.high().rank())
             .then_with(|| self.low().rank().cmp(&other.low().rank()))
-            .then_with(|| self.high().suite().to_usize().cmp(&other.high().suite().to_usize()))
-            .then_with(|| self.low().suite().to_usize().cmp(&other.low().suite().to_usize()))
+            .then_with(|| {
+                self.high()
+                    .suite()
+                    .to_usize()
+                    .cmp(&other.high().suite().to_usize())
+            })
+            .then_with(|| {
+                self.low()
+                    .suite()
+                    .to_usize()
+                    .cmp(&other.low().suite().to_usize())
+            })
     }
 
     pub fn to_card_array(self) -> [Card; 2] {

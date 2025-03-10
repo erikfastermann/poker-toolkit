@@ -264,22 +264,34 @@ impl Cards {
         | Cards::MASK_SINGLE;
 
     pub fn from_str(s: &str) -> Result<Self> {
-        if s == "none" {
+        Self::from_bytes(s.as_bytes())
+    }
+
+    pub fn from_bytes(s: &[u8]) -> Result<Self> {
+        if s == b"none" {
             return Ok(Cards::EMPTY);
         }
 
         if s.len() % 2 != 0 {
-            return Err(format!("invalid cards '{s}': bad length").into());
+            return Err(
+                format!("invalid cards '{}': bad length", String::from_utf8_lossy(s)).into(),
+            );
         }
         if !s.is_ascii() {
-            return Err(format!("invalid cards '{s}': not ascii").into());
+            return Err(
+                format!("invalid cards '{}': not ascii", String::from_utf8_lossy(s)).into(),
+            );
         }
         let mut cards = Self::EMPTY;
         for i in (0..s.len()).step_by(2) {
             let card_raw = &s[i..i + 2];
-            let card = Card::from_str(card_raw)?;
+            let card = Card::from_bytes(card_raw)?;
             if !cards.try_add(card) {
-                return Err(format!("invalid cards '{s}': duplicate card {card}").into());
+                return Err(format!(
+                    "invalid cards '{}': duplicate card {card}",
+                    String::from_utf8_lossy(s),
+                )
+                .into());
             };
         }
         Ok(cards)
