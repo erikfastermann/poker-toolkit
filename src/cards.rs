@@ -19,8 +19,12 @@ impl Score {
         debug_assert_eq!(hand_ranking & 0xfff, hand_ranking);
         let mut n = u32::from(hand_ranking) << 20;
         assert!(cards.count() <= 5);
-        for (i, rank) in cards.by_rank().iter().enumerate() {
-            n |= rank.to_u32() << (16 - i * 4);
+        let is_wheel = matches!(ranking, HandRanking::Straight | HandRanking::StraightFlush)
+            && cards.by_rank() == CardsByRank::WHEEL;
+        if !is_wheel {
+            for (i, rank) in cards.by_rank().iter().enumerate() {
+                n |= rank.to_u32() << (16 - i * 4);
+            }
         }
         Score(n)
     }
@@ -162,21 +166,7 @@ impl Top5 {
     }
 
     pub fn compare(self, villain: Top5) -> Ordering {
-        match self.ranking.cmp(&villain.ranking) {
-            Ordering::Equal => {
-                let hero_rankings = self.cards.by_rank();
-                let villain_rankings = villain.cards.by_rank();
-                let iter = hero_rankings.iter().zip(villain_rankings.iter());
-                for (hero_rank, villain_rank) in iter {
-                    match hero_rank.cmp(&villain_rank) {
-                        Ordering::Equal => continue,
-                        o => return o,
-                    }
-                }
-                Ordering::Equal
-            }
-            o => o,
-        }
+        self.to_score().cmp(&villain.to_score())
     }
 
     pub fn to_score(self) -> Score {
@@ -514,7 +504,10 @@ impl Cards {
     pub fn top5(self) -> Top5 {
         let counts = self.counts();
         if let Some(cards) = self.straight_flush() {
-            if cards.first().unwrap().rank() == Rank::Ace {
+            let by_rank = cards.by_rank();
+            if by_rank.highest_rank().is_some_and(|rank| rank == Rank::Ace)
+                && by_rank != CardsByRank::WHEEL
+            {
                 Top5::of(HandRanking::RoyalFlush, cards)
             } else {
                 Top5::of(HandRanking::StraightFlush, cards)
