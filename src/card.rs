@@ -57,6 +57,10 @@ impl Card {
         }
     }
 
+    pub fn from_str(s: &str) -> Result<Self> {
+        Self::from_bytes(s.as_bytes())
+    }
+
     pub fn from_bytes(s: &[u8]) -> Result<Self> {
         match s {
             [rank_raw, suite_raw] => {

@@ -2,7 +2,9 @@
 
 mod card;
 mod cards;
+mod deck;
 mod equity;
+mod game;
 mod hand;
 mod init;
 mod range;
