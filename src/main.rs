@@ -7,6 +7,7 @@ mod equity;
 mod game;
 mod hand;
 mod init;
+mod parser;
 mod range;
 mod rank;
 mod result;
