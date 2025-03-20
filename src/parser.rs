@@ -118,7 +118,6 @@ impl GGHandHistoryParser {
         let hero_hand = self.parse_hole_cards(&mut lines, &names)?;
         game.set_hand(hero_index, hero_hand)?;
         self.parse_and_apply_actions(&mut lines, &mut game, &names)?;
-        self.parse_shows(&mut lines, &mut game, &names)?;
         let winnings = self.parse_showdown(&mut lines, &mut game, &names)?;
         self.parse_summary(&mut lines, &mut game, &winnings)?;
         Ok(game)
@@ -260,16 +259,29 @@ impl GGHandHistoryParser {
 
     fn parse_and_apply_actions<'a>(
         &self,
-        lines: &mut impl Iterator<Item = &'a str>,
+        lines: &mut Peekable<impl Iterator<Item = &'a str>>,
         game: &mut Game,
         names: &[impl AsRef<str>],
     ) -> Result<()> {
+        let mut parsed_shows = false;
         loop {
+            if lines.peek().is_some_and(|line| {
+                self.re_shows.is_match(line) || self.re_uncalled_bet.is_match(line)
+            }) {
+                self.parse_shows(lines, game, names)?;
+                parsed_shows = true;
+            }
             match game.state() {
                 State::StartOfHand | State::End => unreachable!(),
                 State::Player(_) => self.parse_and_apply_player_action(lines, game, names)?,
                 State::WaitingForStreet(_) => self.parse_and_apply_street_action(lines, game)?,
-                State::WonWithoutShowdown(_) | State::Showdown => break Ok(()),
+                State::WonWithoutShowdown(_) | State::Showdown => {
+                    if !parsed_shows {
+                        break self.parse_shows(lines, game, names);
+                    } else {
+                        break Ok(());
+                    }
+                }
             }
         }
     }
@@ -388,12 +400,14 @@ impl GGHandHistoryParser {
 
     fn parse_shows<'a>(
         &self,
-        lines: &mut impl Iterator<Item = &'a str>,
+        lines: &mut Peekable<impl Iterator<Item = &'a str>>,
         game: &mut Game,
         names: &[impl AsRef<str>],
     ) -> Result<()> {
-        let players_in_hand = game.players_in_hand().count();
-        if players_in_hand == 1 {
+        if lines
+            .peek()
+            .is_some_and(|line| self.re_uncalled_bet.is_match(line))
+        {
             let uncalled = option_to_result(lines.next(), "uncalled bet line is missing")?;
             let Some(uncalled) = self.re_uncalled_bet.captures(uncalled) else {
                 return Err("uncalled bet: invalid format".into());
@@ -406,7 +420,11 @@ impl GGHandHistoryParser {
             let Some(player) = player else {
                 return Err(format!("uncalled bet: unknown name {name}").into());
             };
-            return game.uncalled_bet(player, amount); // TODO
+            game.uncalled_bet(player, amount)?; // TODO
+        }
+        let players_in_hand = game.players_in_hand().count();
+        if players_in_hand == 1 {
+            return Ok(());
         }
         for _ in 0..players_in_hand {
             let shows = option_to_result(lines.next(), "shows line is missing")?;

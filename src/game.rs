@@ -627,7 +627,6 @@ impl Game {
             return Err("player is not allowed to raise".into());
         };
         if amount < min_amount {
-            dbg!((amount, min_amount));
             return Err("raise is smaller than the minimum".into());
         }
         self.update_stack(amount)?;
@@ -648,9 +647,6 @@ impl Game {
     pub fn uncalled_bet(&mut self, player: usize, amount: u32) -> Result<()> {
         // TODO: Workaround
         self.check_pre_update()?;
-        if self.state() != State::WonWithoutShowdown(player) {
-            return Err("uncalled bet: not allowed".into());
-        }
         // TODO: Check amount valid
         let Some(new_stack) = self.current_stacks[player].checked_add(amount) else {
             return Err("uncalled bet: invalid amount".into());
