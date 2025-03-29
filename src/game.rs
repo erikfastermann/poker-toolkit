@@ -1,5 +1,5 @@
-use std::cmp::{max, min};
-use std::usize;
+use std::cmp::min;
+use std::{array, usize};
 
 use rand::Rng;
 
@@ -9,16 +9,20 @@ use crate::deck::Deck;
 use crate::hand::Hand;
 use crate::result::Result;
 
+// TODO: Bet/raise steps.
+
 #[derive(Debug, Clone, Copy)]
 enum Action {
+    Post(u8, u32),
     Fold(u8),
     Check(u8),
     Call(u8, u32),
-    /// Bet is also used for raise, all-in and blinds.
     Bet(u8, u32),
+    Raise { player: u8, amount: u32, to: u32 },
     Flop([Card; 3]),
     Turn(Card),
     River(Card),
+    Shows(u8, Hand),
 }
 
 impl Action {
@@ -29,31 +33,33 @@ impl Action {
     fn is_player(self) -> bool {
         matches!(
             self,
-            Action::Fold(_) | Action::Check(_) | Action::Call(_, _) | Action::Bet(_, _)
+            Action::Post(_, _)
+                | Action::Fold(_)
+                | Action::Check(_)
+                | Action::Call(_, _)
+                | Action::Bet(_, _)
+                | Action::Raise { .. }
         )
-    }
-
-    fn to_bet(self) -> Option<u32> {
-        match self {
-            Action::Bet(_, amount) => Some(amount),
-            _ => None,
-        }
     }
 
     fn to_amount(self) -> Option<u32> {
         match self {
+            Action::Post(_, amount) => Some(amount),
             Action::Call(_, amount) => Some(amount),
             Action::Bet(_, amount) => Some(amount),
+            Action::Raise { amount, .. } => Some(amount),
             _ => None,
         }
     }
 
     fn player(self) -> Option<usize> {
         let player = match self {
+            Action::Post(player, _) => player,
             Action::Fold(player) => player,
             Action::Check(player) => player,
             Action::Call(player, _) => player,
             Action::Bet(player, _) => player,
+            Action::Raise { player, .. } => player,
             _ => return None,
         };
         Some(usize::from(player))
@@ -63,13 +69,24 @@ impl Action {
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Street {
-    PreFlop,
-    Flop,
-    Turn,
-    River,
+    PreFlop = 0,
+    Flop = 1,
+    Turn = 2,
+    River = 3,
 }
 
 impl Street {
+    pub const COUNT: usize = 4;
+
+    fn previous(self) -> Option<Self> {
+        match self {
+            Street::PreFlop => None,
+            Street::Flop => Some(Street::PreFlop),
+            Street::Turn => Some(Street::Flop),
+            Street::River => Some(Street::Turn),
+        }
+    }
+
     fn next(self) -> Option<Self> {
         match self {
             Street::PreFlop => Some(Street::Flop),
@@ -77,6 +94,10 @@ impl Street {
             Street::Turn => Some(Street::River),
             Street::River => None,
         }
+    }
+
+    fn to_usize(self) -> usize {
+        self as usize
     }
 }
 
@@ -150,10 +171,10 @@ impl<const SIZE: usize> Bitset<SIZE> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
-    StartOfHand,
+    Post,
     Player(usize),
-    WaitingForStreet(Street),
-    WonWithoutShowdown(usize),
+    Street(Street),
+    ShowOrMuck(usize),
     Showdown,
     End,
 }
@@ -163,7 +184,8 @@ pub struct Game {
     actions: Vec<Action>,
     board: Board,
     starting_stacks: Vec<u32>,
-    current_stacks: Vec<u32>,
+    stacks_in_street: [Vec<u32>; Street::COUNT],
+    showdown_stacks: Vec<u32>,
     button_index: u8,
     current_street_index: usize,
     current_action_index: usize,
@@ -173,7 +195,7 @@ pub struct Game {
     small_blind: u32,
     big_blind: u32,
     hands: Vec<Hand>,
-    hand_known: Bitset<2>,
+    hand_shown: Bitset<2>,
 }
 
 impl Game {
@@ -212,7 +234,8 @@ impl Game {
         Ok(Self {
             actions: Vec::new(),
             starting_stacks: stacks.clone(),
-            current_stacks: stacks,
+            stacks_in_street: array::from_fn(|_| stacks.clone()),
+            showdown_stacks: vec![0; player_count],
             board: Board::EMPTY,
             button_index: u8::try_from(button_index).unwrap(),
             current_street_index: 0,
@@ -222,7 +245,7 @@ impl Game {
             small_blind,
             big_blind,
             hands: vec![Hand::MIN; player_count],
-            hand_known: Bitset::EMPTY,
+            hand_shown: Bitset::EMPTY,
         })
     }
 
@@ -244,6 +267,21 @@ impl Game {
         self.board
     }
 
+    fn current_street_stacks(&self) -> &[u32] {
+        &self.stacks_in_street[self.board.street.to_usize()]
+    }
+
+    fn current_street_stacks_mut(&mut self) -> &mut [u32] {
+        &mut self.stacks_in_street[self.board.street.to_usize()]
+    }
+
+    fn previous_street_stacks(&self) -> &[u32] {
+        match self.board.street.previous() {
+            Some(street) => &self.stacks_in_street[street.to_usize()],
+            None => &self.starting_stacks,
+        }
+    }
+
     pub fn total_pot(&self) -> u32 {
         self.invested_per_player().sum::<u32>()
     }
@@ -256,16 +294,12 @@ impl Game {
 
     fn invested(&self, player: usize) -> u32 {
         assert!(player < self.player_count());
-        self.starting_stacks[player] - self.current_stacks[player]
+        self.starting_stacks[player] - self.current_street_stacks()[player]
     }
 
     pub fn invested_in_street(&self, player: usize) -> u32 {
-        self.actions_in_street()
-            .iter()
-            .copied()
-            .filter(|action| action.player().is_some_and(|p| p == player))
-            .filter_map(|action| action.to_amount())
-            .sum::<u32>()
+        assert!(player < self.player_count());
+        self.previous_street_stacks()[player] - self.current_street_stacks()[player]
     }
 
     pub fn has_cards(&self, index: usize) -> bool {
@@ -277,9 +311,9 @@ impl Game {
         self.players_in_hand.iter(self.player_count())
     }
 
-    pub fn can_act(&self, index: usize) -> bool {
+    fn in_hand_not_all_in(&self, index: usize) -> bool {
         assert!(index < self.player_count());
-        self.players_in_hand.has(index) && self.current_stacks[index] > 0
+        self.players_in_hand.has(index) && !self.is_all_in(index)
     }
 
     fn actions_in_street(&self) -> &[Action] {
@@ -300,9 +334,12 @@ impl Game {
             return false;
         };
         if self.board.street == Street::PreFlop && player == self.big_blind_index() {
-            self.actions_in_street()[2..]
-                .iter()
-                .all(|action| matches!(action, Action::Fold(_) | Action::Call(_, _)))
+            self.actions_in_street().iter().all(|action| {
+                matches!(
+                    action,
+                    Action::Fold(_) | Action::Call(_, _) | Action::Post(_, _)
+                )
+            })
         } else {
             self.actions_in_street()
                 .iter()
@@ -312,13 +349,15 @@ impl Game {
 
     pub fn can_call(&self) -> Option<u32> {
         let player = self.current_player()?;
-        let can_call = self
-            .actions_in_street()
-            .iter()
-            .any(|action| matches!(action, Action::Bet(_, _)));
+        let can_call = self.actions_in_street().iter().any(|action| {
+            matches!(
+                action,
+                Action::Post(_, _) | Action::Bet(_, _) | Action::Raise { .. }
+            )
+        });
         if can_call {
             let amount = self.call_amount(player);
-            Some(min(self.current_stacks[player], amount))
+            Some(min(self.current_street_stacks()[player], amount))
         } else {
             None
         }
@@ -335,56 +374,69 @@ impl Game {
             .iter()
             .all(|action| matches!(action, Action::Check(_) | Action::Fold(_)));
         if can_bet {
-            Some(min(self.current_stacks[player], self.big_blind))
+            Some(min(self.current_street_stacks()[player], self.big_blind))
         } else {
             None
         }
     }
 
-    pub fn can_raise(&self) -> Option<u32> {
+    pub fn can_raise(&self) -> Option<(u32, u32)> {
+        // TODO: Raise amount after less than min-raise.
+
         let player = self.current_player()?;
         let actions = self.actions_in_street();
-        let can_raise = actions
+        let (amount, to) = actions
             .iter()
-            .any(|action| matches!(action, Action::Bet(_, _)));
-        if can_raise {
-            let mut last_raise = 0;
-            let mut diff = 0;
-            for action in actions.iter().copied() {
-                let Some(bet) = action.to_bet() else {
-                    continue;
-                };
-                assert!(bet > last_raise);
-                let new_diff = bet - last_raise;
-                if new_diff >= diff {
-                    diff = new_diff;
-                }
-                last_raise = bet;
-            }
-            if self.board.street == Street::PreFlop {
-                diff = max(self.big_blind, diff);
-            }
-
-            let raise_amount = (last_raise + diff)
-                .checked_sub(self.invested_in_street(player))
-                .unwrap();
-            let call_amount = self.call_amount(player);
-            if call_amount >= self.current_stacks[player] {
-                None
-            } else {
-                Some(min(self.current_stacks[player], raise_amount))
-            }
-        } else {
+            .copied()
+            .rev()
+            .filter_map(|action| match action {
+                Action::Post(_, amount) => Some((amount, amount)),
+                Action::Bet(_, amount) => Some((amount, amount)),
+                Action::Raise { amount, to, .. } => Some((amount, to)),
+                _ => None,
+            })
+            .next()?;
+        let call_amount = self.call_amount(player);
+        let current_stack = self.current_street_stacks()[player];
+        if call_amount >= current_stack {
             None
+        } else if amount >= current_stack {
+            Some((current_stack, to + current_stack))
+        } else {
+            Some((amount, to + amount))
         }
+    }
+
+    fn is_all_in(&self, player: usize) -> bool {
+        self.current_street_stacks()[player] == 0
+    }
+
+    fn all_in_count(&self) -> usize {
+        self.players_in_hand()
+            .filter(|player| self.is_all_in(*player))
+            .count()
+    }
+
+    fn action_ended(&self) -> bool {
+        self.players_in_hand.count() == 1
+            || (self.current_player().is_none() && self.board.street == Street::River)
+            || (self.current_player().is_none() && self.all_in_terminated_hand())
+    }
+
+    fn all_in_terminated_hand(&self) -> bool {
+        self.players_in_hand.count() - 1 <= u32::try_from(self.all_in_count()).unwrap()
     }
 
     pub fn current_stack(&self) -> Option<u32> {
-        self.current_player().map(|i| self.current_stacks[i])
+        self.current_player()
+            .map(|player| self.current_street_stacks()[player])
     }
 
     pub fn current_stacks(&self) -> &[u32] {
-        &self.current_stacks
+        match self.state() {
+            State::End => &self.showdown_stacks,
+            _ => self.current_street_stacks(),
+        }
     }
 
     pub fn button_index(&self) -> usize {
@@ -392,39 +444,37 @@ impl Game {
     }
 
     pub fn player_count(&self) -> usize {
-        self.current_stacks.len()
+        self.starting_stacks.len()
     }
 
     fn player_count_u8(&self) -> u8 {
-        u8::try_from(self.current_stacks.len()).unwrap()
+        u8::try_from(self.starting_stacks.len()).unwrap()
+    }
+
+    fn show_or_muck(&self) -> Option<usize> {
+        let not_allowed = !self.action_ended()
+            || self.players_in_hand.count() == 1
+            || self.hand_shown.count() == self.players_in_hand.count();
+        if not_allowed {
+            None
+        } else {
+            Some(usize::MAX) // TODO
+        }
     }
 
     pub fn state(&self) -> State {
         if self.at_start() {
-            State::StartOfHand
+            State::Post
         } else if let Some(player) = self.current_player() {
             State::Player(player)
+        } else if let Some(player) = self.show_or_muck() {
+            State::ShowOrMuck(player)
         } else if let Some(street) = self.can_next_street() {
-            State::WaitingForStreet(street)
+            State::Street(street)
+        } else if self.showdown_stacks.iter().copied().any(|stack| stack != 0) {
+            State::End
         } else {
-            let is_end = self
-                .starting_stacks
-                .iter()
-                .zip(&self.current_stacks)
-                .any(|(start, current)| *current > *start);
-            if is_end {
-                // TODO: Not correct
-                State::End
-            } else if self.players_in_hand.count() == 1 {
-                let winner = self
-                    .players_in_hand
-                    .iter(self.player_count())
-                    .next()
-                    .unwrap();
-                State::WonWithoutShowdown(winner)
-            } else {
-                State::Showdown
-            }
+            State::Showdown
         }
     }
 
@@ -462,7 +512,7 @@ impl Game {
         }
 
         let actions = self.actions_in_street();
-        let acting_players = self.acting_players();
+        let players_in_hand_not_all_in = self.players_in_hand_not_all_in();
         let check_count = actions
             .iter()
             .copied()
@@ -472,24 +522,26 @@ impl Game {
             .iter()
             .copied()
             .all(|action| matches!(action, Action::Check(_) | Action::Fold(_)));
-        if all_check_or_fold && check_count == acting_players {
+        if all_check_or_fold && check_count == players_in_hand_not_all_in {
             self.current_player = u8::MAX;
             return Ok(());
         }
 
-        let acting_last_bettor_callers = {
+        let last_bettor_callers = {
             let mut s = Bitset::<2>::EMPTY;
             for action in actions.iter().copied() {
                 match action {
                     Action::Fold(_) | Action::Check(_) => (),
                     Action::Call(player, _) => {
-                        if self.can_act(usize::from(player)) {
+                        if self.in_hand_not_all_in(usize::from(player)) {
                             s.set(usize::from(player))
                         }
                     }
-                    Action::Bet(player, _) => {
+                    Action::Post(player, _)
+                    | Action::Bet(player, _)
+                    | Action::Raise { player, .. } => {
                         s = Bitset::EMPTY;
-                        if self.can_act(usize::from(player)) {
+                        if self.in_hand_not_all_in(usize::from(player)) {
                             s.set(usize::from(player));
                         }
                     }
@@ -498,7 +550,7 @@ impl Game {
             }
             s
         };
-        if usize::try_from(acting_last_bettor_callers.count()).unwrap() == acting_players {
+        if usize::try_from(last_bettor_callers.count()).unwrap() == players_in_hand_not_all_in {
             if self.board.street == Street::PreFlop
                 && self.current_player().unwrap() == self.small_blind_index()
             {
@@ -511,10 +563,10 @@ impl Game {
             return Ok(());
         }
 
-        self.next_acting_player()
+        self.next_player_in_hand_not_all_in()
     }
 
-    fn next_acting_player(&mut self) -> Result<()> {
+    fn next_player_in_hand_not_all_in(&mut self) -> Result<()> {
         self.current_player_result()?;
         let current_player_start = self.current_player;
         loop {
@@ -523,28 +575,16 @@ impl Game {
                 self.current_player = u8::MAX;
                 return Ok(());
             }
-            if self.can_act(usize::from(self.current_player)) {
+            if self.in_hand_not_all_in(usize::from(self.current_player)) {
                 return Ok(());
             }
         }
     }
 
-    fn acting_players(&self) -> usize {
+    fn players_in_hand_not_all_in(&self) -> usize {
         (0..self.player_count())
-            .filter(|player| self.can_act(*player))
+            .filter(|player| self.in_hand_not_all_in(*player))
             .count()
-    }
-
-    fn action_bet_max(&mut self, amount: u32) -> Result<()> {
-        let player = self.current_player_result()?;
-        self.action_bet(min(self.current_stacks[player], amount))
-    }
-
-    fn action_bet(&mut self, amount: u32) -> Result<()> {
-        self.check_pre_update()?;
-        self.update_stack(amount)?;
-        self.add_action(Action::Bet(self.current_player, amount));
-        self.next_player()
     }
 
     fn add_action(&mut self, action: Action) {
@@ -555,11 +595,19 @@ impl Game {
 
     fn update_stack(&mut self, amount: u32) -> Result<()> {
         let player = self.current_player_result()?;
-        if amount > self.current_stacks[player] {
+        if amount > self.current_street_stacks()[player] {
             return Err("player cannot afford sizing".into());
         }
-        self.current_stacks[player] -= amount;
+        self.current_street_stacks_mut()[player] -= amount;
         Ok(())
+    }
+
+    fn action_post(&mut self, amount: u32) -> Result<()> {
+        let player = self.current_player_result()?;
+        let amount = min(self.current_street_stacks()[player], amount);
+        self.update_stack(amount)?;
+        self.add_action(Action::Post(self.current_player, amount));
+        self.next_player()
     }
 
     pub fn post_small_and_big_blind(&mut self) -> Result<()> {
@@ -571,8 +619,8 @@ impl Game {
         if !self.is_heads_up() {
             self.current_player = (self.current_player + 1) % self.player_count_u8();
         }
-        self.action_bet_max(self.small_blind)?;
-        self.action_bet_max(self.big_blind)?;
+        self.action_post(self.small_blind)?;
+        self.action_post(self.big_blind)?;
         Ok(())
     }
 
@@ -620,27 +668,28 @@ impl Game {
         self.next_player()
     }
 
-    pub fn raise(&mut self, amount: u32) -> Result<()> {
-        self.check_pre_update()?;
-        self.current_player_result()?;
-        let Some(min_amount) = self.can_raise() else {
-            return Err("player is not allowed to raise".into());
-        };
-        if amount < min_amount {
-            return Err("raise is smaller than the minimum".into());
-        }
-        self.update_stack(amount)?;
-        self.add_action(Action::Bet(self.current_player, amount));
-        self.next_player()
-    }
-
-    pub fn all_in(&mut self) -> Result<()> {
+    pub fn raise(&mut self, to: u32) -> Result<()> {
         self.check_pre_update()?;
         let player = self.current_player_result()?;
-        assert!(self.can_bet().or_else(|| self.can_raise()).is_some());
-        let amount = self.current_stacks[player];
-        self.update_stack(amount)?;
-        self.add_action(Action::Bet(self.current_player, amount));
+        let Some((min_amount, min_to)) = self.can_raise() else {
+            return Err("player is not allowed to raise".into());
+        };
+        if to < min_to {
+            return Err("raise is smaller than the minimum".into());
+        }
+
+        let amount = min_amount + to - min_to;
+        let old_stack = self.previous_street_stacks()[player];
+        if to > old_stack {
+            return Err("player cannot afford raise".into());
+        }
+        self.current_street_stacks_mut()[player] = old_stack - to;
+
+        self.add_action(Action::Raise {
+            player: self.current_player,
+            amount,
+            to,
+        });
         self.next_player()
     }
 
@@ -648,16 +697,17 @@ impl Game {
         // TODO: Workaround
         self.check_pre_update()?;
         // TODO: Check amount valid
-        let Some(new_stack) = self.current_stacks[player].checked_add(amount) else {
+        let Some(new_stack) = self.current_street_stacks()[player].checked_add(amount) else {
             return Err("uncalled bet: invalid amount".into());
         };
-        self.current_stacks[player] = new_stack;
+        self.current_street_stacks_mut()[player] = new_stack;
         Ok(())
     }
 
     fn can_next_street(&self) -> Option<Street> {
+        // TODO: Check if shows / mucks.
         let allowed = self.current_player().is_none()
-            && (!self.actions_in_street().is_empty() || self.acting_players() == 0)
+            && (!self.actions_in_street().is_empty() || self.players_in_hand_not_all_in() <= 1)
             && self.players_in_hand.count() > 1
             && self.board.street != Street::River;
         if allowed {
@@ -677,8 +727,7 @@ impl Game {
 
     fn check_cards(&mut self) -> Result<()> {
         let mut known_cards = Cards::EMPTY;
-        for index in self.hand_known.iter(self.player_count()) {
-            let hand = self.hands[index];
+        for hand in self.hands.iter().copied().filter(|hand| *hand != Hand::MIN) {
             if known_cards.has(hand.high()) {
                 return Err(format!("duplicate card {} in hand", hand.high()).into());
             }
@@ -699,8 +748,20 @@ impl Game {
 
     fn next_street_final(&mut self) -> Result<()> {
         self.check_cards()?;
-        self.current_player = self.button_index;
-        self.next_acting_player()?;
+
+        let (previous, next) = self
+            .stacks_in_street
+            .split_at_mut(self.board.street.to_usize());
+        next.first_mut()
+            .unwrap()
+            .copy_from_slice(previous.last().unwrap().as_slice());
+
+        if self.all_in_terminated_hand() {
+            self.current_player = u8::MAX;
+        } else {
+            self.current_player = self.button_index;
+            self.next_player_in_hand_not_all_in()?;
+        }
         self.current_street_index = self.actions.len();
         Ok(())
     }
@@ -754,17 +815,21 @@ impl Game {
 
     pub fn showdown(&mut self, total_rake: u32) -> Result<()> {
         self.check_pre_update()?;
-        match self.state() {
-            State::WonWithoutShowdown(player) => {
-                let pot = self.total_pot();
-                let Some(pot) = pot.checked_sub(total_rake) else {
-                    return Err("showdown: rake too high".into());
-                };
-                self.current_stacks[player] += pot;
-                Ok(())
-            }
-            State::Showdown => self.showdown_hands(total_rake),
-            _ => Err("showdown not possible in this state".into()),
+        if self.state() != State::Showdown {
+            return Err("not in showdown state".into());
+        }
+        self.showdown_stacks
+            .copy_from_slice(&self.stacks_in_street[self.board.street.to_usize()]);
+        if self.players_in_hand.count() == 1 {
+            let player = self.players_in_hand().next().unwrap();
+            let pot = self.total_pot();
+            let Some(pot) = pot.checked_sub(total_rake) else {
+                return Err("showdown: rake too high".into());
+            };
+            self.showdown_stacks[player] += pot;
+            Ok(())
+        } else {
+            self.showdown_hands(total_rake)
         }
     }
 
@@ -798,7 +863,7 @@ impl Game {
             .sum::<u32>()
             .checked_sub(total_rake)
             .unwrap(); // TODO
-        self.current_stacks[winner_index] += pot;
+        self.showdown_stacks[winner_index] += pot;
         Ok(())
     }
 
@@ -806,13 +871,29 @@ impl Game {
         if index >= self.player_count() {
             return Err(format!("unknown player index {index}").into());
         }
+        if self.hands[index] != Hand::MIN {
+            return Err(format!("hand for player index {index} already set").into());
+        }
         self.hands[index] = hand;
-        self.hand_known.set(index);
+        self.check_cards()
+    }
+
+    pub fn show_hand(&mut self, index: usize, hand: Hand) -> Result<()> {
+        // TODO: Without index.
+        self.check_pre_update()?;
+        if index >= self.player_count() {
+            return Err(format!("unknown player index {index}").into());
+        }
+        if !matches!(self.state(), State::ShowOrMuck(_)) {
+            return Err("cannot show hand in current state".into());
+        }
+        self.hands[index] = hand;
+        self.hand_shown.set(index);
         self.check_cards()
     }
 
     pub fn get_hand(&self, index: usize) -> Option<Hand> {
-        if index >= self.player_count() || !self.hand_known.has(index) {
+        if index >= self.player_count() || self.hands[index] == Hand::MIN {
             None
         } else {
             Some(self.hands[index])
