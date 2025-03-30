@@ -253,12 +253,12 @@ impl Game {
         self.player_count() == Self::MIN_PLAYERS
     }
 
-    fn small_blind_index(&self) -> usize {
+    pub fn small_blind_index(&self) -> usize {
         let button_offset = if self.is_heads_up() { 0 } else { 1 };
         usize::from((self.button_index + button_offset) % self.player_count_u8())
     }
 
-    fn big_blind_index(&self) -> usize {
+    pub fn big_blind_index(&self) -> usize {
         let button_offset = if self.is_heads_up() { 1 } else { 2 };
         usize::from((self.button_index + button_offset) % self.player_count_u8())
     }
@@ -357,7 +357,13 @@ impl Game {
         });
         if can_call {
             let amount = self.call_amount(player);
-            Some(min(self.current_street_stacks()[player], amount))
+            if amount == 0 {
+                assert_eq!(self.board.street, Street::PreFlop);
+                assert_eq!(usize::from(self.current_player), self.big_blind_index());
+                None
+            } else {
+                Some(min(self.current_street_stacks()[player], amount))
+            }
         } else {
             None
         }
@@ -704,7 +710,7 @@ impl Game {
         Ok(())
     }
 
-    fn can_next_street(&self) -> Option<Street> {
+    pub fn can_next_street(&self) -> Option<Street> {
         // TODO: Check if shows / mucks.
         let allowed = self.current_player().is_none()
             && (!self.actions_in_street().is_empty() || self.players_in_hand_not_all_in() <= 1)

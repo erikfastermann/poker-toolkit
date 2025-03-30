@@ -89,6 +89,7 @@ impl GGHandHistoryParser {
             if line.is_empty() {
                 let entry = &entries[last_empty_index..index];
                 if entry.trim().len() != 0 {
+                    println!("{entry}"); // TODO
                     let game = self.parse_str_single(entry)?;
                     games.push(game);
                 }
@@ -300,7 +301,7 @@ impl GGHandHistoryParser {
         game: &mut Game,
         names: &[impl AsRef<str>],
     ) -> Result<()> {
-        let action = option_to_result(lines.next(), "action line is missing")?;
+        let action = option_to_result(dbg!(lines.next()), "action line is missing")?;
         let Some(action) = self.re_action.captures(action) else {
             return Err("action: invalid format".into());
         };
@@ -325,11 +326,37 @@ impl GGHandHistoryParser {
         const BET_ALL_IN_INDEX: usize = 10;
         const RAISE_INDEX: usize = 11;
         const RAISE_ALL_IN_INDEX: usize = 14;
+
+        assert!(game.board().street() != Street::PreFlop || game.can_bet().is_none());
+        assert!(game.can_next_street().is_none());
+        assert_eq!(game.state(), State::Player(player_index));
+        assert!(game.has_cards(player_index));
         if action.get(FOLD_INDEX).is_some() {
+            let asserts = (game.can_check()
+                && game.board().street() == Street::PreFlop
+                && player_index == game.big_blind_index()
+                && game.can_bet().is_none()
+                && game.can_call().is_none())
+                || (game.can_check()
+                    && game.can_bet().is_some()
+                    && game.can_call().is_none()
+                    && game.can_raise().is_none())
+                || (!game.can_check() && game.can_bet().is_none() && game.can_call().is_some());
             game.fold()?;
+            assert!(asserts);
         } else if action.get(CHECK_INDEX).is_some() {
+            let asserts = game.can_check()
+                && ((player_index == game.big_blind_index()
+                    && game.can_bet().is_none()
+                    && game.can_call().is_none())
+                    || (game.can_bet().is_some()
+                        && game.can_call().is_none()
+                        && game.can_raise().is_none()));
             game.check()?;
+            assert!(asserts);
         } else if action.get(CALL_INDEX).is_some() {
+            let asserts =
+                game.can_call().is_some() && !game.can_check() && game.can_bet().is_none();
             let call_amount = Self::parse_price_as_cent(&action[CALL_INDEX + 1])?;
             if game
                 .can_call()
@@ -344,19 +371,35 @@ impl GGHandHistoryParser {
             if action.get(CALL_ALL_IN_INDEX).is_some() && game.current_stacks()[player_index] != 0 {
                 return Err("action: invalid call all-in".into());
             }
+            assert!(asserts);
         } else if action.get(BET_INDEX).is_some() {
+            let asserts = game.can_bet().is_some()
+                && game.can_check()
+                && game.can_call().is_none()
+                && game.can_raise().is_none();
             let bet_amount = Self::parse_price_as_cent(&action[BET_INDEX + 1])?;
             game.bet(bet_amount)?;
             if action.get(BET_ALL_IN_INDEX).is_some() && game.current_stacks()[player_index] != 0 {
                 return Err("action: invalid bet all-in".into());
             }
+            assert!(asserts);
         } else if action.get(RAISE_INDEX).is_some() {
+            let asserts = game.can_raise().is_some()
+                && ((game.board().street() == Street::PreFlop
+                    && player_index == game.big_blind_index()
+                    && game.can_bet().is_none()
+                    && game.can_call().is_none()
+                    && game.can_check())
+                    || (!game.can_check()
+                        && game.can_call().is_some()
+                        && game.can_bet().is_none()));
             let raise_to = Self::parse_price_as_cent(&action[RAISE_INDEX + 2])?;
             game.raise(raise_to)?;
             if action.get(RAISE_ALL_IN_INDEX).is_some() && game.current_stacks()[player_index] != 0
             {
                 return Err("action: invalid raise all-in".into());
             }
+            assert!(asserts);
         } else {
             unreachable!()
         }
