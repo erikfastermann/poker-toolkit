@@ -46,7 +46,7 @@ impl Deck {
     pub fn hand(&mut self, rng: &mut impl Rng) -> Option<Hand> {
         let a = self.draw(rng)?;
         let b = self.draw(rng)?;
-        Some(Hand::of_two_cards(a, b))
+        Hand::of_two_cards(a, b)
     }
 
     pub fn reset(&mut self) {

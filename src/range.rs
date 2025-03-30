@@ -150,7 +150,8 @@ impl PreFlopRangeTable {
                         let hand = Hand::of_two_cards(
                             Card::of(row_rank, suite),
                             Card::of(column_rank, suite),
-                        );
+                        )
+                        .unwrap();
                         f(hand);
                     }
                 } else {
@@ -159,13 +160,15 @@ impl PreFlopRangeTable {
                             let hand = Hand::of_two_cards(
                                 Card::of(row_rank, suite_a),
                                 Card::of(column_rank, suite_b),
-                            );
+                            )
+                            .unwrap();
                             f(hand);
                             if row_rank != column_rank {
                                 let hand = Hand::of_two_cards(
                                     Card::of(row_rank, suite_b),
                                     Card::of(column_rank, suite_a),
-                                );
+                                )
+                                .unwrap();
                                 f(hand);
                             }
                         }
@@ -236,7 +239,8 @@ impl PreFlopRangeTable {
                             continue;
                         }
                         let hand =
-                            Hand::of_two_cards(Card::of(high, suite_a), Card::of(low, suite_b));
+                            Hand::of_two_cards(Card::of(high, suite_a), Card::of(low, suite_b))
+                                .unwrap();
                         hands.insert(hand);
                     }
                 }
@@ -396,7 +400,8 @@ impl RangeTable {
         for suite_a in Suite::SUITES {
             for suite_b in Suite::SUITES {
                 if suite_b.to_usize() > suite_a.to_usize() {
-                    let hand = Hand::of_two_cards(Card::of(rank, suite_a), Card::of(rank, suite_b));
+                    let hand = Hand::of_two_cards(Card::of(rank, suite_a), Card::of(rank, suite_b))
+                        .unwrap();
                     self.try_add_hand(hand)?;
                 }
             }
@@ -413,7 +418,8 @@ impl RangeTable {
                 if (suite_low == suite_high) != suited {
                     continue;
                 }
-                let hand = Hand::of_two_cards(Card::of(high, suite_high), Card::of(low, suite_low));
+                let hand = Hand::of_two_cards(Card::of(high, suite_high), Card::of(low, suite_low))
+                    .unwrap();
                 self.try_add_hand(hand)?;
             }
         }
@@ -474,7 +480,7 @@ impl RangeTable {
         for a in Card::all_by_rank() {
             for b in Card::all_by_rank() {
                 if b.cmp_by_rank(a).is_gt() {
-                    f(Hand::of_two_cards(a, b));
+                    f(Hand::of_two_cards(a, b).unwrap());
                 }
             }
         }

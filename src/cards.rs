@@ -310,14 +310,11 @@ impl Cards {
 
     pub fn to_hand(self) -> Option<Hand> {
         let mut iter = self.iter();
-        let (a, b) = match (iter.next(), iter.next()) {
-            (Some(a), Some(b)) => (a, b),
-            _ => return None,
-        };
+        let (a, b) = (iter.next()?, iter.next()?);
         if iter.next().is_some() {
             None
         } else {
-            Some(Hand::of_two_cards(a, b))
+            Hand::of_two_cards(a, b)
         }
     }
 

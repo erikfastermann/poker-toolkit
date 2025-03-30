@@ -9,8 +9,6 @@ use crate::{
     result::Result,
 };
 
-// TODO: Check hands have two different cards.
-
 fn option_to_result<T>(v: Option<T>, message: &str) -> Result<T> {
     v.ok_or_else(|| message.into())
 }
@@ -246,7 +244,10 @@ impl GGHandHistoryParser {
                 };
                 let card_a = Card::from_str(card_a.as_str())?;
                 let card_b = Card::from_str(card_b.as_str())?;
-                hero_hand = Some(Hand::of_two_cards(card_a, card_b));
+                hero_hand = Hand::of_two_cards(card_a, card_b);
+                if hero_hand.is_none() {
+                    return Err("deal: hero hand invalid".into());
+                }
             }
         }
         if let Some(hero_hand) = hero_hand {
@@ -424,7 +425,10 @@ impl GGHandHistoryParser {
             let Some(player) = player else {
                 return Err(format!("shows: unknown name {name}").into());
             };
-            let hand = Hand::of_two_cards(Card::from_str(card_a)?, Card::from_str(card_b)?);
+            let Some(hand) = Hand::of_two_cards(Card::from_str(card_a)?, Card::from_str(card_b)?)
+            else {
+                return Err("shows: invalid hand".into());
+            };
             if name == Self::HERO {
                 let Some(expected_hand) = game.get_hand(player) else {
                     return Err("shows: hero hand not found".into());
@@ -559,7 +563,7 @@ mod tests {
         }
 
         // TODO
-        let history = fs::read_to_string(r"TODO").unwrap();
+        let history = fs::read_to_string(r"/home/erik/Downloads/gg_hands.txt").unwrap();
         let games = GGHandHistoryParser::new().parse_str(&history).unwrap();
         dbg!(games);
     }

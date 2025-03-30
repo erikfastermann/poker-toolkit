@@ -20,15 +20,15 @@ impl fmt::Debug for Hand {
 impl Hand {
     pub const MIN: Self = Self(Card::MIN, Card::MIN);
 
-    pub fn of_two_cards(a: Card, b: Card) -> Self {
+    pub fn of_two_cards(a: Card, b: Card) -> Option<Self> {
         match a.rank().cmp(&b.rank()) {
-            Ordering::Less => Self(b, a),
+            Ordering::Less => Some(Self(b, a)),
             Ordering::Equal => match a.suite().to_usize().cmp(&b.suite().to_usize()) {
-                Ordering::Less => Self(b, a),
-                Ordering::Equal => unreachable!(),
-                Ordering::Greater => Self(a, b),
+                Ordering::Less => Some(Self(b, a)),
+                Ordering::Equal => None,
+                Ordering::Greater => Some(Self(a, b)),
             },
-            Ordering::Greater => Self(a, b),
+            Ordering::Greater => Some(Self(a, b)),
         }
     }
 
