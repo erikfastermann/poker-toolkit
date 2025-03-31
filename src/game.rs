@@ -9,7 +9,9 @@ use crate::deck::Deck;
 use crate::hand::Hand;
 use crate::result::Result;
 
-// TODO: Bet/raise steps.
+// TODO:
+// - Bet/raise steps.
+// - Mucking
 
 #[derive(Debug, Clone, Copy)]
 enum Action {
@@ -392,29 +394,57 @@ impl Game {
     }
 
     pub fn can_raise(&self) -> Option<(u32, u32)> {
-        // TODO: Raise amount after less than min-raise.
-
         let player = self.current_player()?;
         let actions = self.actions_in_street();
-        let (amount, to) = actions
-            .iter()
-            .copied()
-            .rev()
-            .filter_map(|action| match action {
-                Action::Post(_, amount) => Some((amount, amount)),
+        let mut last_amount = 0;
+        let mut last_to = 0;
+        for action in actions.iter().copied() {
+            let amount_to = match action {
                 Action::Bet(_, amount) => Some((amount, amount)),
                 Action::Raise { amount, to, .. } => Some((amount, to)),
                 _ => None,
-            })
-            .next()?;
+            };
+            let Some((amount, to)) = amount_to else {
+                continue;
+            };
+            if amount > last_amount {
+                last_amount = amount;
+            }
+            last_to = to;
+        }
+
+        if last_amount == 0 {
+            match self.board.street {
+                Street::PreFlop => {
+                    last_amount = actions
+                        .iter()
+                        .copied()
+                        .filter_map(|action| match action {
+                            Action::Post(_, amount) => Some(amount),
+                            _ => None,
+                        })
+                        .max()
+                        .unwrap();
+                    last_to = last_amount;
+                }
+                _ => return None,
+            }
+        }
+        assert_ne!(last_to, 0);
+        if last_amount < self.big_blind {
+            last_amount = self.big_blind;
+        }
+
         let call_amount = self.call_amount(player);
+        let old_stack = self.previous_street_stacks()[player];
         let current_stack = self.current_street_stacks()[player];
+        let to = last_to + last_amount;
         if call_amount >= current_stack {
             None
-        } else if amount >= current_stack {
-            Some((current_stack, to + current_stack))
+        } else if to > old_stack {
+            Some((current_stack, old_stack))
         } else {
-            Some((amount, to + amount))
+            Some((last_amount, to))
         }
     }
 
