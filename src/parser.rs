@@ -301,7 +301,7 @@ impl GGHandHistoryParser {
         game: &mut Game,
         names: &[impl AsRef<str>],
     ) -> Result<()> {
-        let action = option_to_result(dbg!(lines.next()), "action line is missing")?;
+        let action = option_to_result(dbg!(lines.next()), "action line is missing")?; // TODO
         let Some(action) = self.re_action.captures(action) else {
             return Err("action: invalid format".into());
         };

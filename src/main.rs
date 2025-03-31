@@ -5,6 +5,7 @@ mod cards;
 mod deck;
 mod equity;
 mod game;
+mod gui;
 mod hand;
 mod init;
 mod parser;
@@ -15,6 +16,7 @@ mod suite;
 
 use crate::cards::Cards;
 use crate::equity::Equity;
+use crate::gui::gui;
 use crate::range::RangeTable;
 use crate::result::Result;
 
@@ -28,6 +30,12 @@ fn main() -> Result<()> {
         enumerate(&args[2..])
     } else if args.get(1).is_some_and(|cmd| cmd == "simulate") {
         simulate(&args[2..])
+    } else if args.get(1).is_some_and(|cmd| cmd == "gui") {
+        if args.len() != 2 {
+            return Err(INVALID_COMMAND_ERROR.into());
+        }
+        gui().map_err(|err| format!("{err}"))?;
+        Ok(())
     } else {
         Err(INVALID_COMMAND_ERROR.into())
     }

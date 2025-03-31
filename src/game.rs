@@ -898,8 +898,10 @@ impl Game {
         // - Exactly calculate pot split
         // - Manually apply won amounts
         // - Showdown order
+        // - Some players muck
 
-        let mut scores = [Score::ZERO; Self::MAX_PLAYERS];
+        let mut scores_array = [Score::ZERO; Self::MAX_PLAYERS];
+        let scores = &mut scores_array[..self.player_count()];
         let board = Cards::from_slice(self.board.cards()).unwrap();
         for player in self.players_in_hand.iter(self.player_count()) {
             let Some(hand) = self.get_hand(player) else {

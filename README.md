@@ -2,6 +2,8 @@
 
 Calculate the equity, win- and tie-percentage of a given hand in Texas Hold'em.
 
+TODO: Add GUI usage.
+
 ## Usage
 
 ### Enumerate

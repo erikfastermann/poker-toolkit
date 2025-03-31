@@ -1,6 +1,9 @@
 use std::fmt;
 
-use rand::{distributions::{Distribution, Standard}, Rng};
+use rand::{
+    distributions::{Distribution, Standard},
+    Rng,
+};
 
 use crate::result::Result;
 
@@ -51,12 +54,7 @@ impl TryFrom<i8> for Suite {
 impl Suite {
     pub const COUNT: usize = 4;
 
-    pub const SUITES: [Suite; Self::COUNT] = [
-        Diamonds,
-        Spades,
-        Hearts,
-        Clubs,
-    ];
+    pub const SUITES: [Suite; Self::COUNT] = [Diamonds, Spades, Hearts, Clubs];
 
     pub fn from_ascii(ch: u8) -> Result<Self> {
         let suite = match ch {
@@ -89,5 +87,14 @@ impl Suite {
 
     pub fn to_index_u64(self) -> u64 {
         self.to_index() as u64
+    }
+
+    pub fn to_symbol_str(self) -> &'static str {
+        match self {
+            Diamonds => "♦",
+            Spades => "♠",
+            Hearts => "♥",
+            Clubs => "♣",
+        }
     }
 }
