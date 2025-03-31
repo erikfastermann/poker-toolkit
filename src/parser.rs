@@ -331,6 +331,7 @@ impl GGHandHistoryParser {
         assert!(game.can_next_street().is_none());
         assert_eq!(game.state(), State::Player(player_index));
         assert!(game.has_cards(player_index));
+        assert!(game.next_show_or_muck().is_none());
         if action.get(FOLD_INDEX).is_some() {
             let asserts = (game.can_check()
                 && game.board().street() == Street::PreFlop
@@ -412,6 +413,16 @@ impl GGHandHistoryParser {
         lines: &mut impl Iterator<Item = &'a str>,
         game: &mut Game,
     ) -> Result<()> {
+        assert!(
+            !game.can_check()
+                && game.can_call().is_none()
+                && game.can_bet().is_none()
+                && game.can_raise().is_none()
+                && game.can_next_street().is_some()
+                && game.current_player().is_none()
+                && game.next_show_or_muck().is_none()
+                && game.next_show_or_muck().is_none()
+        );
         let State::Street(street) = game.state() else {
             unreachable!()
         };
@@ -472,15 +483,10 @@ impl GGHandHistoryParser {
             else {
                 return Err("shows: invalid hand".into());
             };
-            if name == Self::HERO {
-                let Some(expected_hand) = game.get_hand(player) else {
-                    return Err("shows: hero hand not found".into());
-                };
-                if hand != expected_hand {
-                    return Err("shows: unexpected hero hand".into());
-                }
+            if game.state() != State::ShowOrMuck(player) {
+                return Err("shows: bad state".into());
             }
-            game.show_hand(player, hand)?;
+            game.show_hand(hand)?;
         }
         Ok(())
     }

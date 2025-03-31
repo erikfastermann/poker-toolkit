@@ -304,7 +304,7 @@ pub struct RangeTable {
     table: [u64; 21],
 }
 
-static mut HANDS: [Hand; RangeTable::COUNT] = [Hand::MIN; RangeTable::COUNT];
+static mut HANDS: [Hand; RangeTable::COUNT] = [Hand::UNDEFINED; RangeTable::COUNT];
 
 impl RangeTable {
     pub const EMPTY: Self = Self { table: [0; 21] };

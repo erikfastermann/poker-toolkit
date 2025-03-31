@@ -194,6 +194,7 @@ pub struct Game {
     players_in_hand: Bitset<2>,
     small_blind: u32,
     big_blind: u32,
+    /// Using Hand::UNDEFINED if a hand is not known.
     hands: Vec<Hand>,
     hand_shown: Bitset<2>,
 }
@@ -244,23 +245,27 @@ impl Game {
             players_in_hand: Bitset::ones(player_count),
             small_blind,
             big_blind,
-            hands: vec![Hand::MIN; player_count],
+            hands: vec![Hand::UNDEFINED; player_count],
             hand_shown: Bitset::EMPTY,
         })
     }
 
-    pub fn is_heads_up(&self) -> bool {
+    pub fn is_heads_up_table(&self) -> bool {
         self.player_count() == Self::MIN_PLAYERS
     }
 
     pub fn small_blind_index(&self) -> usize {
-        let button_offset = if self.is_heads_up() { 0 } else { 1 };
-        usize::from((self.button_index + button_offset) % self.player_count_u8())
+        let button_offset = if self.is_heads_up_table() { 0 } else { 1 };
+        (self.button_index() + button_offset) % self.player_count()
     }
 
     pub fn big_blind_index(&self) -> usize {
-        let button_offset = if self.is_heads_up() { 1 } else { 2 };
-        usize::from((self.button_index + button_offset) % self.player_count_u8())
+        let button_offset = if self.is_heads_up_table() { 1 } else { 2 };
+        (self.button_index() + button_offset) % self.player_count()
+    }
+
+    fn first_to_act_post_flop(&self) -> usize {
+        (self.button_index() + 1) % self.player_count()
     }
 
     pub fn board(&self) -> Board {
@@ -457,15 +462,26 @@ impl Game {
         u8::try_from(self.starting_stacks.len()).unwrap()
     }
 
-    fn show_or_muck(&self) -> Option<usize> {
+    pub fn next_show_or_muck(&self) -> Option<usize> {
         let not_allowed = !self.action_ended()
             || self.players_in_hand.count() == 1
             || self.hand_shown.count() == self.players_in_hand.count();
         if not_allowed {
-            None
-        } else {
-            Some(usize::MAX) // TODO
+            return None;
         }
+        let start_index = self
+            .actions_in_street()
+            .iter()
+            .rev()
+            .copied()
+            .find(|action| matches!(action, Action::Bet(_, _) | Action::Raise { .. }))
+            .and_then(|action| action.player())
+            .unwrap_or_else(|| self.first_to_act_post_flop());
+        (start_index..self.player_count())
+            .chain(0..start_index)
+            .filter(|player| self.has_cards(*player))
+            .filter(|player| !self.hand_shown.has(*player))
+            .next()
     }
 
     pub fn state(&self) -> State {
@@ -473,7 +489,7 @@ impl Game {
             State::Post
         } else if let Some(player) = self.current_player() {
             State::Player(player)
-        } else if let Some(player) = self.show_or_muck() {
+        } else if let Some(player) = self.next_show_or_muck() {
             State::ShowOrMuck(player)
         } else if let Some(street) = self.can_next_street() {
             State::Street(street)
@@ -622,7 +638,7 @@ impl Game {
             return Err("can only post small and big blind before other actions".into());
         }
         self.current_player = self.button_index;
-        if !self.is_heads_up() {
+        if !self.is_heads_up_table() {
             self.current_player = (self.current_player + 1) % self.player_count_u8();
         }
         self.action_post(self.small_blind)?;
@@ -711,8 +727,8 @@ impl Game {
     }
 
     pub fn can_next_street(&self) -> Option<Street> {
-        // TODO: Check if shows / mucks.
-        let allowed = self.current_player().is_none()
+        let allowed = self.next_show_or_muck().is_none()
+            && self.current_player().is_none()
             && (!self.actions_in_street().is_empty() || self.players_in_hand_not_all_in() <= 1)
             && self.players_in_hand.count() > 1
             && self.board.street != Street::River;
@@ -733,7 +749,12 @@ impl Game {
 
     fn check_cards(&mut self) -> Result<()> {
         let mut known_cards = Cards::EMPTY;
-        for hand in self.hands.iter().copied().filter(|hand| *hand != Hand::MIN) {
+        for hand in self
+            .hands
+            .iter()
+            .copied()
+            .filter(|hand| *hand != Hand::UNDEFINED)
+        {
             if known_cards.has(hand.high()) {
                 return Err(format!("duplicate card {} in hand", hand.high()).into());
             }
@@ -877,29 +898,28 @@ impl Game {
         if index >= self.player_count() {
             return Err(format!("unknown player index {index}").into());
         }
-        if self.hands[index] != Hand::MIN {
+        if self.hands[index] != Hand::UNDEFINED {
             return Err(format!("hand for player index {index} already set").into());
         }
         self.hands[index] = hand;
         self.check_cards()
     }
 
-    pub fn show_hand(&mut self, index: usize, hand: Hand) -> Result<()> {
-        // TODO: Without index.
+    pub fn show_hand(&mut self, hand: Hand) -> Result<()> {
         self.check_pre_update()?;
-        if index >= self.player_count() {
-            return Err(format!("unknown player index {index}").into());
-        }
-        if !matches!(self.state(), State::ShowOrMuck(_)) {
+        let State::ShowOrMuck(player) = self.state() else {
             return Err("cannot show hand in current state".into());
+        };
+        if self.hands[player] != Hand::UNDEFINED && hand != self.hands[player] {
+            return Err("cannot show different hand than already set".into());
         }
-        self.hands[index] = hand;
-        self.hand_shown.set(index);
+        self.hands[player] = hand;
+        self.hand_shown.set(player);
         self.check_cards()
     }
 
     pub fn get_hand(&self, index: usize) -> Option<Hand> {
-        if index >= self.player_count() || self.hands[index] == Hand::MIN {
+        if index >= self.player_count() || self.hands[index] == Hand::UNDEFINED {
             None
         } else {
             Some(self.hands[index])

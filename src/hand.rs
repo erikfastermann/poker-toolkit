@@ -18,7 +18,7 @@ impl fmt::Debug for Hand {
 }
 
 impl Hand {
-    pub const MIN: Self = Self(Card::MIN, Card::MIN);
+    pub const UNDEFINED: Self = Self(Card::MIN, Card::MIN);
 
     pub fn of_two_cards(a: Card, b: Card) -> Option<Self> {
         match a.rank().cmp(&b.rank()) {
