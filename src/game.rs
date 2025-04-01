@@ -1,5 +1,5 @@
 use std::cmp::min;
-use std::{array, usize};
+use std::{array, fmt, usize};
 
 use rand::Rng;
 
@@ -100,6 +100,12 @@ impl Street {
 
     fn to_usize(self) -> usize {
         self as usize
+    }
+}
+
+impl fmt::Display for Street {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self, f)
     }
 }
 
@@ -205,6 +211,8 @@ pub struct Game {
 impl Game {
     pub const MIN_PLAYERS: usize = 2;
     pub const MAX_PLAYERS: usize = 9;
+
+    pub const TOTAL_CARDS: usize = 5;
 
     pub const POSITION_NAMES: [&[(&str, &str)]; Self::MAX_PLAYERS - Self::MIN_PLAYERS + 1] = [
         &[("BTN", "Small Blind / Dealer"), ("BB", "Big Blind")],
@@ -862,7 +870,7 @@ impl Game {
         }
     }
 
-    fn check_cards(&mut self) -> Result<()> {
+    fn check_cards(&self) -> Result<Cards> {
         let mut known_cards = Cards::EMPTY;
         for hand in self
             .hands
@@ -885,7 +893,7 @@ impl Game {
             }
             known_cards.add(card);
         }
-        Ok(())
+        Ok(known_cards)
     }
 
     fn next_street_final(&mut self) -> Result<()> {
@@ -1019,7 +1027,8 @@ impl Game {
             return Err(format!("hand for player index {index} already set").into());
         }
         self.hands[index] = hand;
-        self.check_cards()
+        self.check_cards()?;
+        Ok(())
     }
 
     pub fn show_hand(&mut self, hand: Hand) -> Result<()> {
@@ -1032,7 +1041,8 @@ impl Game {
         }
         self.hands[player] = hand;
         self.hand_shown.set(player);
-        self.check_cards()
+        self.check_cards()?;
+        Ok(())
     }
 
     pub fn get_hand(&self, index: usize) -> Option<Hand> {
@@ -1041,5 +1051,9 @@ impl Game {
         } else {
             Some(self.hands[index])
         }
+    }
+
+    pub fn known_cards(&self) -> Cards {
+        self.check_cards().unwrap()
     }
 }

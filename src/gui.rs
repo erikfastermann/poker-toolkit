@@ -4,7 +4,13 @@ use eframe::egui::{
 };
 
 use crate::{
-    card::Card, cards::Cards, game::Game, hand::Hand, rank::Rank, result::Result, suite::Suite,
+    card::Card,
+    cards::Cards,
+    game::{Game, Street},
+    hand::Hand,
+    rank::Rank,
+    result::Result,
+    suite::Suite,
 };
 
 // TODO:
@@ -28,7 +34,6 @@ pub fn gui() -> eframe::Result {
 
 struct App {
     game: GameView,
-    card_selector: CardSelector,
 }
 
 impl App {
@@ -51,31 +56,27 @@ impl App {
         game.post_small_and_big_blind()?;
         Ok(Self {
             game: GameView::new(game),
-            card_selector: CardSelector::new(3, 3),
         })
     }
 }
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let apply = Window::new("Select cards")
-            .resizable([true, true])
-            .default_size([400.0, 200.0])
-            .show(ctx, |ui| self.card_selector.view(ui));
-        if apply.is_some_and(|apply| apply.inner == Some(true)) {
-            println!("{:?}", self.card_selector.in_order);
-        }
         egui::CentralPanel::default().show(ctx, |ui| self.game.view(ui));
     }
 }
 
 struct GameView {
     game: Game,
+    card_selector: CardSelector,
 }
 
 impl GameView {
     fn new(game: Game) -> Self {
-        Self { game }
+        Self {
+            game,
+            card_selector: CardSelector::new(),
+        }
     }
 
     fn view(&mut self, ui: &mut Ui) -> Result<()> {
@@ -101,7 +102,9 @@ impl GameView {
                 .layout(Layout::right_to_left(Align::Center)),
             |ui| self.action_bar(ui),
         )
-        .inner
+        .inner?;
+
+        self.view_card_selector(ui)
     }
 
     fn draw_table(&self, painter: &Painter, bounding_rect: Rect) {
@@ -124,12 +127,15 @@ impl GameView {
         );
         painter.add(table_stroke);
 
+        let mut card_size = Vec2::ZERO;
         for (player, center) in self
             .table_player_points(bounding_rect.center(), radius)
             .enumerate()
         {
-            self.draw_player(painter, player, center, player_size);
+            card_size = self.draw_player(painter, player, center, player_size);
         }
+
+        self.draw_board(painter, bounding_rect.center(), card_size);
     }
 
     fn action_bar(&mut self, ui: &mut Ui) -> Result<()> {
@@ -203,7 +209,36 @@ impl GameView {
         Ok(())
     }
 
-    fn draw_player(&self, painter: &Painter, player: usize, center: Pos2, size: Vec2) {
+    fn view_card_selector(&mut self, ui: &mut Ui) -> Result<()> {
+        let Some(street) = self.game.can_next_street() else {
+            return Ok(());
+        };
+        match street {
+            Street::PreFlop => unreachable!(),
+            Street::Flop => self.card_selector.set_min_max(3, 3),
+            Street::Turn => self.card_selector.set_min_max(1, 1),
+            Street::River => self.card_selector.set_min_max(1, 1),
+        }
+        self.card_selector.set_disabled(self.game.known_cards());
+        let apply = Window::new(format!("Select {street}"))
+            .resizable([true, true])
+            .default_size([400.0, 200.0])
+            .show(ui.ctx(), |ui| self.card_selector.view(ui));
+        if apply.is_some_and(|apply| apply.inner == Some(true)) {
+            match street {
+                Street::PreFlop => unreachable!(),
+                Street::Flop => self
+                    .game
+                    .flop(self.card_selector.in_order.as_slice().try_into().unwrap())?,
+                Street::Turn => self.game.turn(self.card_selector.in_order[0])?,
+                Street::River => self.game.river(self.card_selector.in_order[0])?,
+            }
+            self.card_selector.reset();
+        }
+        Ok(())
+    }
+
+    fn draw_player(&self, painter: &Painter, player: usize, center: Pos2, size: Vec2) -> Vec2 {
         let bounding_rect = Rect::from_center_size(center, size);
         let name_stack_rect = bounding_rect.with_min_y(bounding_rect.bottom() - size.y / 3.2);
         let name_stack_shape = Shape::rect_filled(
@@ -230,9 +265,6 @@ impl GameView {
             Color32::WHITE,
         );
 
-        if !self.game.has_cards(player) {
-            return;
-        }
         let hand_bounding_rect = bounding_rect.with_max_y(name_stack_rect.top());
         let card_width = hand_bounding_rect.height() / 1.3;
         let card_a_rect = Rect::from_center_size(
@@ -249,6 +281,10 @@ impl GameView {
             x: card_width,
             y: 0.0,
         });
+
+        if !self.game.has_cards(player) {
+            return card_a_rect.size();
+        }
         match self.visible_hand(player) {
             Some(hand) => {
                 draw_card(painter, card_a_rect, hand.high());
@@ -268,6 +304,23 @@ impl GameView {
                 StrokeKind::Middle,
             );
             painter.add(name_stack_stroke);
+        }
+        card_a_rect.size()
+    }
+
+    fn draw_board(&self, painter: &Painter, center: Pos2, card_size: Vec2) {
+        let space = card_size.x / 10.0;
+        let board_rect = Rect::from_center_size(
+            center,
+            Vec2::new(
+                card_size.x * Game::TOTAL_CARDS as f32 + space * (Game::TOTAL_CARDS - 1) as f32,
+                card_size.y,
+            ),
+        );
+        for (i, card) in self.game.board().cards().iter().copied().enumerate() {
+            let left = board_rect.left() + i as f32 * (card_size.x + space);
+            let card_rect = board_rect.with_min_x(left).with_max_x(left + card_size.x);
+            draw_card(painter, card_rect, card);
         }
     }
 
@@ -344,21 +397,41 @@ fn suite_color(suite: Suite) -> Color32 {
 struct CardSelector {
     cards: Cards,
     in_order: Vec<Card>,
+    disabled: Cards,
     min: usize,
     max: usize,
 }
 
 impl CardSelector {
-    fn new(min: usize, max: usize) -> Self {
-        assert!(max <= Card::COUNT);
-        assert!(min <= max);
-        assert!(max > 0);
+    fn new() -> Self {
         Self {
             cards: Cards::EMPTY,
             in_order: Vec::new(),
-            min,
-            max,
+            disabled: Cards::EMPTY,
+            min: 1,
+            max: 1,
         }
+    }
+
+    fn reset(&mut self) {
+        self.cards = Cards::EMPTY;
+        self.in_order.truncate(0);
+    }
+
+    fn set_min_max(&mut self, min: usize, max: usize) {
+        assert!(max <= Card::COUNT);
+        assert!(min <= max);
+        assert!(max > 0);
+        self.min = min;
+        self.max = max;
+    }
+
+    fn set_disabled(&mut self, disabled: Cards) {
+        for card in (self.cards & disabled).iter() {
+            self.remove_card(card);
+        }
+        self.disabled = disabled;
+        assert_eq!(self.cards & self.disabled, Cards::EMPTY);
     }
 
     fn view(&mut self, ui: &mut Ui) -> bool {
@@ -412,14 +485,6 @@ impl CardSelector {
     }
 
     fn card(&mut self, ui: &mut Ui, card_rect: Rect, card: Card) {
-        let interact = ui.interact(card_rect, Id::new(card), Sense::click());
-        if interact.clicked() {
-            if self.cards.has(card) {
-                self.remove_card(card);
-            } else {
-                self.add_card(card);
-            }
-        }
         draw_card(ui.painter(), card_rect, card);
         if self.cards.has(card) {
             ui.painter().rect(
@@ -432,6 +497,21 @@ impl CardSelector {
                 ),
                 StrokeKind::Middle,
             );
+        }
+        if self.disabled.has(card) {
+            ui.painter().rect_filled(
+                card_rect,
+                card_rect.width() / 10.0,
+                Rgba::from_black_alpha(0.8),
+            );
+        }
+        let interact = ui.interact(card_rect, Id::new(card), Sense::click());
+        if interact.clicked() && !self.disabled.has(card) {
+            if self.cards.has(card) {
+                self.remove_card(card);
+            } else {
+                self.add_card(card);
+            }
         }
     }
 
