@@ -1,6 +1,9 @@
-use eframe::egui::{self, Align2, Color32, FontId, Painter, Pos2, Rect, Shape, Stroke, Ui, Vec2};
+use eframe::egui::{
+    self, Align, Align2, Button, Color32, FontFamily, FontId, Layout, Painter, Pos2, Rect, Rgba,
+    Shape, Stroke, StrokeKind, TextStyle, Ui, UiBuilder, Vec2,
+};
 
-use crate::{card::Card, game::Game, rank::Rank, result::Result, suite::Suite};
+use crate::{card::Card, game::Game, hand::Hand, rank::Rank, result::Result, suite::Suite};
 
 // TODO:
 // - Portable text drawing fonts
@@ -27,14 +30,24 @@ struct App {
 
 impl App {
     fn new() -> Result<Self> {
+        let mut game = Game::new(
+            vec![100, 100, 100, 100, 100, 100, 100, 100, 100],
+            None,
+            1,
+            5,
+            10,
+        )?;
+        game.set_hand(
+            1,
+            Hand::of_two_cards(
+                Card::of(Rank::Ace, Suite::Diamonds),
+                Card::of(Rank::King, Suite::Spades),
+            )
+            .unwrap(),
+        )?;
+        game.post_small_and_big_blind()?;
         Ok(Self {
-            game: GameView::new(Game::new(
-                vec![100, 100, 100, 100, 100, 100, 100, 100, 100],
-                None,
-                1,
-                5,
-                10,
-            )?),
+            game: GameView::new(game),
         })
     }
 }
@@ -55,41 +68,149 @@ impl GameView {
     }
 
     fn view(&mut self, ui: &mut Ui) -> Result<()> {
-        self.draw_table(ui.painter());
-        Ok(())
+        let table_height = ui.clip_rect().height() / 2.0;
+        let bounding_rect = Rect::from_center_size(
+            ui.clip_rect().center(),
+            Vec2 {
+                x: table_height * 4.0 / 3.0,
+                y: table_height,
+            },
+        );
+        assert!(((bounding_rect.width() / 4.0 * 3.0) - bounding_rect.height()).abs() <= 0.1);
+
+        let table_bounding_rect =
+            bounding_rect.with_max_y(bounding_rect.bottom() - bounding_rect.height() / 6.0);
+        self.draw_table(ui.painter(), table_bounding_rect);
+
+        let action_bar_bounding_rect =
+            bounding_rect.with_min_y(table_bounding_rect.bottom() + bounding_rect.height() / 100.0);
+        ui.allocate_new_ui(
+            UiBuilder::new()
+                .max_rect(action_bar_bounding_rect)
+                .layout(Layout::right_to_left(Align::Center)),
+            |ui| {
+                ui.set_clip_rect(action_bar_bounding_rect);
+                self.action_bar(ui)
+            },
+        )
+        .inner
     }
 
-    fn draw_table(&self, painter: &Painter) {
-        let center = Pos2 { x: 500.0, y: 500.0 };
-        let radius = Vec2 { x: 350.0, y: 200.0 };
-        let table_fill = Shape::ellipse_filled(center, radius, Color32::from_rgb(0, 35, 0));
+    fn draw_table(&self, painter: &Painter, bounding_rect: Rect) {
+        let player_size = Vec2 {
+            x: bounding_rect.width() / 5.0,
+            y: bounding_rect.height() / 4.5,
+        };
+        let radius = Vec2 {
+            x: (bounding_rect.width() - player_size.x) / 2.0,
+            y: (bounding_rect.height() - player_size.y) / 2.0,
+        };
+        let table_fill =
+            Shape::ellipse_filled(bounding_rect.center(), radius, Color32::from_rgb(0, 35, 0));
         painter.add(table_fill);
+
         let table_stroke = Shape::ellipse_stroke(
-            center,
-            radius,
+            bounding_rect.center(),
+            radius * 0.99,
             Stroke::new(radius.x / 50.0, Color32::DARK_GRAY),
         );
         painter.add(table_stroke);
-        let player_size = Vec2 {
-            x: radius.x / 2.5,
-            y: radius.x / 3.0,
-        };
-        for (player, center) in self.table_player_points(center, radius).enumerate() {
+
+        for (player, center) in self
+            .table_player_points(bounding_rect.center(), radius)
+            .enumerate()
+        {
             self.draw_player(painter, player, center, player_size);
         }
     }
 
+    fn action_bar(&mut self, ui: &mut Ui) -> Result<()> {
+        let bounding_rect = ui.clip_rect();
+        let action_bar = Shape::rect_filled(
+            bounding_rect,
+            bounding_rect.width() / 100.0,
+            Rgba::from_black_alpha(0.5),
+        );
+        ui.painter().add(action_bar);
+        if self.game.current_player().is_none() {
+            return Ok(());
+        }
+
+        // TODO: Buttons shift funny on really small window sizes.
+        let button_width = bounding_rect.width() / 6.0;
+        let button_height = bounding_rect.height() * 0.8;
+        let text_styles = ui.ctx().style().text_styles.clone();
+        ui.style_mut().text_styles.insert(
+            TextStyle::Button,
+            FontId::new(button_height / 4.0, FontFamily::Proportional),
+        );
+        if let Some((_, to)) = self.game.can_raise() {
+            if ui
+                .add_sized(
+                    [button_width, button_height],
+                    Button::new(format!("Raise\n{to}")),
+                )
+                .clicked()
+            {
+                self.game.raise(to)?;
+            }
+        }
+        if let Some(amount) = self.game.can_bet() {
+            if ui
+                .add_sized(
+                    [button_width, button_height],
+                    Button::new(format!("Bet\n{amount}")),
+                )
+                .clicked()
+            {
+                self.game.bet(amount)?;
+            }
+        }
+        if let Some(amount) = self.game.can_call() {
+            if ui
+                .add_sized(
+                    [button_width, button_height],
+                    Button::new(format!("Call\n{amount}")),
+                )
+                .clicked()
+            {
+                self.game.call()?;
+            }
+        }
+        if self.game.can_check() {
+            if ui
+                .add_sized([button_width, button_height], Button::new("Check"))
+                .clicked()
+            {
+                self.game.check()?;
+            }
+        }
+        if ui
+            .add_sized([button_width, button_height], Button::new("Fold"))
+            .clicked()
+        {
+            self.game.fold()?;
+        }
+        ui.style_mut().text_styles = text_styles;
+        Ok(())
+    }
+
     fn draw_player(&self, painter: &Painter, player: usize, center: Pos2, size: Vec2) {
         let bounding_rect = Rect::from_center_size(center, size);
-        let name_stack_rect = bounding_rect.with_min_y(bounding_rect.bottom() - size.y / 3.0);
-        let name_stack_shape = Shape::rect_filled(name_stack_rect, 5.0, Color32::BLACK);
+        let name_stack_rect = bounding_rect.with_min_y(bounding_rect.bottom() - size.y / 3.2);
+        let name_stack_shape = Shape::rect_filled(
+            name_stack_rect,
+            name_stack_rect.width() / 50.0,
+            Color32::BLACK,
+        );
         painter.add(name_stack_shape);
+
         let name_rect = name_stack_rect.with_max_y(name_stack_rect.center().y);
         painter.text(
             name_rect.center(),
             Align2::CENTER_CENTER,
             self.game.player_name(player),
-            FontId::new(name_rect.height() * 0.9, egui::FontFamily::Proportional),
+            FontId::new(name_rect.height() * 0.9, FontFamily::Proportional),
             Color32::WHITE,
         );
         let stack_rect = name_stack_rect.with_min_y(name_stack_rect.center().y);
@@ -97,14 +218,15 @@ impl GameView {
             stack_rect.center(),
             Align2::CENTER_CENTER,
             self.game.current_stacks()[player],
-            FontId::new(stack_rect.height() * 0.9, egui::FontFamily::Proportional),
+            FontId::new(stack_rect.height() * 0.9, FontFamily::Proportional),
             Color32::WHITE,
         );
 
+        if !self.game.has_cards(player) {
+            return;
+        }
         let hand_bounding_rect = bounding_rect.with_max_y(name_stack_rect.top());
         let card_width = hand_bounding_rect.height() / 1.3;
-        let card_a = Card::of(Rank::Ace, Suite::Diamonds);
-        let card_b = Card::of(Rank::Ace, Suite::Spades);
         let card_a_rect = Rect::from_center_size(
             Pos2 {
                 x: hand_bounding_rect.center().x - card_width / 2.0,
@@ -119,8 +241,26 @@ impl GameView {
             x: card_width,
             y: 0.0,
         });
-        draw_card(painter, card_a_rect, card_a);
-        draw_card(painter, card_b_rect, card_b);
+        match self.visible_hand(player) {
+            Some(hand) => {
+                draw_card(painter, card_a_rect, hand.high());
+                draw_card(painter, card_b_rect, hand.low());
+            }
+            None => {
+                draw_hidden_card(painter, card_a_rect);
+                draw_hidden_card(painter, card_b_rect);
+            }
+        }
+
+        if self.game.current_player() == Some(player) {
+            let name_stack_stroke = Shape::rect_stroke(
+                name_stack_rect,
+                name_stack_rect.width() / 50.0,
+                Stroke::new(name_stack_rect.width() / 50.0, Color32::DARK_RED),
+                StrokeKind::Middle,
+            );
+            painter.add(name_stack_stroke);
+        }
     }
 
     fn table_player_points(&self, center: Pos2, radius: Vec2) -> impl Iterator<Item = Pos2> {
@@ -137,13 +277,17 @@ impl GameView {
             Pos2 { x, y }
         })
     }
+
+    fn visible_hand(&self, player: usize) -> Option<Hand> {
+        self.game.get_hand(player)
+    }
 }
 
 fn draw_card(painter: &Painter, bounding_rect: Rect, card: Card) {
     let width = bounding_rect.width();
     let height = bounding_rect.height();
     assert!((width * 1.3 - height).abs() <= 0.1);
-    let card_shape = Shape::rect_filled(bounding_rect, 10.0, suite_color(card.suite()));
+    let card_shape = Shape::rect_filled(bounding_rect, width / 10.0, suite_color(card.suite()));
     painter.add(card_shape);
     let rank_pos = Pos2 {
         x: bounding_rect.center_bottom().x,
@@ -153,7 +297,7 @@ fn draw_card(painter: &Painter, bounding_rect: Rect, card: Card) {
         rank_pos,
         Align2::CENTER_BOTTOM,
         card.rank().to_string(),
-        FontId::new(width * 1.3, egui::FontFamily::Proportional),
+        FontId::new(width * 1.3, FontFamily::Proportional),
         Color32::WHITE,
     );
     let suite_pos = Pos2 {
@@ -164,9 +308,19 @@ fn draw_card(painter: &Painter, bounding_rect: Rect, card: Card) {
         suite_pos,
         Align2::CENTER_CENTER,
         card.suite().to_symbol_str(),
-        FontId::new(width / 4.0, egui::FontFamily::Proportional),
+        FontId::new(width / 4.0, FontFamily::Proportional),
         Color32::WHITE,
     );
+}
+
+fn draw_hidden_card(painter: &Painter, bounding_rect: Rect) {
+    assert!((bounding_rect.width() * 1.3 - bounding_rect.height()).abs() <= 0.1);
+    let card_shape = Shape::rect_filled(
+        bounding_rect,
+        bounding_rect.width() / 10.0,
+        Rgba::from_black_alpha(0.5),
+    );
+    painter.add(card_shape);
 }
 
 fn suite_color(suite: Suite) -> Color32 {

@@ -692,6 +692,7 @@ impl Game {
             {
                 self.current_player = self.big_blind_index() as u8;
                 let can_check = self.can_check();
+                // TODO: Fails if button raised.
                 assert!(can_check);
                 return Ok(());
             }
