@@ -110,7 +110,14 @@ impl GGHandHistoryParser {
         let (small_blind, big_blind) = self.parse_description(&mut lines)?;
         let button_index = self.parse_table_info(&mut lines)?;
         let (stacks, names, hero_index) = self.parse_stacks(&mut lines)?;
-        let mut game = Game::new(stacks.iter().copied(), button_index, small_blind, big_blind)?;
+        // TODO: Use names of Game.
+        let mut game = Game::new(
+            stacks,
+            Some(names.clone()),
+            button_index,
+            small_blind,
+            big_blind,
+        )?;
         self.validate_posts(&mut lines, button_index, &names, small_blind, big_blind)?;
         game.post_small_and_big_blind()?;
         let hero_hand = self.parse_hole_cards(&mut lines, &names)?;

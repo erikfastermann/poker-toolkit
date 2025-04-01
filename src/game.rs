@@ -185,6 +185,7 @@ pub enum State {
 pub struct Game {
     actions: Vec<Action>,
     board: Board,
+    names: Vec<String>,
     starting_stacks: Vec<u32>,
     stacks_in_street: [Vec<u32>; Street::COUNT],
     showdown_stacks: Vec<u32>,
@@ -205,13 +206,73 @@ impl Game {
     pub const MIN_PLAYERS: usize = 2;
     pub const MAX_PLAYERS: usize = 9;
 
+    pub const POSITION_NAMES: [&[(&str, &str)]; Self::MAX_PLAYERS - Self::MIN_PLAYERS + 1] = [
+        &[("BTN", "Small Blind / Dealer"), ("BB", "Big Blind")],
+        &[
+            ("BTN", "Button"),
+            ("SB", "Small Blind"),
+            ("BB", "Big Blind"),
+        ],
+        &[
+            ("BTN", "Button"),
+            ("SB", "Small Blind"),
+            ("BB", "Big Blind"),
+            ("UTG", "Under the Gun"),
+        ],
+        &[
+            ("BTN", "Button"),
+            ("SB", "Small Blind"),
+            ("BB", "Big Blind"),
+            ("UTG", "Under the Gun"),
+            ("CO", "Cutoff"),
+        ],
+        &[
+            ("BTN", "Button"),
+            ("SB", "Small Blind"),
+            ("BB", "Big Blind"),
+            ("UTG", "Under the Gun"),
+            ("HJ", "Hijack"),
+            ("CO", "Cutoff"),
+        ],
+        &[
+            ("BTN", "Button"),
+            ("SB", "Small Blind"),
+            ("BB", "Big Blind"),
+            ("UTG", "Under the Gun"),
+            ("LJ", "Lowjack"),
+            ("HJ", "Hijack"),
+            ("CO", "Cutoff"),
+        ],
+        &[
+            ("BTN", "Button"),
+            ("SB", "Small Blind"),
+            ("BB", "Big Blind"),
+            ("UTG", "Under the Gun"),
+            ("UTG+1", "Under the Gun +1"),
+            ("LJ", "Lowjack"),
+            ("HJ", "Hijack"),
+            ("CO", "Cutoff"),
+        ],
+        &[
+            ("BTN", "Button"),
+            ("SB", "Small Blind"),
+            ("BB", "Big Blind"),
+            ("UTG", "Under the Gun"),
+            ("UTG+1", "Under the Gun +1"),
+            ("UTG+2", "Under the Gun +2"),
+            ("LJ", "Lowjack"),
+            ("HJ", "Hijack"),
+            ("CO", "Cutoff"),
+        ],
+    ];
+
     pub fn new(
-        starting_stacks: impl Iterator<Item = u32>,
+        stacks: Vec<u32>,
+        names: Option<Vec<String>>,
         button_index: usize,
         small_blind: u32,
         big_blind: u32,
     ) -> Result<Self> {
-        let stacks: Vec<_> = starting_stacks.collect();
         let player_count = stacks.len();
         if player_count < Self::MIN_PLAYERS || player_count > Self::MAX_PLAYERS {
             return Err(format!(
@@ -234,8 +295,22 @@ impl Game {
         if total_stacks.is_none() {
             return Err("total stacks overflows".into());
         }
+        let names = names.unwrap_or_else(|| {
+            let names = Self::POSITION_NAMES[player_count - Self::MIN_PLAYERS];
+            (0..player_count)
+                .map(|player| {
+                    let index = (player_count - button_index + player) % player_count;
+                    names[index].0.to_string()
+                })
+                .collect()
+        });
+        if names.len() != stacks.len() {
+            return Err("names and stacks have different lengths".into());
+        }
+
         Ok(Self {
             actions: Vec::new(),
+            names,
             starting_stacks: stacks.clone(),
             stacks_in_street: array::from_fn(|_| stacks.clone()),
             showdown_stacks: vec![0; player_count],
@@ -250,6 +325,15 @@ impl Game {
             hands: vec![Hand::UNDEFINED; player_count],
             hand_shown: Bitset::EMPTY,
         })
+    }
+
+    pub fn player_names(&self) -> &[String] {
+        &self.names
+    }
+
+    pub fn player_name(&self, player: usize) -> &str {
+        assert!(player < self.player_count());
+        &self.names[player]
     }
 
     pub fn is_heads_up_table(&self) -> bool {
