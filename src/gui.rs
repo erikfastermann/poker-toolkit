@@ -15,6 +15,7 @@ use crate::{
 
 // TODO:
 // - Portable text drawing fonts
+// - Max text sizes
 
 pub fn gui() -> eframe::Result {
     env_logger::init();
@@ -39,7 +40,10 @@ struct App {
 impl App {
     fn new() -> Result<Self> {
         let mut game = Game::new(
-            vec![100, 100, 100, 100, 100, 100, 100, 100, 100],
+            vec![
+                1_000_000, 1_000_000, 1_000_000, 1_000_000, 1_000_000, 1_000_000, 1_000_000,
+                1_000_000, 1_000_000,
+            ],
             None,
             1,
             5,
@@ -96,6 +100,8 @@ impl GameView {
 
         let action_bar_bounding_rect =
             bounding_rect.with_min_y(table_bounding_rect.bottom() + bounding_rect.height() / 100.0);
+        let action_bar_bounding_rect = action_bar_bounding_rect
+            .with_max_y(bounding_rect.bottom() - action_bar_bounding_rect.height() * 0.3);
         ui.allocate_new_ui(
             UiBuilder::new()
                 .max_rect(action_bar_bounding_rect)
@@ -109,8 +115,8 @@ impl GameView {
 
     fn draw_table(&self, painter: &Painter, bounding_rect: Rect) {
         let player_size = Vec2 {
-            x: bounding_rect.width() / 5.0,
-            y: bounding_rect.height() / 4.5,
+            x: bounding_rect.width() / 6.0,
+            y: bounding_rect.height() / 5.5,
         };
         let radius = Vec2 {
             x: (bounding_rect.width() - player_size.x) / 2.0,
@@ -133,6 +139,7 @@ impl GameView {
             .enumerate()
         {
             card_size = self.draw_player(painter, player, center, player_size);
+            self.draw_invested(player, painter, bounding_rect, center);
         }
 
         self.draw_board(painter, bounding_rect.center(), card_size);
@@ -156,7 +163,7 @@ impl GameView {
         let text_styles = ui.ctx().style().text_styles.clone();
         ui.style_mut().text_styles.insert(
             TextStyle::Button,
-            FontId::new(button_height / 4.0, FontFamily::Proportional),
+            FontId::new(button_height / 3.0, FontFamily::Proportional),
         );
         if let Some((_, to)) = self.game.can_raise() {
             if ui
@@ -306,6 +313,35 @@ impl GameView {
             painter.add(name_stack_stroke);
         }
         card_a_rect.size()
+    }
+
+    fn draw_invested(
+        &self,
+        player: usize,
+        painter: &Painter,
+        bounding_rect: Rect,
+        player_center: Pos2,
+    ) {
+        let invested = self.game.invested_in_street(player);
+        if invested == 0 {
+            return;
+        }
+        let invested_point = player_center + (bounding_rect.center() - player_center) * 0.4;
+        let text_size = bounding_rect.height() / 30.0;
+        let space = Vec2::new(text_size / 4.0, text_size / 8.0);
+        let galley = painter.layout_no_wrap(
+            invested.to_string(),
+            FontId::new(text_size, FontFamily::Monospace),
+            Color32::WHITE,
+        );
+        let background_rect =
+            Rect::from_center_size(invested_point - space, galley.rect.size() + 2.0 * space);
+        painter.rect_filled(
+            background_rect,
+            text_size / 10.0,
+            Rgba::from_black_alpha(0.5),
+        );
+        painter.galley(background_rect.left_top() + space, galley, Color32::WHITE);
     }
 
     fn draw_board(&self, painter: &Painter, center: Pos2, card_size: Vec2) {
