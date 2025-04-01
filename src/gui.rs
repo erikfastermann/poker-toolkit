@@ -1,9 +1,11 @@
 use eframe::egui::{
-    self, Align, Align2, Button, Color32, FontFamily, FontId, Layout, Painter, Pos2, Rect, Rgba,
-    Shape, Stroke, StrokeKind, TextStyle, Ui, UiBuilder, Vec2,
+    self, Align, Align2, Button, Color32, FontFamily, FontId, Id, Layout, Painter, Pos2, Rect,
+    Rgba, Sense, Shape, Stroke, StrokeKind, TextStyle, Ui, UiBuilder, Vec2, Window,
 };
 
-use crate::{card::Card, game::Game, hand::Hand, rank::Rank, result::Result, suite::Suite};
+use crate::{
+    card::Card, cards::Cards, game::Game, hand::Hand, rank::Rank, result::Result, suite::Suite,
+};
 
 // TODO:
 // - Portable text drawing fonts
@@ -26,6 +28,7 @@ pub fn gui() -> eframe::Result {
 
 struct App {
     game: GameView,
+    card_selector: CardSelector,
 }
 
 impl App {
@@ -48,12 +51,20 @@ impl App {
         game.post_small_and_big_blind()?;
         Ok(Self {
             game: GameView::new(game),
+            card_selector: CardSelector::new(3, 3),
         })
     }
 }
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let apply = Window::new("Select cards")
+            .resizable([true, true])
+            .default_size([400.0, 200.0])
+            .show(ctx, |ui| self.card_selector.view(ui));
+        if apply.is_some_and(|apply| apply.inner == Some(true)) {
+            println!("{:?}", self.card_selector.in_order);
+        }
         egui::CentralPanel::default().show(ctx, |ui| self.game.view(ui));
     }
 }
@@ -88,10 +99,7 @@ impl GameView {
             UiBuilder::new()
                 .max_rect(action_bar_bounding_rect)
                 .layout(Layout::right_to_left(Align::Center)),
-            |ui| {
-                ui.set_clip_rect(action_bar_bounding_rect);
-                self.action_bar(ui)
-            },
+            |ui| self.action_bar(ui),
         )
         .inner
     }
@@ -125,7 +133,7 @@ impl GameView {
     }
 
     fn action_bar(&mut self, ui: &mut Ui) -> Result<()> {
-        let bounding_rect = ui.clip_rect();
+        let bounding_rect = ui.max_rect();
         let action_bar = Shape::rect_filled(
             bounding_rect,
             bounding_rect.width() / 100.0,
@@ -285,6 +293,7 @@ impl GameView {
 
 fn draw_card(painter: &Painter, bounding_rect: Rect, card: Card) {
     let width = bounding_rect.width();
+    let painter = painter.with_clip_rect(bounding_rect);
     let height = bounding_rect.height();
     assert!((width * 1.3 - height).abs() <= 0.1);
     let card_shape = Shape::rect_filled(bounding_rect, width / 10.0, suite_color(card.suite()));
@@ -297,7 +306,7 @@ fn draw_card(painter: &Painter, bounding_rect: Rect, card: Card) {
         rank_pos,
         Align2::CENTER_BOTTOM,
         card.rank().to_string(),
-        FontId::new(width * 1.3, FontFamily::Proportional),
+        FontId::new(width * 1.2, FontFamily::Monospace),
         Color32::WHITE,
     );
     let suite_pos = Pos2 {
@@ -329,5 +338,123 @@ fn suite_color(suite: Suite) -> Color32 {
         Suite::Spades => Color32::from_rgb(35, 35, 35),
         Suite::Hearts => Color32::RED,
         Suite::Clubs => Color32::DARK_GREEN,
+    }
+}
+
+struct CardSelector {
+    cards: Cards,
+    in_order: Vec<Card>,
+    min: usize,
+    max: usize,
+}
+
+impl CardSelector {
+    fn new(min: usize, max: usize) -> Self {
+        assert!(max <= Card::COUNT);
+        assert!(min <= max);
+        assert!(max > 0);
+        Self {
+            cards: Cards::EMPTY,
+            in_order: Vec::new(),
+            min,
+            max,
+        }
+    }
+
+    fn view(&mut self, ui: &mut Ui) -> bool {
+        // TODO: This inside a Window has some weird resize behavior.
+
+        let bounding_rect = ui.max_rect();
+        let candidate_height = bounding_rect.width() / 2.0;
+        let (inner_width, inner_height) = if candidate_height <= bounding_rect.height() {
+            (bounding_rect.width(), candidate_height)
+        } else {
+            (bounding_rect.height() * 2.0, bounding_rect.height())
+        };
+        let bounding_rect = Rect::from_two_pos(
+            bounding_rect.left_top(),
+            Pos2::new(
+                bounding_rect.left() + inner_width,
+                bounding_rect.top() + inner_height,
+            ),
+        );
+        assert!((bounding_rect.width() - bounding_rect.height() * 2.0).abs() <= 0.1);
+        ui.allocate_rect(bounding_rect, Sense::click());
+        let space = bounding_rect.width() / (Rank::COUNT * 3 + 1) as f32;
+        let width = space * 2.0;
+
+        let size = Vec2::new(width, width * 1.3);
+        let space = width / 2.0;
+        let start_x_offset = bounding_rect.left() + space + size.x / 2.0;
+        let mut y_offset = bounding_rect.top() + space + size.y / 2.0;
+        for suite in Suite::SUITES {
+            let mut x_offset = start_x_offset;
+            for rank in Rank::RANKS.into_iter().rev() {
+                let card = Card::of(rank, suite);
+                let card_rect = Rect::from_center_size(Pos2::new(x_offset, y_offset), size);
+                self.card(ui, card_rect, card);
+                x_offset += space + size.x;
+            }
+            y_offset += space + size.y;
+        }
+
+        ui.allocate_new_ui(
+            UiBuilder::new()
+                .max_rect(
+                    bounding_rect
+                        .with_min_y(y_offset)
+                        .with_min_x(bounding_rect.left() + space),
+                )
+                .layout(Layout::left_to_right(Align::LEFT)),
+            |ui| self.bar(ui),
+        )
+        .inner
+    }
+
+    fn card(&mut self, ui: &mut Ui, card_rect: Rect, card: Card) {
+        let interact = ui.interact(card_rect, Id::new(card), Sense::click());
+        if interact.clicked() {
+            if self.cards.has(card) {
+                self.remove_card(card);
+            } else {
+                self.add_card(card);
+            }
+        }
+        draw_card(ui.painter(), card_rect, card);
+        if self.cards.has(card) {
+            ui.painter().rect(
+                card_rect,
+                card_rect.width() / 10.0,
+                Rgba::from_black_alpha(0.3),
+                Stroke::new(
+                    card_rect.width() / 10.0,
+                    Rgba::from_luminance_alpha(1.0, 0.5),
+                ),
+                StrokeKind::Middle,
+            );
+        }
+    }
+
+    fn bar(&self, ui: &mut Ui) -> bool {
+        let count = usize::from(self.cards.count());
+        let enabled = count >= self.min && count <= self.max;
+        let clicked = ui.add_enabled(enabled, Button::new("Apply")).clicked();
+        let label = if self.min == self.max {
+            format!("Add {} cards", self.min)
+        } else {
+            format!("Add {} to {} cards", self.min, self.max)
+        };
+        ui.label(label);
+        clicked
+    }
+
+    fn add_card(&mut self, card: Card) {
+        self.cards.add(card);
+        self.in_order.push(card);
+    }
+
+    fn remove_card(&mut self, card: Card) {
+        self.cards.remove(card);
+        self.in_order.retain(|current_card| *current_card != card);
     }
 }
