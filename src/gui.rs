@@ -147,6 +147,7 @@ impl GameView {
             format!("Total Pot: {}", self.game.total_pot()),
             bounding_rect.height() / 30.0,
             bounding_rect.center() - Vec2::new(0.0, card_size.y * 0.75),
+            Rgba::from_black_alpha(0.3),
         );
         self.draw_board(
             painter,
@@ -257,13 +258,21 @@ impl GameView {
 
     fn draw_player(&self, painter: &Painter, player: usize, center: Pos2, size: Vec2) -> Vec2 {
         let bounding_rect = Rect::from_center_size(center, size);
-        let name_stack_rect = bounding_rect.with_min_y(bounding_rect.bottom() - size.y / 3.2);
+        let mut name_stack_rect = bounding_rect.with_min_y(bounding_rect.bottom() - size.y / 3.2);
         let name_stack_shape = Shape::rect_filled(
             name_stack_rect,
             name_stack_rect.width() / 50.0,
             Color32::BLACK,
         );
         painter.add(name_stack_shape);
+        let full_name_stack_rect = name_stack_rect;
+        if self.game.button_index() == player {
+            let button_radius = name_stack_rect.height() / 4.0;
+            let button_center = name_stack_rect.center()
+                + (name_stack_rect.right_center() - name_stack_rect.center()) * 0.75;
+            painter.circle_filled(button_center, button_radius, Color32::from_rgb(200, 200, 0));
+            name_stack_rect.set_right(button_center.x - button_radius);
+        }
 
         let name_rect = name_stack_rect.with_max_y(name_stack_rect.center().y);
         painter.text(
@@ -315,9 +324,9 @@ impl GameView {
 
         if self.game.current_player() == Some(player) {
             let name_stack_stroke = Shape::rect_stroke(
-                name_stack_rect,
-                name_stack_rect.width() / 50.0,
-                Stroke::new(name_stack_rect.width() / 50.0, Color32::DARK_RED),
+                full_name_stack_rect,
+                full_name_stack_rect.width() / 50.0,
+                Stroke::new(full_name_stack_rect.width() / 50.0, Color32::DARK_RED),
                 StrokeKind::Middle,
             );
             painter.add(name_stack_stroke);
@@ -338,7 +347,13 @@ impl GameView {
         }
         let invested_point = player_center + (bounding_rect.center() - player_center) * 0.4;
         let text_size = bounding_rect.height() / 30.0;
-        draw_text_with_background(painter, invested.to_string(), text_size, invested_point);
+        draw_text_with_background(
+            painter,
+            invested.to_string(),
+            text_size,
+            invested_point,
+            Rgba::from_black_alpha(0.3),
+        );
     }
 
     fn draw_board(&self, painter: &Painter, center: Pos2, card_size: Vec2) {
@@ -418,20 +433,27 @@ fn draw_hidden_card(painter: &Painter, bounding_rect: Rect) {
     painter.add(card_shape);
 }
 
-fn draw_text_with_background(painter: &Painter, text: String, text_size: f32, center: Pos2) {
+fn draw_text_with_background(
+    painter: &Painter,
+    text: String,
+    text_size: f32,
+    center: Pos2,
+    background_color: impl Into<Color32>,
+) -> Rect {
     let space = Vec2::new(text_size / 2.0, text_size / 4.0);
     let galley = painter.layout_no_wrap(
         text,
         FontId::new(text_size, FontFamily::Monospace),
         Color32::WHITE,
     );
-    let background_rect = Rect::from_center_size(center - space, galley.rect.size() + 2.0 * space);
+    let background_rect = Rect::from_center_size(center, galley.rect.size() + 2.0 * space);
     painter.rect_filled(
         background_rect,
         background_rect.height() / 2.0,
-        Rgba::from_black_alpha(0.3),
+        background_color,
     );
     painter.galley(background_rect.left_top() + space, galley, Color32::WHITE);
+    background_rect
 }
 
 fn suite_color(suite: Suite) -> Color32 {
