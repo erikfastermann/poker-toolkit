@@ -1,6 +1,6 @@
 use eframe::egui::{
-    self, Align, Align2, Button, Color32, FontFamily, FontId, Id, Layout, Painter, Pos2, Rect,
-    Rgba, Sense, Shape, Stroke, StrokeKind, TextStyle, Ui, UiBuilder, Vec2, Window,
+    self, Align, Align2, Button, Color32, DragValue, FontFamily, FontId, Id, Layout, Painter, Pos2,
+    Rect, Rgba, Sense, Shape, Slider, Stroke, StrokeKind, TextStyle, Ui, UiBuilder, Vec2, Window,
 };
 
 use crate::{
@@ -41,8 +41,7 @@ impl App {
     fn new() -> Result<Self> {
         let mut game = Game::new(
             vec![
-                1_000_000, 1_000_000, 1_000_000, 1_000_000, 1_000_000, 1_000_000, 1_000_000,
-                1_000_000, 1_000_000,
+                10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000,
             ],
             None,
             1,
@@ -73,6 +72,7 @@ impl eframe::App for App {
 struct GameView {
     game: Game,
     card_selector: CardSelector,
+    current_amount: u32,
 }
 
 impl GameView {
@@ -80,11 +80,12 @@ impl GameView {
         Self {
             game,
             card_selector: CardSelector::new(),
+            current_amount: 0,
         }
     }
 
     fn view(&mut self, ui: &mut Ui) -> Result<()> {
-        let table_height = ui.clip_rect().height() / 2.0;
+        let table_height = ui.clip_rect().height() * 0.9;
         let bounding_rect = Rect::from_center_size(
             ui.clip_rect().center(),
             Vec2 {
@@ -100,15 +101,7 @@ impl GameView {
 
         let action_bar_bounding_rect =
             bounding_rect.with_min_y(table_bounding_rect.bottom() + bounding_rect.height() / 100.0);
-        let action_bar_bounding_rect = action_bar_bounding_rect
-            .with_max_y(bounding_rect.bottom() - action_bar_bounding_rect.height() * 0.3);
-        ui.allocate_new_ui(
-            UiBuilder::new()
-                .max_rect(action_bar_bounding_rect)
-                .layout(Layout::right_to_left(Align::Center)),
-            |ui| self.action_bar(ui),
-        )
-        .inner?;
+        self.action_bar(ui, action_bar_bounding_rect)?;
 
         self.view_card_selector(ui)
     }
@@ -156,8 +149,7 @@ impl GameView {
         );
     }
 
-    fn action_bar(&mut self, ui: &mut Ui) -> Result<()> {
-        let bounding_rect = ui.max_rect();
+    fn action_bar(&mut self, ui: &mut Ui, bounding_rect: Rect) -> Result<()> {
         let action_bar = Shape::rect_filled(
             bounding_rect,
             bounding_rect.width() / 100.0,
@@ -168,34 +160,61 @@ impl GameView {
             return Ok(());
         }
 
-        // TODO: Buttons shift funny on really small window sizes.
-        let button_width = bounding_rect.width() / 6.0;
-        let button_height = bounding_rect.height() * 0.8;
+        // TODO: Controls shift funny on small window sizes.
+        let inner_bounding_rect =
+            bounding_rect.with_max_x(bounding_rect.max.x - bounding_rect.size().x / 100.0);
         let text_styles = ui.ctx().style().text_styles.clone();
         ui.style_mut().text_styles.insert(
             TextStyle::Button,
-            FontId::new(button_height / 3.0, FontFamily::Proportional),
+            FontId::new(inner_bounding_rect.height() / 6.0, FontFamily::Proportional),
         );
-        if let Some((_, to)) = self.game.can_raise() {
+        let upper_elements_max_y = bounding_rect.min.y + bounding_rect.size().y * 0.4;
+        ui.allocate_new_ui(
+            UiBuilder::new()
+                .max_rect(inner_bounding_rect.with_max_y(upper_elements_max_y))
+                .layout(Layout::right_to_left(Align::Center)),
+            |ui| self.action_bar_upper_elements(ui),
+        )
+        .inner?;
+        ui.allocate_new_ui(
+            UiBuilder::new()
+                .max_rect(inner_bounding_rect.with_min_y(upper_elements_max_y))
+                .layout(Layout::right_to_left(Align::Center)),
+            |ui| self.action_bar_lower_buttons(ui),
+        )
+        .inner?;
+        ui.style_mut().text_styles = text_styles;
+
+        Ok(())
+    }
+
+    fn action_bar_lower_buttons(&mut self, ui: &mut Ui) -> Result<()> {
+        let bounding_rect = ui.max_rect();
+        let button_width = bounding_rect.width() / 6.0;
+        let button_height = bounding_rect.height() * 0.8;
+        let mut did_action = false;
+        if self.game.can_raise().is_some() {
             if ui
                 .add_sized(
                     [button_width, button_height],
-                    Button::new(format!("Raise\n{to}")),
+                    Button::new(format!("Raise\n{}", self.current_amount)),
                 )
                 .clicked()
             {
-                self.game.raise(to)?;
+                self.game.raise(self.current_amount)?;
+                did_action = true;
             }
         }
-        if let Some(amount) = self.game.can_bet() {
+        if self.game.can_bet().is_some() {
             if ui
                 .add_sized(
                     [button_width, button_height],
-                    Button::new(format!("Bet\n{amount}")),
+                    Button::new(format!("Bet\n{}", self.current_amount)),
                 )
                 .clicked()
             {
-                self.game.bet(amount)?;
+                self.game.bet(self.current_amount)?;
+                did_action = true;
             }
         }
         if let Some(amount) = self.game.can_call() {
@@ -207,6 +226,7 @@ impl GameView {
                 .clicked()
             {
                 self.game.call()?;
+                did_action = true;
             }
         }
         if self.game.can_check() {
@@ -215,6 +235,7 @@ impl GameView {
                 .clicked()
             {
                 self.game.check()?;
+                did_action = true;
             }
         }
         if ui
@@ -222,8 +243,58 @@ impl GameView {
             .clicked()
         {
             self.game.fold()?;
+            did_action = true;
         }
-        ui.style_mut().text_styles = text_styles;
+        if did_action {
+            self.current_amount = 0;
+        }
+        Ok(())
+    }
+
+    fn action_bar_upper_elements(&mut self, ui: &mut Ui) -> Result<()> {
+        let Some(amount) = self
+            .game
+            .can_bet()
+            .or_else(|| self.game.can_raise().map(|(_, to)| to))
+        else {
+            return Ok(());
+        };
+        let bounding_rect = ui.max_rect();
+        let current_player = self.game.current_player().unwrap();
+        let value_range = amount..=self.game.previous_street_stacks()[current_player];
+        let drag_value = DragValue::new(&mut self.current_amount)
+            .range(value_range.clone())
+            .speed(1.0);
+        let control_height = bounding_rect.height() * 0.8;
+        ui.add_sized([bounding_rect.width() / 10.0, control_height], drag_value);
+        let slider = Slider::new(&mut self.current_amount, value_range).show_value(false);
+        ui.add_sized([bounding_rect.width() / 10.0, control_height], slider);
+
+        let button_size = [bounding_rect.width() / 15.0, control_height];
+        // TODO: Configurable percent / big blind buttons.
+        const PERCENT_BUTTONS: &[(&str, f64)] = &[("20%", 0.2), ("60%", 0.6), (("130%", 1.3))];
+        const BIG_BLIND_BUTTONS: &[(&str, f64)] = &[("2BB", 2.0), ("2.5BB", 2.5), (("3BB", 3.0))];
+
+        let use_big_blind_buttons =
+            self.game.board().street() == Street::PreFlop && !self.game.raise_in_street();
+        let button_config = if use_big_blind_buttons {
+            BIG_BLIND_BUTTONS
+        } else {
+            PERCENT_BUTTONS
+        };
+        for button_config in button_config.iter().rev() {
+            let button = Button::new(button_config.0);
+            if ui.add_sized(button_size, button).clicked() {
+                if use_big_blind_buttons {
+                    self.current_amount =
+                        (f64::from(self.game.big_blind()) * button_config.1) as u32;
+                } else {
+                    self.current_amount =
+                        (f64::from(self.game.total_pot()) * button_config.1) as u32;
+                }
+            }
+        }
+
         Ok(())
     }
 

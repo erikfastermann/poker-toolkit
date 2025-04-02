@@ -348,9 +348,17 @@ impl Game {
         self.player_count() == Self::MIN_PLAYERS
     }
 
+    pub fn small_blind(&self) -> u32 {
+        self.small_blind
+    }
+
     pub fn small_blind_index(&self) -> usize {
         let button_offset = if self.is_heads_up_table() { 0 } else { 1 };
         (self.button_index() + button_offset) % self.player_count()
+    }
+
+    pub fn big_blind(&self) -> u32 {
+        self.big_blind
     }
 
     pub fn big_blind_index(&self) -> usize {
@@ -374,7 +382,7 @@ impl Game {
         &mut self.stacks_in_street[self.board.street.to_usize()]
     }
 
-    fn previous_street_stacks(&self) -> &[u32] {
+    pub fn previous_street_stacks(&self) -> &[u32] {
         match self.board.street.previous() {
             Some(street) => &self.stacks_in_street[street.to_usize()],
             None => &self.starting_stacks,
@@ -538,6 +546,12 @@ impl Game {
         } else {
             Some((last_amount, to))
         }
+    }
+
+    pub fn raise_in_street(&self) -> bool {
+        self.actions_in_street()
+            .iter()
+            .any(|action| matches!(action, Action::Raise { .. }))
     }
 
     fn is_all_in(&self, player: usize) -> bool {
