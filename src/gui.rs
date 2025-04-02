@@ -142,7 +142,17 @@ impl GameView {
             self.draw_invested(player, painter, bounding_rect, center);
         }
 
-        self.draw_board(painter, bounding_rect.center(), card_size);
+        draw_text_with_background(
+            painter,
+            format!("Total Pot: {}", self.game.total_pot()),
+            bounding_rect.height() / 30.0,
+            bounding_rect.center() - Vec2::new(0.0, card_size.y * 0.75),
+        );
+        self.draw_board(
+            painter,
+            bounding_rect.center() + Vec2::new(0.0, card_size.y * 0.25),
+            card_size,
+        );
     }
 
     fn action_bar(&mut self, ui: &mut Ui) -> Result<()> {
@@ -328,20 +338,7 @@ impl GameView {
         }
         let invested_point = player_center + (bounding_rect.center() - player_center) * 0.4;
         let text_size = bounding_rect.height() / 30.0;
-        let space = Vec2::new(text_size / 4.0, text_size / 8.0);
-        let galley = painter.layout_no_wrap(
-            invested.to_string(),
-            FontId::new(text_size, FontFamily::Monospace),
-            Color32::WHITE,
-        );
-        let background_rect =
-            Rect::from_center_size(invested_point - space, galley.rect.size() + 2.0 * space);
-        painter.rect_filled(
-            background_rect,
-            text_size / 10.0,
-            Rgba::from_black_alpha(0.5),
-        );
-        painter.galley(background_rect.left_top() + space, galley, Color32::WHITE);
+        draw_text_with_background(painter, invested.to_string(), text_size, invested_point);
     }
 
     fn draw_board(&self, painter: &Painter, center: Pos2, card_size: Vec2) {
@@ -419,6 +416,22 @@ fn draw_hidden_card(painter: &Painter, bounding_rect: Rect) {
         Rgba::from_black_alpha(0.5),
     );
     painter.add(card_shape);
+}
+
+fn draw_text_with_background(painter: &Painter, text: String, text_size: f32, center: Pos2) {
+    let space = Vec2::new(text_size / 2.0, text_size / 4.0);
+    let galley = painter.layout_no_wrap(
+        text,
+        FontId::new(text_size, FontFamily::Monospace),
+        Color32::WHITE,
+    );
+    let background_rect = Rect::from_center_size(center - space, galley.rect.size() + 2.0 * space);
+    painter.rect_filled(
+        background_rect,
+        background_rect.height() / 2.0,
+        Rgba::from_black_alpha(0.3),
+    );
+    painter.galley(background_rect.left_top() + space, galley, Color32::WHITE);
 }
 
 fn suite_color(suite: Suite) -> Color32 {
