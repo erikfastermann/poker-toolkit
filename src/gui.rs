@@ -1,6 +1,7 @@
 use eframe::egui::{
     self, Align, Align2, Button, Color32, DragValue, FontFamily, FontId, Id, Layout, Painter, Pos2,
-    Rect, Rgba, Sense, Shape, Slider, Stroke, StrokeKind, TextStyle, Ui, UiBuilder, Vec2, Window,
+    Rect, Rgba, Sense, Shape, Slider, Stroke, StrokeKind, Style, TextStyle, Ui, UiBuilder, Vec2,
+    Visuals, Window,
 };
 
 use crate::{
@@ -27,6 +28,11 @@ pub fn gui() -> eframe::Result {
         "Poker Toolkit",
         options,
         Box::new(|cc| {
+            let style = Style {
+                visuals: Visuals::dark(),
+                ..Style::default()
+            };
+            cc.egui_ctx.set_style(style);
             egui_extras::install_image_loaders(&cc.egui_ctx);
             Ok(Box::new(App::new()?))
         }),
@@ -204,8 +210,7 @@ impl GameView {
                 self.game.raise(self.current_amount)?;
                 did_action = true;
             }
-        }
-        if self.game.can_bet().is_some() {
+        } else if self.game.can_bet().is_some() {
             if ui
                 .add_sized(
                     [button_width, button_height],
@@ -216,7 +221,10 @@ impl GameView {
                 self.game.bet(self.current_amount)?;
                 did_action = true;
             }
+        } else {
+            ui.allocate_space(Vec2::new(button_width, button_height));
         }
+
         if let Some(amount) = self.game.can_call() {
             if ui
                 .add_sized(
@@ -228,8 +236,7 @@ impl GameView {
                 self.game.call()?;
                 did_action = true;
             }
-        }
-        if self.game.can_check() {
+        } else if self.game.can_check() {
             if ui
                 .add_sized([button_width, button_height], Button::new("Check"))
                 .clicked()
@@ -238,6 +245,7 @@ impl GameView {
                 did_action = true;
             }
         }
+
         if ui
             .add_sized([button_width, button_height], Button::new("Fold"))
             .clicked()
@@ -245,6 +253,7 @@ impl GameView {
             self.game.fold()?;
             did_action = true;
         }
+
         if did_action {
             self.current_amount = 0;
         }
