@@ -125,6 +125,7 @@ impl GGHandHistoryParser {
         self.parse_and_apply_actions(&mut lines, &mut game, &names)?;
         let winnings = self.parse_showdown(&mut lines, &mut game, &names)?;
         self.parse_summary(&mut lines, &mut game, &winnings)?;
+        game.internal_asserts_history();
         Ok(game)
     }
 
@@ -267,35 +268,16 @@ impl GGHandHistoryParser {
 
     fn parse_and_apply_actions<'a>(
         &self,
-        lines: &mut Peekable<impl Iterator<Item = &'a str>>,
+        lines: &mut impl Iterator<Item = &'a str>,
         game: &mut Game,
         names: &[impl AsRef<str>],
     ) -> Result<()> {
         loop {
-            // TODO
-            if lines
-                .peek()
-                .is_some_and(|line| self.re_uncalled_bet.is_match(line))
-            {
-                let uncalled = option_to_result(lines.next(), "uncalled bet line is missing")?;
-                let Some(uncalled) = self.re_uncalled_bet.captures(uncalled) else {
-                    return Err("uncalled bet: invalid format".into());
-                };
-                let [amount, name] = uncalled.extract().1;
-                let amount = Self::parse_price_as_cent(amount)?;
-                let player = names
-                    .iter()
-                    .position(|current_name| current_name.as_ref() == name);
-                let Some(player) = player else {
-                    return Err(format!("uncalled bet: unknown name {name}").into());
-                };
-                game.uncalled_bet(player, amount)?; // TODO
-            }
-
             match game.state() {
                 State::Post | State::End => unreachable!(),
                 State::Player(_) => self.parse_and_apply_player_action(lines, game, names)?,
                 State::Street(_) => self.parse_and_apply_street_action(lines, game)?,
+                State::UncalledBet(_, _) => self.parse_uncalled_bet(lines, game, names)?,
                 State::ShowOrMuck(_) => self.parse_shows(lines, game, names)?,
                 State::Showdown => break Ok(()),
             }
@@ -464,6 +446,36 @@ impl GGHandHistoryParser {
         }
     }
 
+    fn parse_uncalled_bet<'a>(
+        &self,
+        lines: &mut impl Iterator<Item = &'a str>,
+        game: &mut Game,
+        names: &[impl AsRef<str>],
+    ) -> Result<()> {
+        let State::UncalledBet(expected_player, expected_amount) = game.state() else {
+            unreachable!();
+        };
+
+        let uncalled = option_to_result(lines.next(), "uncalled bet line is missing")?;
+        let Some(uncalled) = self.re_uncalled_bet.captures(uncalled) else {
+            return Err("uncalled bet: invalid format".into());
+        };
+        let [amount, name] = uncalled.extract().1;
+        let amount = Self::parse_price_as_cent(amount)?;
+        let player = names
+            .iter()
+            .position(|current_name| current_name.as_ref() == name);
+        let Some(player) = player else {
+            return Err(format!("uncalled bet: unknown name {name}").into());
+        };
+        if player != expected_player || amount != expected_amount {
+            return Err(
+                format!("uncalled bet: bad player index {player} or amount {amount}").into(),
+            );
+        }
+        game.uncalled_bet()
+    }
+
     fn parse_shows<'a>(
         &self,
         lines: &mut impl Iterator<Item = &'a str>,
@@ -493,7 +505,8 @@ impl GGHandHistoryParser {
             if game.state() != State::ShowOrMuck(player) {
                 return Err("shows: bad state".into());
             }
-            game.show_hand(hand)?;
+            game.set_hand(player, hand)?;
+            game.show_hand()?;
         }
         Ok(())
     }

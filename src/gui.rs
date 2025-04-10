@@ -127,12 +127,9 @@ impl GameView {
 
         loop {
             match self.game.state() {
-                State::ShowOrMuck(player) => {
+                State::ShowOrMuck(_) => {
                     // TODO: Handle unknown hand more gracefully.
-                    let Some(hand) = self.game.get_hand(player) else {
-                        return Err(format!("hand for player {player} not known").into());
-                    };
-                    self.game.show_hand(hand)?;
+                    self.game.show_hand()?;
                 }
                 State::Showdown => self.game.showdown_simple()?,
                 _ => break,

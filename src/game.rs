@@ -20,10 +20,16 @@ enum Action {
     Check(u8),
     Call(u8, u32),
     Bet(u8, u32),
-    Raise { player: u8, amount: u32, to: u32 },
+    Raise {
+        player: u8,
+        old_stack: u32,
+        amount: u32,
+        to: u32,
+    },
     Flop([Card; 3]),
     Turn(Card),
     River(Card),
+    UncalledBet(u8, u32),
     Shows(u8, Hand),
 }
 
@@ -182,6 +188,7 @@ pub enum State {
     Post,
     Player(usize),
     Street(Street),
+    UncalledBet(usize, u32),
     ShowOrMuck(usize),
     Showdown,
     End,
@@ -598,7 +605,29 @@ impl Game {
         u8::try_from(self.starting_stacks.len()).unwrap()
     }
 
-    pub fn next_show_or_muck(&self) -> Option<usize> {
+    fn can_uncalled_bet(&self) -> Option<(usize, u32)> {
+        if !self.action_ended() {
+            return None;
+        }
+        let mut player_by_investment_array: [u8; Self::MAX_PLAYERS] =
+            array::from_fn(|index| u8::try_from(index).unwrap());
+        let player_by_investment = &mut player_by_investment_array[..self.player_count()];
+        player_by_investment.sort_by_key(|player| self.invested(usize::from(*player)));
+        let max_invested_player = player_by_investment[player_by_investment.len() - 1];
+        let second_max_invested_player = player_by_investment[player_by_investment.len() - 2];
+        let max_invested = self.invested(usize::from(max_invested_player));
+        let second_max_invested = self.invested(usize::from(second_max_invested_player));
+        if max_invested == second_max_invested {
+            None
+        } else {
+            Some((
+                usize::from(max_invested_player),
+                max_invested - second_max_invested,
+            ))
+        }
+    }
+
+    pub(crate) fn next_show_or_muck(&self) -> Option<usize> {
         let not_allowed = !self.action_ended()
             || self.players_in_hand.count() == 1
             || self.hand_shown.count() == self.players_in_hand.count();
@@ -625,6 +654,8 @@ impl Game {
             State::Post
         } else if let Some(player) = self.current_player() {
             State::Player(player)
+        } else if let Some((player, amount)) = self.can_uncalled_bet() {
+            State::UncalledBet(player, amount)
         } else if let Some(player) = self.next_show_or_muck() {
             State::ShowOrMuck(player)
         } else if let Some(street) = self.can_next_street() {
@@ -838,28 +869,29 @@ impl Game {
         }
 
         let amount = min_amount + to - min_to;
-        let old_stack = self.previous_street_stacks()[player];
-        if to > old_stack {
+        let previous_street_stack = self.previous_street_stacks()[player];
+        if to > previous_street_stack {
             return Err("player cannot afford raise".into());
         }
-        self.current_street_stacks_mut()[player] = old_stack - to;
+        let old_stack = self.current_street_stacks()[player];
+        self.current_street_stacks_mut()[player] = previous_street_stack - to;
 
         self.add_action(Action::Raise {
             player: self.current_player,
+            old_stack,
             amount,
             to,
         });
         self.next_player()
     }
 
-    pub fn uncalled_bet(&mut self, player: usize, amount: u32) -> Result<()> {
-        // TODO: Workaround
+    pub fn uncalled_bet(&mut self) -> Result<()> {
         self.check_pre_update()?;
-        // TODO: Check amount valid
-        let Some(new_stack) = self.current_street_stacks()[player].checked_add(amount) else {
-            return Err("uncalled bet: invalid amount".into());
+        let State::UncalledBet(player, amount) = self.state() else {
+            return Err("uncalled bet: cannot return uncalled bet in current state".into());
         };
-        self.current_street_stacks_mut()[player] = new_stack;
+        self.current_street_stacks_mut()[player] += amount;
+        self.add_action(Action::UncalledBet(u8::try_from(player).unwrap(), amount));
         Ok(())
     }
 
@@ -1042,6 +1074,7 @@ impl Game {
                 .unwrap();
             return Ok(vec![(self.total_pot(), vec![winner])]);
         }
+
         let mut scores_array = [Score::ZERO; Self::MAX_PLAYERS];
         let scores = &mut scores_array[..self.player_count()];
         let board = Cards::from_slice(self.board.cards()).unwrap();
@@ -1115,27 +1148,31 @@ impl Game {
 
     pub fn set_hand(&mut self, index: usize, hand: Hand) -> Result<()> {
         if index >= self.player_count() {
-            return Err(format!("unknown player index {index}").into());
+            return Err(format!("set hand: unknown player index {index}").into());
         }
-        if self.hands[index] != Hand::UNDEFINED {
-            return Err(format!("hand for player index {index} already set").into());
+        if self.hands[index] != Hand::UNDEFINED && self.hands[index] != hand {
+            return Err(
+                format!("set hand: cannot set different hand for player index {index}").into(),
+            );
         }
         self.hands[index] = hand;
         self.check_cards()?;
         Ok(())
     }
 
-    pub fn show_hand(&mut self, hand: Hand) -> Result<()> {
+    pub fn show_hand(&mut self) -> Result<()> {
         self.check_pre_update()?;
         let State::ShowOrMuck(player) = self.state() else {
-            return Err("cannot show hand in current state".into());
+            return Err("show: cannot show hand in current state".into());
         };
-        if self.hands[player] != Hand::UNDEFINED && hand != self.hands[player] {
-            return Err("cannot show different hand than already set".into());
+        if self.hands[player] == Hand::UNDEFINED {
+            return Err(format!("show: hand for player index {player} not set").into());
         }
-        self.hands[player] = hand;
         self.hand_shown.set(player);
-        self.check_cards()?;
+        self.add_action(Action::Shows(
+            u8::try_from(player).unwrap(),
+            self.hands[player],
+        ));
         Ok(())
     }
 
@@ -1149,5 +1186,156 @@ impl Game {
 
     pub fn known_cards(&self) -> Cards {
         self.check_cards().unwrap()
+    }
+
+    pub fn previous(&mut self) -> bool {
+        if self.current_action_index == 0 {
+            return false;
+        }
+        match self.state() {
+            State::Post => unreachable!(),
+            State::End => {
+                self.showdown_stacks.iter_mut().for_each(|stack| *stack = 0);
+                return true;
+            }
+            _ => (),
+        }
+
+        let action = self.actions[self.current_action_index - 1];
+        match action {
+            Action::Post(_, _) => {
+                self.stacks_in_street[Street::PreFlop.to_usize()]
+                    .copy_from_slice(&self.starting_stacks);
+                self.current_player = u8::MAX;
+                self.current_action_index = 0;
+            }
+            Action::Fold(player) => {
+                self.current_player = player;
+                self.players_in_hand.set(usize::from(player));
+            }
+            Action::Check(player) => self.current_player = player,
+            Action::Call(player, amount) | Action::Bet(player, amount) => {
+                self.current_player = player;
+                self.current_street_stacks_mut()[usize::from(player)] += amount;
+            }
+            Action::Raise {
+                player, old_stack, ..
+            } => {
+                self.current_player = player;
+                self.current_street_stacks_mut()[usize::from(player)] = old_stack;
+            }
+            Action::Flop(_) => {
+                self.previous_street();
+                self.board.street = Street::PreFlop;
+                self.board.cards[2] = Card::MIN;
+                self.board.cards[1] = Card::MIN;
+                self.board.cards[0] = Card::MIN;
+            }
+            Action::Turn(_) => {
+                self.previous_street();
+                self.board.street = Street::Flop;
+                self.board.cards[3] = Card::MIN;
+            }
+            Action::River(_) => {
+                self.previous_street();
+                self.board.street = Street::Turn;
+                self.board.cards[4] = Card::MIN;
+            }
+            Action::UncalledBet(player, amount) => {
+                self.current_street_stacks_mut()[usize::from(player)] -= amount;
+            }
+            Action::Shows(player, _) => {
+                self.hand_shown.remove(usize::from(player));
+            }
+        }
+        if !matches!(action, Action::Post(_, _)) {
+            self.current_action_index -= 1;
+        }
+        true
+    }
+
+    fn previous_street(&mut self) {
+        self.stacks_in_street[self.board.street.to_usize()].copy_from_slice(&self.starting_stacks);
+        self.current_street_index = self.actions[..self.current_street_index - 1]
+            .iter()
+            .enumerate()
+            .rev()
+            .filter(|(_, action)| action.is_street())
+            .filter_map(|(index, _)| index.checked_add(1))
+            .next()
+            .unwrap_or(0);
+        self.current_player = u8::MAX;
+    }
+
+    pub fn internal_asserts_history(&self) {
+        assert_eq!(self.state(), State::End);
+        let mut games = Vec::new();
+        let mut new_game = Self::new(
+            self.starting_stacks.clone(),
+            Some(self.names.clone()),
+            self.button_index(),
+            self.small_blind(),
+            self.big_blind(),
+        )
+        .unwrap();
+        new_game.hands = self.hands.clone();
+
+        games.push(new_game.clone());
+        new_game.post_small_and_big_blind().unwrap();
+        games.push(new_game.clone());
+        for action in self.actions.iter().copied() {
+            let result = match action {
+                Action::Post(_, _) => continue,
+                Action::Fold(_) => new_game.fold(),
+                Action::Check(_) => new_game.check(),
+                Action::Call(_, _) => new_game.call(),
+                Action::Bet(_, amount) => new_game.bet(amount),
+                Action::Raise { to, .. } => new_game.raise(to),
+                Action::Flop(flop) => new_game.flop(flop),
+                Action::Turn(card) => new_game.turn(card),
+                Action::River(card) => new_game.river(card),
+                Action::UncalledBet(_, _) => new_game.uncalled_bet(),
+                Action::Shows(_, _) => new_game.show_hand(),
+            };
+            result.unwrap();
+            games.push(new_game.clone());
+        }
+        new_game.showdown_stacks = self.showdown_stacks.clone();
+        assert_eq!(self, &new_game);
+
+        for expected_game in games.iter().rev() {
+            assert!(new_game.previous());
+            assert_eq!(expected_game.board, new_game.board);
+            assert_eq!(expected_game.names, new_game.names);
+            assert_eq!(expected_game.starting_stacks, new_game.starting_stacks);
+            assert_eq!(expected_game.stacks_in_street, new_game.stacks_in_street);
+            assert_eq!(expected_game.showdown_stacks, new_game.showdown_stacks);
+            assert_eq!(expected_game.button_index, new_game.button_index);
+            assert_eq!(
+                expected_game.current_street_index,
+                new_game.current_street_index
+            );
+            assert_eq!(
+                expected_game.current_action_index,
+                new_game.current_action_index
+            );
+            assert_eq!(expected_game.current_player, new_game.current_player);
+            assert_eq!(expected_game.players_in_hand, new_game.players_in_hand);
+            assert_eq!(expected_game.small_blind, new_game.small_blind);
+            assert_eq!(expected_game.big_blind, new_game.big_blind);
+            assert_eq!(expected_game.hands, new_game.hands);
+            assert_eq!(expected_game.hand_shown, new_game.hand_shown);
+
+            assert_eq!(
+                expected_game.actions_in_street(),
+                new_game.actions_in_street()
+            );
+            assert_eq!(expected_game.state(), new_game.state());
+            assert_eq!(expected_game.can_check(), new_game.can_check());
+            assert_eq!(expected_game.can_call(), new_game.can_call());
+            assert_eq!(expected_game.can_bet(), new_game.can_bet());
+            assert_eq!(expected_game.can_raise(), new_game.can_raise());
+        }
+        assert!(!new_game.previous());
     }
 }
