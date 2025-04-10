@@ -1034,6 +1034,14 @@ impl Game {
     }
 
     fn showdown_winners_by_pot(&self) -> Result<Vec<(u32, Vec<u8>)>> {
+        if self.players_in_hand.count() == 1 {
+            let winner = self
+                .players_in_hand()
+                .map(|player| u8::try_from(player).unwrap())
+                .next()
+                .unwrap();
+            return Ok(vec![(self.total_pot(), vec![winner])]);
+        }
         let mut scores_array = [Score::ZERO; Self::MAX_PLAYERS];
         let scores = &mut scores_array[..self.player_count()];
         let board = Cards::from_slice(self.board.cards()).unwrap();
