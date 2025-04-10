@@ -562,19 +562,12 @@ impl GGHandHistoryParser {
             return Err("summary: overflow calculating total rake".into());
         };
 
-        let stacks_before_showdown = Vec::from(game.current_stacks());
-        game.showdown(total_rake)?;
-        let stacks_ok = stacks_before_showdown
+        let player_pot_share = winnings
             .iter()
             .copied()
-            .zip(game.current_stacks().iter().copied())
             .enumerate()
-            .all(|(index, (old_stack, new_stack))| {
-                old_stack.checked_add(winnings[index]) == Some(new_stack)
-            });
-        if !stacks_ok {
-            return Err("summary: winnings don't match calculation".into());
-        }
+            .filter(|(_, winning)| *winning != 0);
+        game.showdown_custom(total_rake, player_pot_share)?;
         // The rest of the summary is currently ignored.
         // Could be used for more correctness checks.
         Ok(())

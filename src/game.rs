@@ -977,60 +977,132 @@ impl Game {
         }
     }
 
-    pub fn showdown(&mut self, total_rake: u32) -> Result<()> {
+    pub fn showdown_custom(
+        &mut self,
+        total_rake: u32,
+        player_pot_share: impl Iterator<Item = (usize, u32)>,
+    ) -> Result<()> {
+        // TODO: Check winners are correct.
+
         self.check_pre_update()?;
         if self.state() != State::Showdown {
-            return Err("not in showdown state".into());
+            return Err("showdown: not in showdown state".into());
         }
         self.showdown_stacks
             .copy_from_slice(&self.stacks_in_street[self.board.street.to_usize()]);
-        if self.players_in_hand.count() == 1 {
-            let player = self.players_in_hand().next().unwrap();
-            let pot = self.total_pot();
-            let Some(pot) = pot.checked_sub(total_rake) else {
-                return Err("showdown: rake too high".into());
+        let mut total_pot = 0u32;
+        for (player, pot_share) in player_pot_share {
+            let Some(new_total_pot) = total_pot.checked_add(pot_share) else {
+                return Err("showdown: amount won too large".into());
             };
-            self.showdown_stacks[player] += pot;
-            Ok(())
-        } else {
-            self.showdown_hands(total_rake)
+            let Some(new_stack) = self.showdown_stacks[player].checked_add(pot_share) else {
+                return Err("showdown: amount won too large".into());
+            };
+            total_pot = new_total_pot;
+            self.showdown_stacks[player] = new_stack;
         }
+        if total_pot.checked_add(total_rake) != Some(self.total_pot()) {
+            return Err("showdown: total pot and supplied pot shares with rake don't match".into());
+        }
+        Ok(())
     }
 
-    fn showdown_hands(&mut self, total_rake: u32) -> Result<()> {
+    pub fn showdown_simple(&mut self) -> Result<()> {
         // TODO:
-        // - Different investments per player at showdown
-        // - Multiple winners
-        // - Rake
-        // - Exactly calculate pot split
-        // - Manually apply won amounts
+        // - Custom Rake
         // - Showdown order
         // - Some players muck
 
+        self.check_pre_update()?;
+        if self.state() != State::Showdown {
+            return Err("showdown: not in showdown state".into());
+        }
+        self.showdown_stacks
+            .copy_from_slice(&self.stacks_in_street[self.board.street.to_usize()]);
+        for (pot, winners) in self.showdown_winners_by_pot()? {
+            let winner_count = u32::try_from(winners.len()).unwrap();
+            let won_per_player = pot / winner_count;
+            for player in winners.iter().copied() {
+                self.showdown_stacks[usize::from(player)] += won_per_player;
+            }
+            let n = usize::try_from(pot % winner_count).unwrap();
+            for player in winners.iter().copied().take(n) {
+                self.showdown_stacks[usize::from(player)] += 1;
+            }
+        }
+        Ok(())
+    }
+
+    fn showdown_winners_by_pot(&self) -> Result<Vec<(u32, Vec<u8>)>> {
         let mut scores_array = [Score::ZERO; Self::MAX_PLAYERS];
         let scores = &mut scores_array[..self.player_count()];
         let board = Cards::from_slice(self.board.cards()).unwrap();
-        for player in self.players_in_hand.iter(self.player_count()) {
+        for player in self.players_in_hand() {
             let Some(hand) = self.get_hand(player) else {
                 return Err(format!("showdown: missing hand for player {player}").into());
             };
             scores[player] = board.with(hand.high()).with(hand.low()).score_fast();
         }
-        let max_score = scores.iter().copied().max().unwrap();
-        let winners = scores
-            .iter()
-            .copied()
-            .filter(|score| *score == max_score)
-            .count();
-        assert_eq!(winners, 1);
-        let winner_index = scores.iter().position(|score| *score == max_score).unwrap();
-        let pot = self
-            .invested_per_player()
-            .sum::<u32>()
-            .checked_sub(total_rake)
-            .unwrap(); // TODO
-        self.showdown_stacks[winner_index] += pot;
-        Ok(())
+
+        let mut investments_array = [0u32; Self::MAX_PLAYERS];
+        let investments = &mut investments_array[..self.player_count()];
+        for player in 0..self.player_count() {
+            investments[player] = self.invested(player);
+        }
+
+        let winners = self.showdown_winners_by_pot_inner(scores, investments);
+        assert_eq!(
+            winners.iter().map(|(pot, _)| *pot).sum::<u32>(),
+            self.total_pot()
+        );
+        Ok(winners)
+    }
+
+    fn showdown_winners_by_pot_inner(
+        &self,
+        scores: &[Score],
+        investments: &mut [u32],
+    ) -> Vec<(u32, Vec<u8>)> {
+        let mut out = Vec::new();
+        loop {
+            let min_investment = investments
+                .iter()
+                .copied()
+                .enumerate()
+                .filter(|(player, investment)| self.players_in_hand.has(*player) && *investment > 0)
+                .map(|(_, investment)| investment)
+                .min();
+            let Some(min_investment) = min_investment else {
+                return out;
+            };
+            let winners = self.showdown_winners(scores, investments);
+            let mut pot = 0;
+            for investment in investments.iter_mut() {
+                pot += min_investment - min_investment.saturating_sub(*investment);
+                *investment = investment.saturating_sub(min_investment);
+            }
+            out.push((pot, winners));
+        }
+    }
+
+    fn showdown_winners(&self, scores: &[Score], investments: &[u32]) -> Vec<u8> {
+        let max_score = (0..self.player_count())
+            .filter(|player| self.players_in_hand.has(*player) && investments[*player] > 0)
+            .map(|player| scores[usize::from(player)])
+            .max()
+            .unwrap();
+        let mut players: Vec<_> = (0..self.player_count_u8())
+            .filter(|player| {
+                self.players_in_hand.has(usize::from(*player))
+                    && investments[usize::from(*player)] > 0
+                    && scores[usize::from(*player)] == max_score
+            })
+            .collect();
+        players.sort_by_key(|player| {
+            let player_count = self.player_count_u8();
+            (player_count - (self.button_index + 1) + *player) % player_count
+        });
+        players
     }
 
     pub fn set_hand(&mut self, index: usize, hand: Hand) -> Result<()> {

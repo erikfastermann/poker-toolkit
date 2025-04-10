@@ -46,9 +46,7 @@ struct App {
 impl App {
     fn new() -> Result<Self> {
         let mut game = Game::new(
-            vec![
-                10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000,
-            ],
+            vec![10000, 499, 10000, 10000, 10000, 10000, 10000, 10000, 10000],
             None,
             1,
             5,
@@ -67,6 +65,14 @@ impl App {
             Hand::of_two_cards(
                 Card::of(Rank::Ace, Suite::Hearts),
                 Card::of(Rank::King, Suite::Hearts),
+            )
+            .unwrap(),
+        )?;
+        game.set_hand(
+            3,
+            Hand::of_two_cards(
+                Card::of(Rank::Ace, Suite::Clubs),
+                Card::of(Rank::Ace, Suite::Spades),
             )
             .unwrap(),
         )?;
@@ -128,7 +134,7 @@ impl GameView {
                     };
                     self.game.show_hand(hand)?;
                 }
-                State::Showdown => self.game.showdown(0)?,
+                State::Showdown => self.game.showdown_simple()?,
                 _ => break,
             }
         }
