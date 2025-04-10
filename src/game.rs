@@ -13,7 +13,7 @@ use crate::result::Result;
 // - Bet/raise steps.
 // - Mucking
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Action {
     Post(u8, u32),
     Fold(u8),
@@ -109,7 +109,7 @@ impl fmt::Display for Street {
     }
 }
 
-#[derive(Debug, Clone, Copy)] // TODO: Custom Debug
+#[derive(Debug, Clone, Copy, PartialEq, Eq)] // TODO: Custom Debug
 pub struct Board {
     cards: [Card; 5],
     street: Street,
@@ -135,7 +135,7 @@ impl Board {
     }
 }
 
-#[derive(Debug, Clone, Copy)] // TODO: Custom Debug
+#[derive(Debug, Clone, Copy, PartialEq, Eq)] // TODO: Custom Debug
 struct Bitset<const SIZE: usize>([u8; SIZE]);
 
 impl<const SIZE: usize> Bitset<SIZE> {
@@ -187,7 +187,7 @@ pub enum State {
     End,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Game {
     actions: Vec<Action>,
     board: Board,
@@ -564,7 +564,7 @@ impl Game {
             .count()
     }
 
-    fn action_ended(&self) -> bool {
+    pub fn action_ended(&self) -> bool {
         self.players_in_hand.count() == 1
             || (self.current_player().is_none() && self.board.street == Street::River)
             || (self.current_player().is_none() && self.all_in_terminated_hand())

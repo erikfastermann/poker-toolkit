@@ -7,7 +7,7 @@ use eframe::egui::{
 use crate::{
     card::Card,
     cards::Cards,
-    game::{Game, Street},
+    game::{Game, State, Street},
     hand::Hand,
     rank::Rank,
     result::Result,
@@ -62,6 +62,14 @@ impl App {
             )
             .unwrap(),
         )?;
+        game.set_hand(
+            2,
+            Hand::of_two_cards(
+                Card::of(Rank::Ace, Suite::Hearts),
+                Card::of(Rank::King, Suite::Hearts),
+            )
+            .unwrap(),
+        )?;
         game.post_small_and_big_blind()?;
         Ok(Self {
             game: GameView::new(game),
@@ -71,7 +79,7 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        egui::CentralPanel::default().show(ctx, |ui| self.game.view(ui));
+        egui::CentralPanel::default().show(ctx, |ui| self.game.view(ui).unwrap());
     }
 }
 
@@ -109,7 +117,23 @@ impl GameView {
             bounding_rect.with_min_y(table_bounding_rect.bottom() + bounding_rect.height() / 100.0);
         self.action_bar(ui, action_bar_bounding_rect)?;
 
-        self.view_card_selector(ui)
+        self.view_card_selector(ui)?;
+
+        loop {
+            match self.game.state() {
+                State::ShowOrMuck(player) => {
+                    // TODO: Handle unknown hand more gracefully.
+                    let Some(hand) = self.game.get_hand(player) else {
+                        return Err(format!("hand for player {player} not known").into());
+                    };
+                    self.game.show_hand(hand)?;
+                }
+                State::Showdown => self.game.showdown(0)?,
+                _ => break,
+            }
+        }
+
+        Ok(())
     }
 
     fn draw_table(&self, painter: &Painter, bounding_rect: Rect) {
@@ -421,6 +445,9 @@ impl GameView {
         bounding_rect: Rect,
         player_center: Pos2,
     ) {
+        if self.game.current_player().is_none() {
+            return;
+        }
         let invested = self.game.invested_in_street(player);
         if invested == 0 {
             return;
