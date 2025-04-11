@@ -1,5 +1,6 @@
 use std::cmp::min;
 use std::collections::HashMap;
+use std::ops::BitAnd;
 use std::{array, fmt, usize};
 
 use rand::Rng;
@@ -153,6 +154,11 @@ impl<const SIZE: usize> Bitset<SIZE> {
         self.0[index / 8] |= 1 << (index % 8);
     }
 
+    fn with(mut self, index: usize) -> Self {
+        self.set(index);
+        self
+    }
+
     fn remove(&mut self, index: usize) {
         self.0[index / 8] &= !(1 << (index % 8));
     }
@@ -174,6 +180,17 @@ impl<const SIZE: usize> Bitset<SIZE> {
 
     fn count(&self) -> u32 {
         self.0.iter().map(|n| n.count_ones()).sum::<u32>()
+    }
+}
+
+impl<const SIZE: usize> BitAnd for Bitset<SIZE> {
+    type Output = Self;
+
+    fn bitand(mut self, rhs: Self) -> Self::Output {
+        for (a, b) in self.0.iter_mut().zip(rhs.0) {
+            *a &= b;
+        }
+        self
     }
 }
 
@@ -752,60 +769,29 @@ impl Game {
 
     fn next_player(&mut self) -> Result<()> {
         assert!(self.current_player().is_some());
-        if self.players_in_hand.count() == 1 {
-            self.current_player = u8::MAX;
-            return Ok(());
-        }
-
         let actions = self.actions_in_street();
-        let players_in_hand_not_all_in = self.players_in_hand_not_all_in();
-        let check_count = actions
-            .iter()
-            .copied()
-            .filter(|action| matches!(action, Action::Check(_)))
-            .count();
-        let all_check_or_fold = actions
-            .iter()
-            .copied()
-            .all(|action| matches!(action, Action::Check(_) | Action::Fold(_)));
-        if all_check_or_fold && check_count == players_in_hand_not_all_in {
-            self.current_player = u8::MAX;
-            return Ok(());
-        }
 
-        let last_bettor_callers = {
-            let mut s = Bitset::<2>::EMPTY;
-            for action in actions.iter().copied() {
-                match action {
-                    Action::Fold(_) | Action::Check(_) => (),
-                    Action::Call(player, _) => {
-                        if self.in_hand_not_all_in(usize::from(player)) {
-                            s.set(usize::from(player))
-                        }
-                    }
-                    Action::Post(player, _)
-                    | Action::Bet(player, _)
-                    | Action::Raise { player, .. } => {
-                        s = Bitset::EMPTY;
-                        if self.in_hand_not_all_in(usize::from(player)) {
-                            s.set(usize::from(player));
-                        }
-                    }
-                    _ => unreachable!(),
-                }
-            }
-            s
-        };
-        if usize::try_from(last_bettor_callers.count()).unwrap() == players_in_hand_not_all_in {
-            if self.board.street == Street::PreFlop
-                && self.current_player().unwrap() == self.small_blind_index()
-            {
-                self.current_player = self.big_blind_index() as u8;
-                let can_check = self.can_check();
-                // TODO: Fails if button raised.
-                assert!(can_check);
-                return Ok(());
-            }
+        let players_in_hand_not_all_in = self
+            .players_in_hand()
+            .filter(|player| !self.is_all_in(*player))
+            .fold(Bitset::<2>::EMPTY, |set, player| set.with(player));
+
+        let players_with_action = actions
+            .iter()
+            .filter(|action| !matches!(action, Action::Post(_, _)))
+            .filter_map(|action| action.player())
+            .fold(Bitset::<2>::EMPTY, |set, player| set.with(player));
+
+        let invested = self.invested_per_player().max().unwrap();
+        let all_equal_investments = players_in_hand_not_all_in
+            .iter(self.player_count())
+            .map(|player| self.invested(player))
+            .all(|n| n == invested);
+
+        let can_skip = (players_in_hand_not_all_in.count() == 1
+            || players_in_hand_not_all_in & players_with_action == players_in_hand_not_all_in)
+            && all_equal_investments;
+        if can_skip {
             self.current_player = u8::MAX;
             return Ok(());
         }

@@ -127,6 +127,9 @@ impl GameView {
 
         loop {
             match self.game.state() {
+                State::UncalledBet(_, _) => {
+                    self.game.uncalled_bet()?;
+                }
                 State::ShowOrMuck(_) => {
                     // TODO: Handle unknown hand more gracefully.
                     self.game.show_hand()?;
