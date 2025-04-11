@@ -625,7 +625,7 @@ mod tests {
         }
 
         // TODO
-        let history = fs::read_to_string(r"/home/erik/Downloads/gg_hands.txt").unwrap();
+        let history = fs::read_to_string(r"C:\Users\Erik\Downloads\gg_hands.txt").unwrap();
         let games = GGHandHistoryParser::new().parse_str(&history).unwrap();
         dbg!(games);
     }

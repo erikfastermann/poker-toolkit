@@ -213,6 +213,8 @@ pub struct Game {
     /// Using Hand::UNDEFINED if a hand is not known.
     hands: Vec<Hand>,
     hand_shown: Bitset<2>,
+    at_end: bool,
+    in_next: bool,
 }
 
 impl Game {
@@ -339,6 +341,8 @@ impl Game {
             big_blind,
             hands: vec![Hand::UNDEFINED; player_count],
             hand_shown: Bitset::EMPTY,
+            at_end: false,
+            in_next: false,
         })
     }
 
@@ -556,6 +560,8 @@ impl Game {
     }
 
     pub fn raise_in_street(&self) -> bool {
+        // TODO: Probably not a nice method for our interface.
+
         self.actions_in_street()
             .iter()
             .any(|action| matches!(action, Action::Raise { .. }))
@@ -571,7 +577,7 @@ impl Game {
             .count()
     }
 
-    pub fn action_ended(&self) -> bool {
+    fn action_ended(&self) -> bool {
         self.players_in_hand.count() == 1
             || (self.current_player().is_none() && self.board.street == Street::River)
             || (self.current_player().is_none() && self.all_in_terminated_hand())
@@ -660,7 +666,7 @@ impl Game {
             State::ShowOrMuck(player)
         } else if let Some(street) = self.can_next_street() {
             State::Street(street)
-        } else if self.showdown_stacks.iter().copied().any(|stack| stack != 0) {
+        } else if self.at_end {
             State::End
         } else {
             State::Showdown
@@ -687,7 +693,7 @@ impl Game {
     }
 
     fn check_pre_update(&self) -> Result<()> {
-        if self.current_action_index != self.actions.len() {
+        if !self.in_next && self.current_action_index != self.actions.len() {
             return Err("can't apply action: not at final action".into());
         }
         Ok(())
@@ -778,8 +784,13 @@ impl Game {
     }
 
     fn add_action(&mut self, action: Action) {
-        assert_eq!(self.current_action_index, self.actions.len());
-        self.actions.push(action);
+        if self.in_next {
+            let next_action = self.actions[self.current_action_index];
+            assert_eq!(action, next_action);
+        } else {
+            assert_eq!(self.current_action_index, self.actions.len());
+            self.actions.push(action);
+        }
         self.current_action_index += 1;
     }
 
@@ -896,6 +907,8 @@ impl Game {
     }
 
     pub fn can_next_street(&self) -> Option<Street> {
+        // TODO: Private or crate only?
+
         let allowed = self.next_show_or_muck().is_none()
             && self.current_player().is_none()
             && (!self.actions_in_street().is_empty() || self.players_in_hand_not_all_in() <= 1)
@@ -958,7 +971,7 @@ impl Game {
             self.current_player = self.button_index;
             self.next_player_in_hand_not_all_in()?;
         }
-        self.current_street_index = self.actions.len();
+        self.current_street_index = self.current_action_index;
         Ok(())
     }
 
@@ -1036,6 +1049,7 @@ impl Game {
         if total_pot.checked_add(total_rake) != Some(self.total_pot()) {
             return Err("showdown: total pot and supplied pot shares with rake don't match".into());
         }
+        self.at_end = true;
         Ok(())
     }
 
@@ -1062,6 +1076,7 @@ impl Game {
                 self.showdown_stacks[usize::from(player)] += 1;
             }
         }
+        self.at_end = true;
         Ok(())
     }
 
@@ -1195,7 +1210,7 @@ impl Game {
         match self.state() {
             State::Post => unreachable!(),
             State::End => {
-                self.showdown_stacks.iter_mut().for_each(|stack| *stack = 0);
+                self.at_end = false;
                 return true;
             }
             _ => (),
@@ -1267,7 +1282,45 @@ impl Game {
         self.current_player = u8::MAX;
     }
 
-    pub fn internal_asserts_history(&self) {
+    pub fn next(&mut self) -> bool {
+        let state = self.state();
+        if !matches!(state, State::Showdown) && self.current_action_index >= self.actions.len() {
+            return false;
+        }
+        match self.state() {
+            State::Showdown => {
+                assert!(self.current_action_index >= self.actions.len());
+                if self.showdown_stacks.iter().copied().all(|stack| stack == 0) {
+                    return false;
+                }
+                self.at_end = true;
+                return true;
+            }
+            State::End => unreachable!(),
+            _ => (),
+        }
+
+        let next_action = self.actions[self.current_action_index];
+        self.in_next = true;
+        let result = match next_action {
+            Action::Post(_, _) => self.post_small_and_big_blind(),
+            Action::Fold(_) => self.fold(),
+            Action::Check(_) => self.check(),
+            Action::Call(_, _) => self.call(),
+            Action::Bet(_, amount) => self.bet(amount),
+            Action::Raise { to, .. } => self.raise(to),
+            Action::Flop(flop) => self.flop(flop),
+            Action::Turn(turn) => self.turn(turn),
+            Action::River(river) => self.river(river),
+            Action::UncalledBet(_, _) => self.uncalled_bet(),
+            Action::Shows(_, _) => self.show_hand(),
+        };
+        self.in_next = false;
+        result.unwrap();
+        true
+    }
+
+    pub(crate) fn internal_asserts_history(&self) {
         assert_eq!(self.state(), State::End);
         let mut games = Vec::new();
         let mut new_game = Self::new(
@@ -1279,10 +1332,16 @@ impl Game {
         )
         .unwrap();
         new_game.hands = self.hands.clone();
-
         games.push(new_game.clone());
+        assert!(!new_game.previous());
+        assert!(!new_game.next());
+
         new_game.post_small_and_big_blind().unwrap();
         games.push(new_game.clone());
+        assert!(new_game.previous());
+        assert!(new_game.next());
+        assert_eq!(&new_game, games.last().unwrap());
+
         for action in self.actions.iter().copied() {
             let result = match action {
                 Action::Post(_, _) => continue,
@@ -1292,50 +1351,57 @@ impl Game {
                 Action::Bet(_, amount) => new_game.bet(amount),
                 Action::Raise { to, .. } => new_game.raise(to),
                 Action::Flop(flop) => new_game.flop(flop),
-                Action::Turn(card) => new_game.turn(card),
-                Action::River(card) => new_game.river(card),
+                Action::Turn(turn) => new_game.turn(turn),
+                Action::River(river) => new_game.river(river),
                 Action::UncalledBet(_, _) => new_game.uncalled_bet(),
                 Action::Shows(_, _) => new_game.show_hand(),
             };
             result.unwrap();
             games.push(new_game.clone());
+            assert!(new_game.previous());
+            assert!(new_game.next());
+            assert_eq!(&new_game, games.last().unwrap());
         }
+
+        assert!(!new_game.next());
         new_game.showdown_stacks = self.showdown_stacks.clone();
+        new_game.at_end = true;
+        games.push(new_game.clone());
         assert_eq!(self, &new_game);
 
-        for expected_game in games.iter().rev() {
+        for expected in games.iter().rev().skip(1) {
             assert!(new_game.previous());
-            assert_eq!(expected_game.board, new_game.board);
-            assert_eq!(expected_game.names, new_game.names);
-            assert_eq!(expected_game.starting_stacks, new_game.starting_stacks);
-            assert_eq!(expected_game.stacks_in_street, new_game.stacks_in_street);
-            assert_eq!(expected_game.showdown_stacks, new_game.showdown_stacks);
-            assert_eq!(expected_game.button_index, new_game.button_index);
-            assert_eq!(
-                expected_game.current_street_index,
-                new_game.current_street_index
-            );
-            assert_eq!(
-                expected_game.current_action_index,
-                new_game.current_action_index
-            );
-            assert_eq!(expected_game.current_player, new_game.current_player);
-            assert_eq!(expected_game.players_in_hand, new_game.players_in_hand);
-            assert_eq!(expected_game.small_blind, new_game.small_blind);
-            assert_eq!(expected_game.big_blind, new_game.big_blind);
-            assert_eq!(expected_game.hands, new_game.hands);
-            assert_eq!(expected_game.hand_shown, new_game.hand_shown);
-
-            assert_eq!(
-                expected_game.actions_in_street(),
-                new_game.actions_in_street()
-            );
-            assert_eq!(expected_game.state(), new_game.state());
-            assert_eq!(expected_game.can_check(), new_game.can_check());
-            assert_eq!(expected_game.can_call(), new_game.can_call());
-            assert_eq!(expected_game.can_bet(), new_game.can_bet());
-            assert_eq!(expected_game.can_raise(), new_game.can_raise());
+            new_game.internal_asserts_history_compare(expected);
         }
         assert!(!new_game.previous());
+
+        for expected in games.iter().skip(1) {
+            assert!(new_game.next());
+            new_game.internal_asserts_history_compare(expected);
+        }
+        assert!(!new_game.next());
+    }
+
+    fn internal_asserts_history_compare(&self, expected: &Game) {
+        assert_eq!(expected.board, self.board);
+        assert_eq!(expected.names, self.names);
+        assert_eq!(expected.starting_stacks, self.starting_stacks);
+        assert_eq!(expected.stacks_in_street, self.stacks_in_street);
+        assert_eq!(expected.button_index, self.button_index);
+        assert_eq!(expected.current_street_index, self.current_street_index);
+        assert_eq!(expected.current_action_index, self.current_action_index);
+        assert_eq!(expected.current_player, self.current_player);
+        assert_eq!(expected.players_in_hand, self.players_in_hand);
+        assert_eq!(expected.small_blind, self.small_blind);
+        assert_eq!(expected.big_blind, self.big_blind);
+        assert_eq!(expected.hands, self.hands);
+        assert_eq!(expected.hand_shown, self.hand_shown);
+
+        assert_eq!(expected.actions_in_street(), self.actions_in_street());
+        assert_eq!(expected.state(), self.state());
+        assert_eq!(expected.can_check(), self.can_check());
+        assert_eq!(expected.can_call(), self.can_call());
+        assert_eq!(expected.can_bet(), self.can_bet());
+        assert_eq!(expected.can_raise(), self.can_raise());
     }
 }
