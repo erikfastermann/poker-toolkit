@@ -1,4 +1,4 @@
-use std::{collections::HashSet, iter::Peekable};
+use std::{collections::HashSet, iter::Peekable, str::FromStr};
 
 use regex::Regex;
 
@@ -290,7 +290,7 @@ impl GGHandHistoryParser {
         game: &mut Game,
         names: &[impl AsRef<str>],
     ) -> Result<()> {
-        let action = option_to_result(dbg!(lines.next()), "action line is missing")?; // TODO
+        let action = option_to_result(lines.next(), "action line is missing")?;
         let Some(action) = self.re_action.captures(action) else {
             return Err("action: invalid format".into());
         };
@@ -627,6 +627,12 @@ mod tests {
         // TODO
         let history = fs::read_to_string(r"C:\Users\Erik\Downloads\gg_hands.txt").unwrap();
         let games = GGHandHistoryParser::new().parse_str(&history).unwrap();
-        dbg!(games);
+        dbg!(&games);
+        for game in games {
+            let data = serde_json::to_string_pretty(&game.to_game_data()).unwrap();
+            println!("{data}");
+            let parsed_game = Game::from_game_data(serde_json::from_str(&data).unwrap()).unwrap();
+            assert_eq!(&game, &parsed_game);
+        }
     }
 }

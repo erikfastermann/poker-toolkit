@@ -1,8 +1,14 @@
-use std::{cmp::Ordering, fmt};
+use std::{cmp::Ordering, fmt, str::FromStr};
 
-use crate::{card::Card, cards::Cards, result::Result};
+use serde_with::{DeserializeFromStr, SerializeDisplay};
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+use crate::{
+    card::Card,
+    cards::Cards,
+    result::{Error, Result},
+};
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, DeserializeFromStr, SerializeDisplay)]
 pub struct Hand(Card, Card);
 
 impl fmt::Display for Hand {
@@ -14,6 +20,14 @@ impl fmt::Display for Hand {
 impl fmt::Debug for Hand {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(&self, f)
+    }
+}
+
+impl FromStr for Hand {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        Self::from_bytes(s.as_bytes())
     }
 }
 
@@ -38,10 +52,6 @@ impl Hand {
         } else {
             Ok(cards.to_hand().unwrap())
         }
-    }
-
-    pub fn from_str(s: &str) -> Result<Self> {
-        Self::from_bytes(s.as_bytes())
     }
 
     pub fn from_bytes(s: &[u8]) -> Result<Self> {

@@ -1,13 +1,19 @@
-use std::{cmp::Ordering, fmt};
+use std::{cmp::Ordering, fmt, str::FromStr};
 
 use rand::{
     distributions::{Distribution, Standard},
     Rng,
 };
+use serde_with::{DeserializeFromStr, SerializeDisplay};
 
-use crate::{cards::Cards, rank::Rank, result::Result, suite::Suite};
+use crate::{
+    cards::Cards,
+    rank::Rank,
+    result::{Error, Result},
+    suite::Suite,
+};
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, DeserializeFromStr, SerializeDisplay)]
 pub struct Card(i8);
 
 impl Distribution<Card> for Standard {
@@ -19,6 +25,14 @@ impl Distribution<Card> for Standard {
 impl fmt::Debug for Card {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(&self, f)
+    }
+}
+
+impl FromStr for Card {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        Self::from_bytes(s.as_bytes())
     }
 }
 
@@ -55,10 +69,6 @@ impl Card {
             let rank = Rank::try_from(index % 13).ok()?;
             Some(Self::of(rank, suite))
         }
-    }
-
-    pub fn from_str(s: &str) -> Result<Self> {
-        Self::from_bytes(s.as_bytes())
     }
 
     pub fn from_bytes(s: &[u8]) -> Result<Self> {

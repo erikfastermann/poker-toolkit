@@ -1,7 +1,9 @@
 use std::cmp::min;
+use std::collections::HashMap;
 use std::{array, fmt, usize};
 
 use rand::Rng;
+use serde::{Deserialize, Serialize};
 
 use crate::card::Card;
 use crate::cards::{Cards, Score};
@@ -13,8 +15,8 @@ use crate::result::Result;
 // - Bet/raise steps.
 // - Mucking
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Action {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Action {
     Post(u8, u32),
     Fold(u8),
     Check(u8),
@@ -39,15 +41,7 @@ impl Action {
     }
 
     fn is_player(self) -> bool {
-        matches!(
-            self,
-            Action::Post(_, _)
-                | Action::Fold(_)
-                | Action::Check(_)
-                | Action::Call(_, _)
-                | Action::Bet(_, _)
-                | Action::Raise { .. }
-        )
+        self.player().is_some()
     }
 
     fn to_amount(self) -> Option<u32> {
@@ -324,6 +318,7 @@ impl Game {
         if names.len() != stacks.len() {
             return Err("names and stacks have different lengths".into());
         }
+        // TODO: Check names are unique.
 
         Ok(Self {
             actions: Vec::new(),
@@ -344,6 +339,62 @@ impl Game {
             at_end: false,
             in_next: false,
         })
+    }
+
+    pub fn from_game_data(data: GameData) -> Result<Game> {
+        let mut game = Self::new(
+            data.starting_stacks,
+            data.player_names,
+            usize::from(data.button_index),
+            data.small_blind,
+            data.big_blind,
+        )?;
+
+        for (player, hand) in data.hands.into_iter() {
+            game.set_hand(usize::from(player), hand)?;
+        }
+
+        if !data.actions.is_empty() {
+            if data.actions.len() < 2 {
+                return Err("apply action: missing one or more post action(s)".into());
+            }
+            game.post_small_and_big_blind()?;
+            if &game.actions != &data.actions[..2] {
+                return Err("apply action: post actions don't match".into());
+            }
+            for action in data.actions[2..].iter().copied() {
+                game.apply_action(action)?;
+            }
+        }
+
+        if let Some(showdown_stacks) = data.showdown_stacks {
+            game.showdown_stacks(&showdown_stacks)?;
+        }
+        Ok(game)
+    }
+
+    pub fn to_game_data(&self) -> GameData {
+        GameData {
+            player_names: Some(self.names.clone()),
+            hands: self
+                .hands
+                .iter()
+                .copied()
+                .enumerate()
+                .filter(|(_, hand)| *hand != Hand::UNDEFINED)
+                .map(|(player, hand)| (u8::try_from(player).unwrap(), hand))
+                .collect(),
+            starting_stacks: self.starting_stacks.clone(),
+            button_index: self.button_index,
+            small_blind: self.small_blind,
+            big_blind: self.big_blind,
+            actions: self.actions.clone(),
+            showdown_stacks: if self.showdown_stacks.iter().copied().any(|stack| stack != 0) {
+                Some(self.showdown_stacks.clone())
+            } else {
+                None
+            },
+        }
     }
 
     pub fn player_names(&self) -> &[String] {
@@ -1053,11 +1104,33 @@ impl Game {
         Ok(())
     }
 
+    pub fn showdown_stacks(&mut self, stacks: &[u32]) -> Result<()> {
+        // TODO: Check winners are correct.
+
+        if stacks.len() != self.player_count() {
+            return Err("showdown stacks: given stack count does not match player count".into());
+        }
+        let total = stacks.iter().copied().fold(Some(0u32), |total, stack| {
+            total.and_then(|total| total.checked_add(stack))
+        });
+        let Some(total) = total else {
+            return Err("showdown stacks: stack sum overflows".into());
+        };
+        if total > self.starting_stacks.iter().sum() {
+            return Err("showdown stacks: showdown stacks are larger than starting stacks".into());
+        }
+
+        self.check_pre_update()?;
+        if self.state() != State::Showdown {
+            return Err("showdown stacks: not in showdown state".into());
+        }
+        self.showdown_stacks.copy_from_slice(stacks);
+        self.at_end = true;
+        Ok(())
+    }
+
     pub fn showdown_simple(&mut self) -> Result<()> {
-        // TODO:
-        // - Custom Rake
-        // - Showdown order
-        // - Some players muck
+        // TODO: Custom rake.
 
         self.check_pre_update()?;
         if self.state() != State::Showdown {
@@ -1196,6 +1269,44 @@ impl Game {
             None
         } else {
             Some(self.hands[index])
+        }
+    }
+
+    pub fn apply_action(&mut self, action: Action) -> Result<()> {
+        self.check_pre_update()?;
+        if action.player() != self.current_player() {
+            return Err("apply action: current player and action don't match".into());
+        }
+        match action {
+            Action::Post(_, _) => Err("apply action: cannot apply post".into()),
+            Action::Fold(_) => self.fold(),
+            Action::Check(_) => self.check(),
+            Action::Call(_, amount) => {
+                if self.can_call() != Some(amount) {
+                    return Err("apply action: cannot call or amount mismatch".into());
+                }
+                self.call()
+            }
+            Action::Bet(_, amount) => self.bet(amount),
+            // TODO: Check other raise values.
+            Action::Raise { to, .. } => self.raise(to),
+            Action::Flop(flop) => self.flop(flop),
+            Action::Turn(turn) => self.turn(turn),
+            Action::River(river) => self.river(river),
+            Action::UncalledBet(player, amount) => {
+                if self.state() != State::UncalledBet(usize::from(player), amount) {
+                    return Err("apply action: uncalled bet not allowed or invalid".into());
+                }
+                self.uncalled_bet()
+            }
+            Action::Shows(player, hand) => {
+                if self.state() != State::ShowOrMuck(usize::from(player))
+                    || self.get_hand(usize::from(player)) != Some(hand)
+                {
+                    return Err("apply action: show not allowed or invalid".into());
+                }
+                self.show_hand()
+            }
         }
     }
 
@@ -1342,21 +1453,8 @@ impl Game {
         assert!(new_game.next());
         assert_eq!(&new_game, games.last().unwrap());
 
-        for action in self.actions.iter().copied() {
-            let result = match action {
-                Action::Post(_, _) => continue,
-                Action::Fold(_) => new_game.fold(),
-                Action::Check(_) => new_game.check(),
-                Action::Call(_, _) => new_game.call(),
-                Action::Bet(_, amount) => new_game.bet(amount),
-                Action::Raise { to, .. } => new_game.raise(to),
-                Action::Flop(flop) => new_game.flop(flop),
-                Action::Turn(turn) => new_game.turn(turn),
-                Action::River(river) => new_game.river(river),
-                Action::UncalledBet(_, _) => new_game.uncalled_bet(),
-                Action::Shows(_, _) => new_game.show_hand(),
-            };
-            result.unwrap();
+        for action in self.actions[2..].iter().copied() {
+            new_game.apply_action(action).unwrap();
             games.push(new_game.clone());
             assert!(new_game.previous());
             assert!(new_game.next());
@@ -1364,8 +1462,7 @@ impl Game {
         }
 
         assert!(!new_game.next());
-        new_game.showdown_stacks = self.showdown_stacks.clone();
-        new_game.at_end = true;
+        new_game.showdown_stacks(&self.showdown_stacks).unwrap();
         games.push(new_game.clone());
         assert_eq!(self, &new_game);
 
@@ -1404,4 +1501,16 @@ impl Game {
         assert_eq!(expected.can_bet(), self.can_bet());
         assert_eq!(expected.can_raise(), self.can_raise());
     }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct GameData {
+    pub player_names: Option<Vec<String>>,
+    pub hands: HashMap<u8, Hand>,
+    pub starting_stacks: Vec<u32>,
+    pub button_index: u8,
+    pub small_blind: u32,
+    pub big_blind: u32,
+    pub actions: Vec<Action>,
+    pub showdown_stacks: Option<Vec<u32>>,
 }
