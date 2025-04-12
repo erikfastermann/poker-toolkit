@@ -15,14 +15,26 @@ use crate::result::Result;
 // TODO:
 // - Bet/raise steps.
 // - Mucking
+// - Poison game on error or ensure every error is recoverable
+// - Type alias or wrapper for player and amount, use u8 for player everywhere
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Action {
-    Post(u8, u32),
+    Post {
+        player: u8,
+        amount: u32,
+    },
     Fold(u8),
     Check(u8),
-    Call(u8, u32),
-    Bet(u8, u32),
+    Call {
+        player: u8,
+        amount: u32,
+    },
+    Bet {
+        player: u8,
+        amount: u32,
+    },
     Raise {
         player: u8,
         old_stack: u32,
@@ -32,8 +44,14 @@ pub enum Action {
     Flop([Card; 3]),
     Turn(Card),
     River(Card),
-    UncalledBet(u8, u32),
-    Shows(u8, Hand),
+    UncalledBet {
+        player: u8,
+        amount: u32,
+    },
+    Shows {
+        player: u8,
+        hand: Hand,
+    },
 }
 
 impl Action {
@@ -47,9 +65,9 @@ impl Action {
 
     fn to_amount(self) -> Option<u32> {
         match self {
-            Action::Post(_, amount) => Some(amount),
-            Action::Call(_, amount) => Some(amount),
-            Action::Bet(_, amount) => Some(amount),
+            Action::Post { amount, .. } => Some(amount),
+            Action::Call { amount, .. } => Some(amount),
+            Action::Bet { amount, .. } => Some(amount),
             Action::Raise { amount, .. } => Some(amount),
             _ => None,
         }
@@ -57,11 +75,11 @@ impl Action {
 
     fn player(self) -> Option<usize> {
         let player = match self {
-            Action::Post(player, _) => player,
+            Action::Post { player, .. } => player,
             Action::Fold(player) => player,
             Action::Check(player) => player,
-            Action::Call(player, _) => player,
-            Action::Bet(player, _) => player,
+            Action::Call { player, .. } => player,
+            Action::Bet { player, .. } => player,
             Action::Raise { player, .. } => player,
             _ => return None,
         };
@@ -523,7 +541,7 @@ impl Game {
             self.actions_in_street().iter().all(|action| {
                 matches!(
                     action,
-                    Action::Fold(_) | Action::Call(_, _) | Action::Post(_, _)
+                    Action::Fold(_) | Action::Call { .. } | Action::Post { .. }
                 )
             })
         } else {
@@ -538,7 +556,7 @@ impl Game {
         let can_call = self.actions_in_street().iter().any(|action| {
             matches!(
                 action,
-                Action::Post(_, _) | Action::Bet(_, _) | Action::Raise { .. }
+                Action::Post { .. } | Action::Bet { .. } | Action::Raise { .. }
             )
         });
         if can_call {
@@ -579,7 +597,7 @@ impl Game {
         let mut last_to = 0;
         for action in actions.iter().copied() {
             let amount_to = match action {
-                Action::Bet(_, amount) => Some((amount, amount)),
+                Action::Bet { amount, .. } => Some((amount, amount)),
                 Action::Raise { amount, to, .. } => Some((amount, to)),
                 _ => None,
             };
@@ -599,7 +617,7 @@ impl Game {
                         .iter()
                         .copied()
                         .filter_map(|action| match action {
-                            Action::Post(_, amount) => Some(amount),
+                            Action::Post { amount, .. } => Some(amount),
                             _ => None,
                         })
                         .max()
@@ -713,7 +731,7 @@ impl Game {
             .iter()
             .rev()
             .copied()
-            .find(|action| matches!(action, Action::Bet(_, _) | Action::Raise { .. }))
+            .find(|action| matches!(action, Action::Bet { .. } | Action::Raise { .. }))
             .and_then(|action| action.player())
             .unwrap_or_else(|| self.first_to_act_post_flop());
         (start_index..self.player_count())
@@ -768,6 +786,8 @@ impl Game {
     }
 
     fn next_player(&mut self) -> Result<()> {
+        // TODO: No need to return a result.
+
         assert!(self.current_player().is_some());
         let actions = self.actions_in_street();
 
@@ -778,7 +798,7 @@ impl Game {
 
         let players_with_action = actions
             .iter()
-            .filter(|action| !matches!(action, Action::Post(_, _)))
+            .filter(|action| !matches!(action, Action::Post { .. }))
             .filter_map(|action| action.player())
             .fold(Bitset::<2>::EMPTY, |set, player| set.with(player));
 
@@ -844,7 +864,10 @@ impl Game {
         let player = self.current_player_result()?;
         let amount = min(self.current_street_stacks()[player], amount);
         self.update_stack(amount)?;
-        self.add_action(Action::Post(self.current_player, amount));
+        self.add_action(Action::Post {
+            player: self.current_player,
+            amount,
+        });
         self.next_player()
     }
 
@@ -888,7 +911,10 @@ impl Game {
             return Err("player is not allowed to call".into());
         };
         self.update_stack(amount)?;
-        self.add_action(Action::Call(self.current_player, amount));
+        self.add_action(Action::Call {
+            player: self.current_player,
+            amount,
+        });
         self.next_player()
     }
 
@@ -902,7 +928,10 @@ impl Game {
             return Err("bet is smaller than the minimum".into());
         }
         self.update_stack(amount)?;
-        self.add_action(Action::Bet(self.current_player, amount));
+        self.add_action(Action::Bet {
+            player: self.current_player,
+            amount,
+        });
         self.next_player()
     }
 
@@ -939,7 +968,10 @@ impl Game {
             return Err("uncalled bet: cannot return uncalled bet in current state".into());
         };
         self.current_street_stacks_mut()[player] += amount;
-        self.add_action(Action::UncalledBet(u8::try_from(player).unwrap(), amount));
+        self.add_action(Action::UncalledBet {
+            player: u8::try_from(player).unwrap(),
+            amount,
+        });
         Ok(())
     }
 
@@ -1243,10 +1275,10 @@ impl Game {
             return Err(format!("show: hand for player index {player} not set").into());
         }
         self.hand_shown.set(player);
-        self.add_action(Action::Shows(
-            u8::try_from(player).unwrap(),
-            self.hands[player],
-        ));
+        self.add_action(Action::Shows {
+            player: u8::try_from(player).unwrap(),
+            hand: self.hands[player],
+        });
         Ok(())
     }
 
@@ -1264,28 +1296,28 @@ impl Game {
             return Err("apply action: current player and action don't match".into());
         }
         match action {
-            Action::Post(_, _) => Err("apply action: cannot apply post".into()),
+            Action::Post { .. } => Err("apply action: cannot apply post".into()),
             Action::Fold(_) => self.fold(),
             Action::Check(_) => self.check(),
-            Action::Call(_, amount) => {
+            Action::Call { amount, .. } => {
                 if self.can_call() != Some(amount) {
                     return Err("apply action: cannot call or amount mismatch".into());
                 }
                 self.call()
             }
-            Action::Bet(_, amount) => self.bet(amount),
+            Action::Bet { amount, .. } => self.bet(amount),
             // TODO: Check other raise values.
             Action::Raise { to, .. } => self.raise(to),
             Action::Flop(flop) => self.flop(flop),
             Action::Turn(turn) => self.turn(turn),
             Action::River(river) => self.river(river),
-            Action::UncalledBet(player, amount) => {
+            Action::UncalledBet { player, amount } => {
                 if self.state() != State::UncalledBet(usize::from(player), amount) {
                     return Err("apply action: uncalled bet not allowed or invalid".into());
                 }
                 self.uncalled_bet()
             }
-            Action::Shows(player, hand) => {
+            Action::Shows { player, hand } => {
                 if self.state() != State::ShowOrMuck(usize::from(player))
                     || self.get_hand(usize::from(player)) != Some(hand)
                 {
@@ -1315,7 +1347,7 @@ impl Game {
 
         let action = self.actions[self.current_action_index - 1];
         match action {
-            Action::Post(_, _) => {
+            Action::Post { .. } => {
                 self.stacks_in_street[Street::PreFlop.to_usize()]
                     .copy_from_slice(&self.starting_stacks);
                 self.current_player = u8::MAX;
@@ -1326,7 +1358,7 @@ impl Game {
                 self.players_in_hand.set(usize::from(player));
             }
             Action::Check(player) => self.current_player = player,
-            Action::Call(player, amount) | Action::Bet(player, amount) => {
+            Action::Call { player, amount } | Action::Bet { player, amount } => {
                 self.current_player = player;
                 self.current_street_stacks_mut()[usize::from(player)] += amount;
             }
@@ -1353,14 +1385,14 @@ impl Game {
                 self.board.street = Street::Turn;
                 self.board.cards[4] = Card::MIN;
             }
-            Action::UncalledBet(player, amount) => {
+            Action::UncalledBet { player, amount } => {
                 self.current_street_stacks_mut()[usize::from(player)] -= amount;
             }
-            Action::Shows(player, _) => {
+            Action::Shows { player, .. } => {
                 self.hand_shown.remove(usize::from(player));
             }
         }
-        if !matches!(action, Action::Post(_, _)) {
+        if !matches!(action, Action::Post { .. }) {
             self.current_action_index -= 1;
         }
         true
@@ -1400,17 +1432,17 @@ impl Game {
         let next_action = self.actions[self.current_action_index];
         self.in_next = true;
         let result = match next_action {
-            Action::Post(_, _) => self.post_small_and_big_blind(),
+            Action::Post { .. } => self.post_small_and_big_blind(),
             Action::Fold(_) => self.fold(),
             Action::Check(_) => self.check(),
-            Action::Call(_, _) => self.call(),
-            Action::Bet(_, amount) => self.bet(amount),
+            Action::Call { .. } => self.call(),
+            Action::Bet { amount, .. } => self.bet(amount),
             Action::Raise { to, .. } => self.raise(to),
             Action::Flop(flop) => self.flop(flop),
             Action::Turn(turn) => self.turn(turn),
             Action::River(river) => self.river(river),
-            Action::UncalledBet(_, _) => self.uncalled_bet(),
-            Action::Shows(_, _) => self.show_hand(),
+            Action::UncalledBet { .. } => self.uncalled_bet(),
+            Action::Shows { .. } => self.show_hand(),
         };
         self.in_next = false;
         result.unwrap();
