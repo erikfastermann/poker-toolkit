@@ -125,6 +125,14 @@ impl GameView {
 
         self.view_card_selector(ui)?;
 
+        self.finalize()
+    }
+
+    fn finalize(&mut self) -> Result<()> {
+        if self.game.can_next() {
+            return Ok(());
+        }
+
         loop {
             match self.game.state() {
                 State::UncalledBet(_, _) => {
@@ -135,11 +143,9 @@ impl GameView {
                     self.game.show_hand()?;
                 }
                 State::Showdown => self.game.showdown_simple()?,
-                _ => break,
+                _ => return Ok(()),
             }
         }
-
-        Ok(())
     }
 
     fn draw_table(&self, painter: &Painter, bounding_rect: Rect) {
@@ -186,41 +192,87 @@ impl GameView {
     }
 
     fn action_bar(&mut self, ui: &mut Ui, bounding_rect: Rect) -> Result<()> {
+        // TODO: Controls shift funny on small window sizes.
+
         let action_bar = Shape::rect_filled(
             bounding_rect,
             bounding_rect.width() / 100.0,
             Rgba::from_black_alpha(0.5),
         );
         ui.painter().add(action_bar);
-        if self.game.current_player().is_none() {
-            return Ok(());
-        }
 
-        // TODO: Controls shift funny on small window sizes.
-        let inner_bounding_rect =
-            bounding_rect.with_max_x(bounding_rect.max.x - bounding_rect.size().x / 100.0);
+        let inner_bounding_rect = bounding_rect
+            .with_min_x(bounding_rect.min.x + bounding_rect.size().x / 100.0)
+            .with_max_x(bounding_rect.max.x - bounding_rect.size().x / 100.0);
         let text_styles = ui.ctx().style().text_styles.clone();
         ui.style_mut().text_styles.insert(
             TextStyle::Button,
             FontId::new(inner_bounding_rect.height() / 6.0, FontFamily::Proportional),
         );
+        let result = self.action_bar_inner(ui, inner_bounding_rect);
+        ui.style_mut().text_styles = text_styles;
+        result
+    }
+
+    fn action_bar_inner(&mut self, ui: &mut Ui, bounding_rect: Rect) -> Result<()> {
         let upper_elements_max_y = bounding_rect.min.y + bounding_rect.size().y * 0.4;
         ui.allocate_new_ui(
             UiBuilder::new()
-                .max_rect(inner_bounding_rect.with_max_y(upper_elements_max_y))
+                .max_rect(bounding_rect.with_min_y(upper_elements_max_y))
+                .layout(Layout::left_to_right(Align::Center)),
+            |ui| self.action_bar_history_buttons(ui),
+        )
+        .inner?;
+
+        if self.game.can_next() || self.game.current_player().is_none() {
+            return Ok(());
+        }
+        ui.allocate_new_ui(
+            UiBuilder::new()
+                .max_rect(bounding_rect.with_max_y(upper_elements_max_y))
                 .layout(Layout::right_to_left(Align::Center)),
             |ui| self.action_bar_upper_elements(ui),
         )
         .inner?;
         ui.allocate_new_ui(
             UiBuilder::new()
-                .max_rect(inner_bounding_rect.with_min_y(upper_elements_max_y))
+                .max_rect(bounding_rect.with_min_y(upper_elements_max_y))
                 .layout(Layout::right_to_left(Align::Center)),
             |ui| self.action_bar_lower_buttons(ui),
         )
-        .inner?;
-        ui.style_mut().text_styles = text_styles;
+        .inner
+    }
 
+    fn action_bar_history_buttons(&mut self, ui: &mut Ui) -> Result<()> {
+        let bounding_rect = ui.max_rect();
+        let button_height = bounding_rect.height() * 0.8;
+        let button_width = button_height;
+        let button_size = Vec2::new(button_width, button_height);
+        let mut did_action = false;
+
+        let previous_button = ui
+            .add_enabled_ui(self.game.can_previous(), |ui| {
+                ui.add_sized(button_size, Button::new("<"))
+            })
+            .inner;
+        if previous_button.clicked() {
+            assert!(self.game.previous());
+            did_action = true;
+        }
+
+        let next_button = ui
+            .add_enabled_ui(self.game.can_next(), |ui| {
+                ui.add_sized(button_size, Button::new(">"))
+            })
+            .inner;
+        if next_button.clicked() {
+            assert!(self.game.next());
+            did_action = true;
+        }
+
+        if did_action {
+            self.current_amount = 0;
+        }
         Ok(())
     }
 
@@ -229,6 +281,7 @@ impl GameView {
         let button_width = bounding_rect.width() / 6.0;
         let button_height = bounding_rect.height() * 0.8;
         let mut did_action = false;
+
         if self.game.can_raise().is_some() {
             if ui
                 .add_sized(
@@ -338,6 +391,9 @@ impl GameView {
     }
 
     fn view_card_selector(&mut self, ui: &mut Ui) -> Result<()> {
+        if self.game.can_next() {
+            return Ok(());
+        }
         let Some(street) = self.game.can_next_street() else {
             return Ok(());
         };

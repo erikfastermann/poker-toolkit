@@ -1332,8 +1332,12 @@ impl Game {
         self.check_cards().unwrap()
     }
 
+    pub fn can_previous(&self) -> bool {
+        self.current_action_index > 0
+    }
+
     pub fn previous(&mut self) -> bool {
-        if self.current_action_index == 0 {
+        if !self.can_previous() {
             return false;
         }
         match self.state() {
@@ -1411,17 +1415,24 @@ impl Game {
         self.current_player = u8::MAX;
     }
 
+    pub fn can_next(&self) -> bool {
+        let showdown_stacks_set = self.showdown_stacks.iter().copied().any(|stack| stack != 0);
+        let at_final_action = self.current_action_index == self.actions.len();
+        match self.state() {
+            State::Showdown if showdown_stacks_set => true,
+            State::Showdown => false,
+            _ if at_final_action => false,
+            _ => true,
+        }
+    }
+
     pub fn next(&mut self) -> bool {
-        let state = self.state();
-        if !matches!(state, State::Showdown) && self.current_action_index >= self.actions.len() {
+        if !self.can_next() {
             return false;
         }
         match self.state() {
             State::Showdown => {
-                assert!(self.current_action_index >= self.actions.len());
-                if self.showdown_stacks.iter().copied().all(|stack| stack == 0) {
-                    return false;
-                }
+                assert!(self.current_action_index == self.actions.len());
                 self.at_end = true;
                 return true;
             }
