@@ -1,13 +1,19 @@
-use eframe::egui::{
-    self, Align, Align2, Button, Color32, DragValue, FontFamily, FontId, Id, Layout, Painter, Pos2,
-    Rect, Rgba, Sense, Shape, Slider, Stroke, StrokeKind, Style, TextStyle, Ui, UiBuilder, Vec2,
-    Visuals, Window,
+use std::cmp;
+
+use eframe::{
+    egui::{
+        self, Align, Align2, Button, Color32, Context, DragValue, FontFamily, FontId, Id, Layout,
+        Painter, Pos2, Rect, Rgba, Sense, Shape, Slider, Stroke, StrokeKind, Style, TextStyle, Ui,
+        UiBuilder, Vec2, Visuals, Window,
+    },
+    Frame,
 };
+use egui_extras::{Column, TableBuilder};
 
 use crate::{
     card::Card,
     cards::Cards,
-    game::{Game, State, Street},
+    game::{Game, GameData, Player, State, Street},
     hand::Hand,
     rank::Rank,
     result::Result,
@@ -41,51 +47,27 @@ pub fn gui() -> eframe::Result {
 
 struct App {
     game: GameView,
+    game_builder: GameBuilder,
 }
 
 impl App {
     fn new() -> Result<Self> {
-        let mut game = Game::new(
-            vec![10000, 499, 10000, 10000, 10000, 10000, 10000, 10000, 10000],
-            None,
-            1,
-            5,
-            10,
-        )?;
-        game.set_hand(
-            1,
-            Hand::of_two_cards(
-                Card::of(Rank::Ace, Suite::Diamonds),
-                Card::of(Rank::King, Suite::Spades),
-            )
-            .unwrap(),
-        )?;
-        game.set_hand(
-            2,
-            Hand::of_two_cards(
-                Card::of(Rank::Ace, Suite::Hearts),
-                Card::of(Rank::King, Suite::Hearts),
-            )
-            .unwrap(),
-        )?;
-        game.set_hand(
-            3,
-            Hand::of_two_cards(
-                Card::of(Rank::Ace, Suite::Clubs),
-                Card::of(Rank::Ace, Suite::Spades),
-            )
-            .unwrap(),
-        )?;
+        let mut game = Game::from_game_data(&GameData::default())?;
         game.post_small_and_big_blind()?;
         Ok(Self {
             game: GameView::new(game),
+            game_builder: GameBuilder::new(),
         })
     }
 }
 
 impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &Context, _frame: &mut Frame) {
         egui::CentralPanel::default().show(ctx, |ui| self.game.view(ui).unwrap());
+        if let Some(mut game) = self.game_builder.window(ctx, "New game".to_string()) {
+            game.post_small_and_big_blind().unwrap();
+            self.game = GameView::new(game);
+        }
     }
 }
 
@@ -248,7 +230,6 @@ impl GameView {
         let button_height = bounding_rect.height() * 0.8;
         let button_width = button_height;
         let button_size = Vec2::new(button_width, button_height);
-        let mut did_action = false;
 
         let previous_button = ui
             .add_enabled_ui(self.game.can_previous(), |ui| {
@@ -257,7 +238,6 @@ impl GameView {
             .inner;
         if previous_button.clicked() {
             assert!(self.game.previous());
-            did_action = true;
         }
 
         let next_button = ui
@@ -267,12 +247,8 @@ impl GameView {
             .inner;
         if next_button.clicked() {
             assert!(self.game.next());
-            did_action = true;
         }
 
-        if did_action {
-            self.current_amount = 0;
-        }
         Ok(())
     }
 
@@ -394,7 +370,7 @@ impl GameView {
         if self.game.can_next() {
             return Ok(());
         }
-        let Some(street) = self.game.can_next_street() else {
+        let State::Street(street) = self.game.state() else {
             return Ok(());
         };
         match street {
@@ -404,11 +380,10 @@ impl GameView {
             Street::River => self.card_selector.set_min_max(1, 1),
         }
         self.card_selector.set_disabled(self.game.known_cards());
-        let apply = Window::new(format!("Select {street}"))
-            .resizable([true, true])
-            .default_size([400.0, 200.0])
-            .show(ui.ctx(), |ui| self.card_selector.view(ui));
-        if apply.is_some_and(|apply| apply.inner == Some(true)) {
+        if self
+            .card_selector
+            .window(ui.ctx(), format!("Select {street}"))
+        {
             match street {
                 Street::PreFlop => unreachable!(),
                 Street::Flop => self
@@ -634,6 +609,205 @@ fn suite_color(suite: Suite) -> Color32 {
     }
 }
 
+struct GameBuilder {
+    game: GameData,
+    hand_selector: CardSelector,
+    hand_selector_for: Option<usize>,
+    error: String,
+}
+
+impl GameBuilder {
+    fn new() -> Self {
+        let mut hand_selector = CardSelector::new();
+        hand_selector.set_min_max(2, 2);
+        Self {
+            game: GameData::default(),
+            hand_selector,
+            hand_selector_for: None,
+            error: String::new(),
+        }
+    }
+
+    fn window(&mut self, ctx: &Context, title: String) -> Option<Game> {
+        let response = Window::new(title)
+            .resizable([true, true])
+            .default_size([450.0, 600.0])
+            .show(ctx, |ui| self.view(ui));
+        response.and_then(|inner| inner.inner).flatten()
+    }
+
+    fn view(&mut self, ui: &mut Ui) -> Option<Game> {
+        let table = TableBuilder::new(ui)
+            .striped(true)
+            .cell_layout(Layout::left_to_right(egui::Align::Center))
+            .column(Column::remainder())
+            .column(Column::remainder())
+            .column(Column::remainder())
+            .column(Column::auto())
+            .column(Column::auto())
+            .column(Column::auto());
+        const ROW_HEIGHT: f32 = 20.0;
+        table
+            .header(ROW_HEIGHT, |mut header| {
+                header.col(|ui| {
+                    ui.strong("Name");
+                });
+                header.col(|ui| {
+                    ui.strong("Stack");
+                });
+            })
+            .body(|mut body| {
+                let player_count = self.game.players.len();
+                let known_cards = self
+                    .game
+                    .players
+                    .iter()
+                    .filter_map(|player| player.hand)
+                    .flat_map(|hand| hand.to_cards().iter())
+                    .fold(Cards::EMPTY, |cards, card| cards.with(card));
+                let mut remove_hand: Option<usize> = None;
+                let mut remove_player: Option<usize> = None;
+                let mut swap_players: Option<(usize, usize)> = None;
+
+                for (index, player) in self.game.players.iter_mut().enumerate() {
+                    body.row(ROW_HEIGHT, |mut row| {
+                        let position_name = Game::position_name(
+                            player_count,
+                            usize::from(self.game.button_index),
+                            index,
+                        )
+                        .map(|(short_name, _)| short_name)
+                        .unwrap_or("Player");
+                        let mut name = player
+                            .name
+                            .clone()
+                            .unwrap_or_else(|| position_name.to_string());
+                        row.col(|ui| {
+                            ui.text_edit_singleline(&mut name);
+                        });
+                        if name.is_empty() || name == position_name {
+                            player.name = None;
+                        } else {
+                            player.name = Some(name);
+                        }
+
+                        row.col(|ui| {
+                            let drag_value = DragValue::new(&mut player.starting_stack).speed(1.0);
+                            ui.add(drag_value);
+                        });
+
+                        row.col(|ui| {
+                            let text = if let Some(hand) = player.hand {
+                                format!("Hand ({hand})")
+                            } else {
+                                "Hand".to_string()
+                            };
+                            if ui.button(text).clicked() {
+                                // TODO: Cancel select hand.
+                                let known_cards = if let Some(hand) = player.hand {
+                                    known_cards.without(hand.high()).without(hand.low())
+                                } else {
+                                    known_cards
+                                };
+                                self.hand_selector.set_disabled(known_cards);
+                                self.hand_selector_for = Some(index);
+                            };
+
+                            if player.hand.is_some() {
+                                if ui.button("🗑").clicked() {
+                                    remove_hand = Some(index);
+                                };
+                            }
+                        });
+
+                        row.col(|ui| {
+                            if ui.button("⬇").clicked() {
+                                swap_players = Some((index, cmp::min(index + 1, player_count - 1)));
+                            };
+                        });
+
+                        row.col(|ui| {
+                            if ui.button("⬆").clicked() {
+                                swap_players = Some((index, index.saturating_sub(1)));
+                            };
+                        });
+
+                        row.col(|ui| {
+                            if ui.button("🗑").clicked() {
+                                remove_player = Some(index);
+                            };
+                        });
+                    });
+                }
+
+                if self.hand_selector_for.is_none() {
+                    if let Some(player) = remove_hand {
+                        self.game.players[player].hand = None;
+                    }
+
+                    if let Some(remove_player) = remove_player {
+                        if self.game.players.len() > Game::MIN_PLAYERS {
+                            self.game.players.remove(remove_player);
+                        }
+                    }
+
+                    if let Some((a, b)) = swap_players {
+                        self.game.players.swap(a, b);
+                    }
+                }
+            });
+
+        if let Some(player) = self.hand_selector_for {
+            if self
+                .hand_selector
+                .window(ui.ctx(), "Select hand".to_string())
+            {
+                let hand = self.hand_selector.cards.to_hand().unwrap();
+                self.game.players[player].hand = Some(hand);
+                self.hand_selector.reset();
+                self.hand_selector_for = None;
+            }
+        }
+
+        ui.separator();
+
+        let game = ui
+            .horizontal(|ui| {
+                let game = if ui.button("Create").clicked() {
+                    self.error = String::new();
+                    match Game::from_game_data(&self.game) {
+                        Ok(game) => Some(game),
+                        Err(err) => {
+                            self.error = err.to_string();
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui.button("+").clicked()
+                        && self.hand_selector_for.is_none()
+                        && self.game.players.len() < Game::MAX_PLAYERS
+                    {
+                        let starting_stack = self.game.big_blind.saturating_mul(100);
+                        self.game
+                            .players
+                            .push(Player::with_starting_stack(starting_stack));
+                    };
+                });
+
+                game
+            })
+            .inner;
+        if !self.error.is_empty() {
+            ui.label(&self.error);
+        }
+        game
+    }
+}
+
 struct CardSelector {
     cards: Cards,
     in_order: Vec<Card>,
@@ -672,6 +846,14 @@ impl CardSelector {
         }
         self.disabled = disabled;
         assert_eq!(self.cards & self.disabled, Cards::EMPTY);
+    }
+
+    fn window(&mut self, ctx: &Context, title: String) -> bool {
+        let response = Window::new(title)
+            .resizable([true, true])
+            .default_size([400.0, 200.0])
+            .show(ctx, |ui| self.view(ui));
+        response.is_some_and(|apply| apply.inner == Some(true))
     }
 
     fn view(&mut self, ui: &mut Ui) -> bool {

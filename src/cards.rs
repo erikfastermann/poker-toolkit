@@ -358,6 +358,11 @@ impl Cards {
         self.0 &= !(1 << card.to_index_u64())
     }
 
+    pub fn without(mut self, card: Card) -> Self {
+        self.remove(card);
+        self
+    }
+
     fn without_rank(self, rank: Rank) -> Self {
         self & !Self::of_rank(rank)
     }

@@ -1,10 +1,10 @@
-use std::{collections::HashSet, iter::Peekable, str::FromStr};
+use std::{iter::Peekable, str::FromStr};
 
 use regex::Regex;
 
 use crate::{
     card::Card,
-    game::{Game, State, Street},
+    game::{Game, Player, State, Street},
     hand::Hand,
     result::Result,
 };
@@ -109,21 +109,14 @@ impl GGHandHistoryParser {
         let mut lines = entry.lines().peekable();
         let (small_blind, big_blind) = self.parse_description(&mut lines)?;
         let button_index = self.parse_table_info(&mut lines)?;
-        let (stacks, names, hero_index) = self.parse_stacks(&mut lines)?;
-        // TODO: Use names of Game.
-        let mut game = Game::new(
-            stacks,
-            Some(names.clone()),
-            button_index,
-            small_blind,
-            big_blind,
-        )?;
-        self.validate_posts(&mut lines, button_index, &names, small_blind, big_blind)?;
+        let (players, hero_index) = self.parse_stacks(&mut lines)?;
+        let mut game = Game::new(&players, button_index, small_blind, big_blind)?;
+        self.validate_posts(&mut lines, &game)?;
         game.post_small_and_big_blind()?;
-        let hero_hand = self.parse_hole_cards(&mut lines, &names)?;
+        let hero_hand = self.parse_hole_cards(&mut lines, &game)?;
         game.set_hand(hero_index, hero_hand)?;
-        self.parse_and_apply_actions(&mut lines, &mut game, &names)?;
-        let winnings = self.parse_showdown(&mut lines, &mut game, &names)?;
+        self.parse_and_apply_actions(&mut lines, &mut game)?;
+        let winnings = self.parse_showdown(&mut lines, &mut game)?;
         self.parse_summary(&mut lines, &mut game, &winnings)?;
         game.internal_asserts_history();
         Ok(game)
@@ -160,29 +153,30 @@ impl GGHandHistoryParser {
     fn parse_stacks<'a>(
         &self,
         lines: &mut Peekable<impl Iterator<Item = &'a str>>,
-    ) -> Result<(Vec<u32>, Vec<String>, usize)> {
-        let mut stacks = Vec::new();
-        let mut names = Vec::new();
+    ) -> Result<(Vec<Player>, usize)> {
+        let mut players = Vec::new();
         loop {
             let seat_config = option_to_result(lines.peek(), "seat config line missing")?;
             let Some(seat_config) = self.re_seat_config.captures(seat_config) else {
                 break;
             };
             let [seat_one_based, name, stack] = seat_config.extract().1;
-            if stacks.len().checked_add(1) != Some(seat_one_based.parse::<usize>()?) {
+            if players.len().checked_add(1) != Some(seat_one_based.parse::<usize>()?) {
                 return Err("seat config: bad seat index".into());
             }
-            names.push(name.to_string());
-            stacks.push(Self::parse_price_as_cent(stack)?);
+            players.push(Player {
+                name: Some(name.to_string()),
+                hand: None,
+                starting_stack: Self::parse_price_as_cent(stack)?,
+            });
             lines.next().unwrap();
         }
 
-        if names.iter().collect::<HashSet<_>>().len() != names.len() {
-            return Err("seat config: duplicate name".into());
-        }
-        let hero_index = names.iter().position(|name| name == Self::HERO);
+        let hero_index = players
+            .iter()
+            .position(|player| player.name.as_ref().is_some_and(|name| name == Self::HERO));
         if let Some(hero_index) = hero_index {
-            Ok((stacks, names, hero_index))
+            Ok((players, hero_index))
         } else {
             Err("seat config: hero index missing".into())
         }
@@ -191,15 +185,12 @@ impl GGHandHistoryParser {
     fn validate_posts<'a>(
         &self,
         lines: &mut impl Iterator<Item = &'a str>,
-        button_index: usize,
-        names: &[impl AsRef<str>],
-        small_blind: u32,
-        big_blind: u32,
+        game: &Game,
     ) -> Result<()> {
-        let small_blind_name = names[(button_index + 1) % names.len()].as_ref();
-        let big_blind_name = names[(button_index + 2) % names.len()].as_ref();
-        self.validate_post(lines, small_blind_name, "small", small_blind)?;
-        self.validate_post(lines, big_blind_name, "big", big_blind)
+        let small_blind_name = game.player_name(game.small_blind_index()).as_ref();
+        let big_blind_name = game.player_name(game.big_blind_index()).as_ref();
+        self.validate_post(lines, small_blind_name, "small", game.small_blind())?;
+        self.validate_post(lines, big_blind_name, "big", game.big_blind())
     }
 
     fn validate_post<'a>(
@@ -227,7 +218,7 @@ impl GGHandHistoryParser {
     fn parse_hole_cards<'a>(
         &self,
         lines: &mut impl Iterator<Item = &'a str>,
-        names: &[impl AsRef<str>],
+        game: &Game,
     ) -> Result<Hand> {
         let has_hole_cards_title = lines
             .next()
@@ -237,7 +228,7 @@ impl GGHandHistoryParser {
         }
 
         let mut hero_hand = None;
-        for expected_name in names.iter().map(|name| name.as_ref()) {
+        for expected_name in game.player_names().iter().map(|name| name) {
             let deal = option_to_result(lines.next(), "deal line is missing")?;
             let deal = option_to_result(self.re_deal.captures(deal), "deal: invalid format")?;
             let name = &deal[1];
@@ -270,15 +261,14 @@ impl GGHandHistoryParser {
         &self,
         lines: &mut impl Iterator<Item = &'a str>,
         game: &mut Game,
-        names: &[impl AsRef<str>],
     ) -> Result<()> {
         loop {
             match game.state() {
                 State::Post | State::End => unreachable!(),
-                State::Player(_) => self.parse_and_apply_player_action(lines, game, names)?,
+                State::Player(_) => self.parse_and_apply_player_action(lines, game)?,
                 State::Street(_) => self.parse_and_apply_street_action(lines, game)?,
-                State::UncalledBet(_, _) => self.parse_uncalled_bet(lines, game, names)?,
-                State::ShowOrMuck(_) => self.parse_shows(lines, game, names)?,
+                State::UncalledBet(_, _) => self.parse_uncalled_bet(lines, game)?,
+                State::ShowOrMuck(_) => self.parse_shows(lines, game)?,
                 State::Showdown => break Ok(()),
             }
         }
@@ -288,16 +278,16 @@ impl GGHandHistoryParser {
         &self,
         lines: &mut impl Iterator<Item = &'a str>,
         game: &mut Game,
-        names: &[impl AsRef<str>],
     ) -> Result<()> {
         let action = option_to_result(lines.next(), "action line is missing")?;
         let Some(action) = self.re_action.captures(action) else {
             return Err("action: invalid format".into());
         };
         let name = &action[1];
-        let player_index = names
+        let player_index = game
+            .player_names()
             .iter()
-            .position(|current_name| current_name.as_ref() == name);
+            .position(|current_name| current_name == name);
         if player_index.is_none() || player_index != game.current_player() {
             return Err(format!(
                 "action: player {name} is not expected index {:?}",
@@ -450,7 +440,6 @@ impl GGHandHistoryParser {
         &self,
         lines: &mut impl Iterator<Item = &'a str>,
         game: &mut Game,
-        names: &[impl AsRef<str>],
     ) -> Result<()> {
         let State::UncalledBet(expected_player, expected_amount) = game.state() else {
             unreachable!();
@@ -462,9 +451,10 @@ impl GGHandHistoryParser {
         };
         let [amount, name] = uncalled.extract().1;
         let amount = Self::parse_price_as_cent(amount)?;
-        let player = names
+        let player = game
+            .player_names()
             .iter()
-            .position(|current_name| current_name.as_ref() == name);
+            .position(|current_name| current_name == name);
         let Some(player) = player else {
             return Err(format!("uncalled bet: unknown name {name}").into());
         };
@@ -480,7 +470,6 @@ impl GGHandHistoryParser {
         &self,
         lines: &mut impl Iterator<Item = &'a str>,
         game: &mut Game,
-        names: &[impl AsRef<str>],
     ) -> Result<()> {
         let players_in_hand = game.players_in_hand().count();
         if players_in_hand == 1 {
@@ -492,9 +481,10 @@ impl GGHandHistoryParser {
                 return Err("shows: invalid format".into());
             };
             let [name, card_a, card_b] = shows.extract().1;
-            let player = names
+            let player = game
+                .player_names()
                 .iter()
-                .position(|current_name| current_name.as_ref() == name);
+                .position(|current_name| current_name == name);
             let Some(player) = player else {
                 return Err(format!("shows: unknown name {name}").into());
             };
@@ -515,7 +505,6 @@ impl GGHandHistoryParser {
         &self,
         lines: &mut Peekable<impl Iterator<Item = &'a str>>,
         game: &mut Game,
-        names: &[impl AsRef<str>],
     ) -> Result<Vec<u32>> {
         let has_header_line = lines.next().is_some_and(|line| line == "*** SHOWDOWN ***");
         if !has_header_line {
@@ -531,9 +520,10 @@ impl GGHandHistoryParser {
                 return Err("showdown: invalid format".into());
             };
             let [name, amount_won] = showdown.extract().1;
-            let player = names
+            let player = game
+                .player_names()
                 .iter()
-                .position(|current_name| current_name.as_ref() == name);
+                .position(|current_name| current_name == name);
             let Some(player) = player else {
                 return Err(format!("showdown: unknown player name {name}").into());
             };
@@ -631,7 +621,7 @@ mod tests {
         for game in games {
             let data = serde_json::to_string_pretty(&game.to_game_data()).unwrap();
             println!("{data}");
-            let parsed_game = Game::from_game_data(serde_json::from_str(&data).unwrap()).unwrap();
+            let parsed_game = Game::from_game_data(&serde_json::from_str(&data).unwrap()).unwrap();
             assert_eq!(&game, &parsed_game);
         }
     }

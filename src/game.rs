@@ -1,5 +1,4 @@
 use std::cmp::min;
-use std::collections::HashMap;
 use std::ops::BitAnd;
 use std::{array, fmt, usize};
 
@@ -252,7 +251,7 @@ impl Game {
 
     pub const TOTAL_CARDS: usize = 5;
 
-    pub const POSITION_NAMES: [&[(&str, &str)]; Self::MAX_PLAYERS - Self::MIN_PLAYERS + 1] = [
+    const POSITION_NAMES: [&[(&str, &str)]; Self::MAX_PLAYERS - Self::MIN_PLAYERS + 1] = [
         &[("BTN", "Small Blind / Dealer"), ("BB", "Big Blind")],
         &[
             ("BTN", "Button"),
@@ -312,14 +311,35 @@ impl Game {
         ],
     ];
 
+    pub fn position_names(player_count: usize) -> Option<&'static [(&'static str, &'static str)]> {
+        if player_count < Self::MIN_PLAYERS || player_count > Self::MAX_PLAYERS {
+            None
+        } else {
+            Some(Self::POSITION_NAMES[player_count - Self::MIN_PLAYERS])
+        }
+    }
+
+    pub fn position_name(
+        player_count: usize,
+        button_index: usize,
+        player: usize,
+    ) -> Option<(&'static str, &'static str)> {
+        let names = Self::position_names(player_count)?;
+        if button_index >= player_count || player >= player_count {
+            None
+        } else {
+            let index = (player_count - button_index + player) % player_count;
+            Some(names[index])
+        }
+    }
+
     pub fn new(
-        stacks: Vec<u32>,
-        names: Option<Vec<String>>,
+        players: &[Player],
         button_index: usize,
         small_blind: u32,
         big_blind: u32,
     ) -> Result<Self> {
-        let player_count = stacks.len();
+        let player_count = players.len();
         if player_count < Self::MIN_PLAYERS || player_count > Self::MAX_PLAYERS {
             return Err(format!(
                 "not enough or too many players ({} - {})",
@@ -328,6 +348,7 @@ impl Game {
             )
             .into());
         }
+        let stacks: Vec<_> = players.iter().map(|player| player.starting_stack).collect();
         if stacks.iter().any(|stack| *stack == 0) {
             return Err("empty stacks not allowed in hand".into());
         }
@@ -341,21 +362,25 @@ impl Game {
         if total_stacks.is_none() {
             return Err("total stacks overflows".into());
         }
-        let names = names.unwrap_or_else(|| {
-            let names = Self::POSITION_NAMES[player_count - Self::MIN_PLAYERS];
-            (0..player_count)
-                .map(|player| {
-                    let index = (player_count - button_index + player) % player_count;
-                    names[index].0.to_string()
+        let names: Vec<_> = players
+            .iter()
+            .enumerate()
+            .map(|(index, player)| {
+                player.name.clone().unwrap_or_else(|| {
+                    Self::position_name(player_count, button_index, index)
+                        .unwrap()
+                        .0
+                        .to_string()
                 })
-                .collect()
-        });
-        if names.len() != stacks.len() {
-            return Err("names and stacks have different lengths".into());
-        }
+            })
+            .collect();
         // TODO: Check names are unique.
+        let hands: Vec<_> = players
+            .iter()
+            .map(|player| player.hand.unwrap_or(Hand::UNDEFINED))
+            .collect();
 
-        Ok(Self {
+        let game = Self {
             actions: Vec::new(),
             names,
             starting_stacks: stacks.clone(),
@@ -369,25 +394,22 @@ impl Game {
             players_in_hand: Bitset::ones(player_count),
             small_blind,
             big_blind,
-            hands: vec![Hand::UNDEFINED; player_count],
+            hands,
             hand_shown: Bitset::EMPTY,
             at_end: false,
             in_next: false,
-        })
+        };
+        game.check_cards()?;
+        Ok(game)
     }
 
-    pub fn from_game_data(data: GameData) -> Result<Game> {
+    pub fn from_game_data(data: &GameData) -> Result<Game> {
         let mut game = Self::new(
-            data.starting_stacks,
-            data.player_names,
+            &data.players,
             usize::from(data.button_index),
             data.small_blind,
             data.big_blind,
         )?;
-
-        for (player, hand) in data.hands.into_iter() {
-            game.set_hand(usize::from(player), hand)?;
-        }
 
         if !data.actions.is_empty() {
             if data.actions.len() < 2 {
@@ -402,24 +424,33 @@ impl Game {
             }
         }
 
-        if let Some(showdown_stacks) = data.showdown_stacks {
+        if let Some(showdown_stacks) = &data.showdown_stacks {
             game.showdown_stacks(&showdown_stacks)?;
         }
         Ok(game)
     }
 
     pub fn to_game_data(&self) -> GameData {
+        let players = self
+            .names
+            .iter()
+            .zip(self.hands.iter().copied().map(|hand| {
+                if hand == Hand::UNDEFINED {
+                    None
+                } else {
+                    Some(hand)
+                }
+            }))
+            .zip(self.starting_stacks.iter().copied())
+            .map(|((name, hand), stack)| Player {
+                name: Some(name.clone()),
+                hand,
+                starting_stack: stack,
+            })
+            .collect();
+
         GameData {
-            player_names: Some(self.names.clone()),
-            hands: self
-                .hands
-                .iter()
-                .copied()
-                .enumerate()
-                .filter(|(_, hand)| *hand != Hand::UNDEFINED)
-                .map(|(player, hand)| (u8::try_from(player).unwrap(), hand))
-                .collect(),
-            starting_stacks: self.starting_stacks.clone(),
+            players,
             button_index: self.button_index,
             small_blind: self.small_blind,
             big_blind: self.big_blind,
@@ -430,6 +461,22 @@ impl Game {
                 None
             },
         }
+    }
+
+    pub fn reset(&mut self) {
+        self.actions.clear();
+        for street_stacks in self.stacks_in_street.iter_mut() {
+            street_stacks.copy_from_slice(&self.starting_stacks);
+        }
+        self.showdown_stacks.iter_mut().for_each(|stack| *stack = 0);
+        self.board = Board::EMPTY;
+        self.current_street_index = 0;
+        self.current_action_index = 0;
+        self.current_player = u8::MAX;
+        self.players_in_hand = Bitset::ones(self.player_count());
+        self.hand_shown = Bitset::EMPTY;
+        self.at_end = false;
+        self.in_next = false;
     }
 
     pub fn player_names(&self) -> &[String] {
@@ -975,9 +1022,7 @@ impl Game {
         Ok(())
     }
 
-    pub fn can_next_street(&self) -> Option<Street> {
-        // TODO: Private or crate only?
-
+    pub(crate) fn can_next_street(&self) -> Option<Street> {
         let allowed = self.next_show_or_muck().is_none()
             && self.current_player().is_none()
             && (!self.actions_in_street().is_empty() || self.players_in_hand_not_all_in() <= 1)
@@ -1463,15 +1508,8 @@ impl Game {
     pub(crate) fn internal_asserts_history(&self) {
         assert_eq!(self.state(), State::End);
         let mut games = Vec::new();
-        let mut new_game = Self::new(
-            self.starting_stacks.clone(),
-            Some(self.names.clone()),
-            self.button_index(),
-            self.small_blind(),
-            self.big_blind(),
-        )
-        .unwrap();
-        new_game.hands = self.hands.clone();
+        let mut new_game = self.clone();
+        new_game.reset();
         games.push(new_game.clone());
         assert!(!new_game.previous());
         assert!(!new_game.next());
@@ -1532,14 +1570,42 @@ impl Game {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Player {
+    pub name: Option<String>,
+    pub hand: Option<Hand>,
+    pub starting_stack: u32,
+}
+
+impl Player {
+    pub fn with_starting_stack(starting_stack: u32) -> Self {
+        Self {
+            name: None,
+            hand: None,
+            starting_stack,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GameData {
-    pub player_names: Option<Vec<String>>,
-    pub hands: HashMap<u8, Hand>,
-    pub starting_stacks: Vec<u32>,
+    pub players: Vec<Player>,
     pub button_index: u8,
     pub small_blind: u32,
     pub big_blind: u32,
     pub actions: Vec<Action>,
     pub showdown_stacks: Option<Vec<u32>>,
+}
+
+impl Default for GameData {
+    fn default() -> Self {
+        Self {
+            players: vec![Player::with_starting_stack(1_000); 6],
+            button_index: 0,
+            small_blind: 5,
+            big_blind: 10,
+            actions: Vec::new(),
+            showdown_stacks: None,
+        }
+    }
 }
