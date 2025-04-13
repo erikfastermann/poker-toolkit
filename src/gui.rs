@@ -1,5 +1,3 @@
-use std::cmp;
-
 use eframe::{
     egui::{
         self, Align, Align2, Button, Color32, Context, DragValue, FontFamily, FontId, Id, Layout,
@@ -8,7 +6,7 @@ use eframe::{
     },
     Frame,
 };
-use egui_extras::{Column, TableBuilder};
+use egui_extras::{Column, TableBody, TableBuilder, TableRow};
 
 use crate::{
     card::Card,
@@ -614,9 +612,14 @@ struct GameBuilder {
     hand_selector: CardSelector,
     hand_selector_for: Option<usize>,
     error: String,
+    remove_hand: Option<usize>,
+    remove_player: Option<usize>,
+    swap_players: Option<(usize, usize)>,
 }
 
 impl GameBuilder {
+    const ROW_HEIGHT: f32 = 20.0;
+
     fn new() -> Self {
         let mut hand_selector = CardSelector::new();
         hand_selector.set_min_max(2, 2);
@@ -625,6 +628,9 @@ impl GameBuilder {
             hand_selector,
             hand_selector_for: None,
             error: String::new(),
+            remove_hand: None,
+            remove_player: None,
+            swap_players: None,
         }
     }
 
@@ -637,6 +643,43 @@ impl GameBuilder {
     }
 
     fn view(&mut self, ui: &mut Ui) -> Option<Game> {
+        self.view_reset();
+        self.blinds(ui);
+        ui.separator();
+        self.players_table(ui);
+        self.hand_selector(ui);
+        ui.separator();
+        self.bottom_controls(ui)
+    }
+
+    fn view_reset(&mut self) {
+        self.remove_hand = None;
+        self.remove_player = None;
+        self.swap_players = None;
+    }
+
+    fn blinds(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            ui.label("Small blind:");
+            ui.add(DragValue::new(&mut self.game.small_blind));
+            ui.separator();
+
+            ui.label("Big blind:");
+            ui.add(DragValue::new(&mut self.game.big_blind));
+            ui.separator();
+
+            if ui.button("100BB Stacks").clicked() {
+                let Some(stack) = self.game.big_blind.checked_mul(100) else {
+                    return;
+                };
+                for player in self.game.players.iter_mut() {
+                    player.starting_stack = stack;
+                }
+            }
+        });
+    }
+
+    fn players_table(&mut self, ui: &mut Ui) {
         let table = TableBuilder::new(ui)
             .striped(true)
             .cell_layout(Layout::left_to_right(egui::Align::Center))
@@ -645,118 +688,175 @@ impl GameBuilder {
             .column(Column::remainder())
             .column(Column::auto())
             .column(Column::auto())
+            .column(Column::auto())
             .column(Column::auto());
-        const ROW_HEIGHT: f32 = 20.0;
+
         table
-            .header(ROW_HEIGHT, |mut header| {
+            .header(Self::ROW_HEIGHT, |mut header| {
                 header.col(|ui| {
                     ui.strong("Name");
                 });
                 header.col(|ui| {
                     ui.strong("Stack");
                 });
+                header.col(|ui| {
+                    ui.strong("Hand");
+                });
+                header.col(|ui| {
+                    ui.strong("Button");
+                });
             })
-            .body(|mut body| {
-                let player_count = self.game.players.len();
-                let known_cards = self
-                    .game
-                    .players
-                    .iter()
-                    .filter_map(|player| player.hand)
-                    .flat_map(|hand| hand.to_cards().iter())
-                    .fold(Cards::EMPTY, |cards, card| cards.with(card));
-                let mut remove_hand: Option<usize> = None;
-                let mut remove_player: Option<usize> = None;
-                let mut swap_players: Option<(usize, usize)> = None;
+            .body(|body| self.players_table_body(body));
+    }
 
-                for (index, player) in self.game.players.iter_mut().enumerate() {
-                    body.row(ROW_HEIGHT, |mut row| {
-                        let position_name = Game::position_name(
-                            player_count,
-                            usize::from(self.game.button_index),
-                            index,
-                        )
-                        .map(|(short_name, _)| short_name)
-                        .unwrap_or("Player");
-                        let mut name = player
-                            .name
-                            .clone()
-                            .unwrap_or_else(|| position_name.to_string());
-                        row.col(|ui| {
-                            ui.text_edit_singleline(&mut name);
-                        });
-                        if name.is_empty() || name == position_name {
-                            player.name = None;
-                        } else {
-                            player.name = Some(name);
-                        }
-
-                        row.col(|ui| {
-                            let drag_value = DragValue::new(&mut player.starting_stack).speed(1.0);
-                            ui.add(drag_value);
-                        });
-
-                        row.col(|ui| {
-                            let text = if let Some(hand) = player.hand {
-                                format!("Hand ({hand})")
-                            } else {
-                                "Hand".to_string()
-                            };
-                            if ui.button(text).clicked() {
-                                // TODO: Cancel select hand.
-                                let known_cards = if let Some(hand) = player.hand {
-                                    known_cards.without(hand.high()).without(hand.low())
-                                } else {
-                                    known_cards
-                                };
-                                self.hand_selector.set_disabled(known_cards);
-                                self.hand_selector_for = Some(index);
-                            };
-
-                            if player.hand.is_some() {
-                                if ui.button("🗑").clicked() {
-                                    remove_hand = Some(index);
-                                };
-                            }
-                        });
-
-                        row.col(|ui| {
-                            if ui.button("⬇").clicked() {
-                                swap_players = Some((index, cmp::min(index + 1, player_count - 1)));
-                            };
-                        });
-
-                        row.col(|ui| {
-                            if ui.button("⬆").clicked() {
-                                swap_players = Some((index, index.saturating_sub(1)));
-                            };
-                        });
-
-                        row.col(|ui| {
-                            if ui.button("🗑").clicked() {
-                                remove_player = Some(index);
-                            };
-                        });
-                    });
-                }
-
-                if self.hand_selector_for.is_none() {
-                    if let Some(player) = remove_hand {
-                        self.game.players[player].hand = None;
-                    }
-
-                    if let Some(remove_player) = remove_player {
-                        if self.game.players.len() > Game::MIN_PLAYERS {
-                            self.game.players.remove(remove_player);
-                        }
-                    }
-
-                    if let Some((a, b)) = swap_players {
-                        self.game.players.swap(a, b);
-                    }
-                }
+    fn players_table_body(&mut self, mut body: TableBody<'_>) {
+        for player_index in 0..self.game.players.len() {
+            body.row(Self::ROW_HEIGHT, |row| {
+                self.players_table_row(row, player_index)
             });
+        }
 
+        self.players_table_add_remove();
+    }
+
+    fn players_table_row(&mut self, mut row: TableRow<'_, '_>, player_index: usize) {
+        let player_count = self.game.players.len();
+
+        row.col(|ui| self.players_table_name_column(ui, player_index));
+
+        row.col(|ui| {
+            let player = &mut self.game.players[player_index];
+            let drag_value = DragValue::new(&mut player.starting_stack).speed(1.0);
+            ui.add(drag_value);
+        });
+
+        row.col(|ui| self.players_table_hand_column(ui, player_index));
+
+        row.col(|ui| {
+            ui.radio_value(
+                &mut self.game.button_index,
+                u8::try_from(player_index).unwrap(),
+                "",
+            );
+        });
+
+        row.col(|ui| {
+            if ui.button("⬇").clicked() {
+                self.swap_players = Some((player_index, (player_index + 1) % player_count));
+            };
+        });
+
+        row.col(|ui| {
+            if ui.button("⬆").clicked() {
+                self.swap_players = Some((
+                    player_index,
+                    player_index
+                        .checked_sub(1)
+                        .unwrap_or_else(|| player_count - 1),
+                ));
+            };
+        });
+
+        row.col(|ui| {
+            if ui.button("🗑").clicked() {
+                self.remove_player = Some(player_index);
+            };
+        });
+    }
+
+    fn players_table_name_column(&mut self, ui: &mut Ui, player_index: usize) {
+        let player_count = self.game.players.len();
+        let player = &mut self.game.players[player_index];
+
+        let position_name = Game::position_name(
+            player_count,
+            usize::from(self.game.button_index),
+            player_index,
+        )
+        .map(|(short_name, _)| short_name)
+        .unwrap_or("Player");
+
+        let mut name = player
+            .name
+            .clone()
+            .unwrap_or_else(|| position_name.to_string());
+
+        ui.text_edit_singleline(&mut name);
+
+        if name.is_empty() || name == position_name {
+            player.name = None;
+        } else {
+            player.name = Some(name);
+        }
+    }
+
+    fn players_table_hand_column(&mut self, ui: &mut Ui, player_index: usize) {
+        let known_cards = self
+            .game
+            .players
+            .iter()
+            .filter_map(|player| player.hand)
+            .flat_map(|hand| hand.to_cards().iter())
+            .fold(Cards::EMPTY, |cards, card| cards.with(card));
+        let player = &mut self.game.players[player_index];
+
+        let text = if let Some(hand) = player.hand {
+            hand.to_string()
+        } else {
+            "...".to_string()
+        };
+
+        if ui.button(text).clicked() {
+            let known_cards = if let Some(hand) = player.hand {
+                known_cards.without(hand.high()).without(hand.low())
+            } else {
+                known_cards
+            };
+            self.hand_selector.set_disabled(known_cards);
+            // TODO: Cancel select hand.
+            self.hand_selector_for = Some(player_index);
+        };
+
+        if player.hand.is_some() {
+            if ui.button("🗑").clicked() {
+                self.remove_hand = Some(player_index);
+            };
+        }
+    }
+
+    fn players_table_add_remove(&mut self) {
+        if self.hand_selector_for.is_some() {
+            return;
+        }
+
+        if let Some(player) = self.remove_hand {
+            self.game.players[player].hand = None;
+        }
+
+        if let Some(remove_player) = self.remove_player {
+            if self.game.players.len() > Game::MIN_PLAYERS {
+                self.game.players.remove(remove_player);
+
+                if remove_player == usize::from(self.game.button_index) {
+                    self.game.button_index = 0;
+                }
+            }
+        }
+
+        if let Some((a, b)) = self.swap_players {
+            self.game.players.swap(a, b);
+
+            let a = u8::try_from(a).unwrap();
+            let b = u8::try_from(b).unwrap();
+            if self.game.button_index == a {
+                self.game.button_index = b;
+            } else if self.game.button_index == b {
+                self.game.button_index = a;
+            }
+        }
+    }
+
+    fn hand_selector(&mut self, ui: &mut Ui) {
         if let Some(player) = self.hand_selector_for {
             if self
                 .hand_selector
@@ -768,9 +868,9 @@ impl GameBuilder {
                 self.hand_selector_for = None;
             }
         }
+    }
 
-        ui.separator();
-
+    fn bottom_controls(&mut self, ui: &mut Ui) -> Option<Game> {
         let game = ui
             .horizontal(|ui| {
                 let game = if ui.button("Create").clicked() {
@@ -801,6 +901,7 @@ impl GameBuilder {
                 game
             })
             .inner;
+
         if !self.error.is_empty() {
             ui.label(&self.error);
         }
