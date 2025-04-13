@@ -822,7 +822,7 @@ impl Game {
     fn current_player_result(&self) -> Result<usize> {
         match self.current_player() {
             Some(player) => Ok(player),
-            None => Err("can't perform player action: not started or end of betting round".into()),
+            None => Err("currently no player selected".into()),
         }
     }
 
@@ -1128,11 +1128,12 @@ impl Game {
         Ok(())
     }
 
-    pub fn draw_next_street_from(&mut self, deck: &mut Deck, rng: &mut impl Rng) -> Result<()> {
+    pub fn draw_next_street(&mut self, rng: &mut impl Rng) -> Result<()> {
         self.check_pre_update()?;
         let Some(street) = self.can_next_street() else {
             return Err("cannot go to next street".into());
         };
+        let mut deck = Deck::from_cards(rng, self.known_cards());
         match street {
             Street::PreFlop => unreachable!(),
             Street::Flop => self.flop([
@@ -1306,6 +1307,17 @@ impl Game {
         players
     }
 
+    pub fn draw_unset_hands(&mut self, rng: &mut impl Rng) {
+        let mut deck = Deck::from_cards(rng, self.known_cards());
+        for hand in &mut self.hands {
+            if *hand != Hand::UNDEFINED {
+                continue;
+            }
+            *hand = deck.hand(rng).unwrap();
+        }
+        self.check_cards().unwrap();
+    }
+
     pub fn set_hand(&mut self, index: usize, hand: Hand) -> Result<()> {
         if index >= self.player_count() {
             return Err(format!("set hand: unknown player index {index}").into());
@@ -1318,6 +1330,11 @@ impl Game {
         self.hands[index] = hand;
         self.check_cards()?;
         Ok(())
+    }
+
+    pub fn hand_shown(&self, player: usize) -> bool {
+        assert!(player < self.player_count());
+        self.hand_shown.has(player)
     }
 
     pub fn show_hand(&mut self) -> Result<()> {

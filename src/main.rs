@@ -1,5 +1,6 @@
 #![allow(dead_code)] // TODO
 
+mod ai;
 mod card;
 mod cards;
 mod deck;

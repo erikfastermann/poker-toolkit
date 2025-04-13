@@ -1,17 +1,19 @@
+use std::collections::HashMap;
+
 use eframe::{
     egui::{
-        self, Align, Align2, Button, Color32, Context, DragValue, FontFamily, FontId, Id, Layout,
-        Painter, Pos2, Rect, Rgba, Sense, Shape, Slider, Stroke, StrokeKind, Style, TextStyle, Ui,
-        UiBuilder, Vec2, Visuals, Window,
+        self, Align, Align2, Button, Color32, ComboBox, Context, DragValue, FontFamily, FontId, Id,
+        Layout, Painter, Pos2, Rect, Rgba, Sense, Shape, Slider, Stroke, StrokeKind, Style,
+        TextStyle, Ui, UiBuilder, Vec2, Visuals, Window,
     },
     Frame,
 };
 use egui_extras::{Column, TableBody, TableBuilder, TableRow};
 
 use crate::{
+    ai::{AlwaysCheckCall, AlwaysFold},
     card::Card,
     cards::Cards,
-    deck::Deck,
     game::{Action, Game, GameData, Player, State, Street},
     hand::Hand,
     rank::Rank,
@@ -46,54 +48,78 @@ pub fn gui() -> eframe::Result {
 
 struct App {
     game: GameView,
-    game_builder: GameBuilder,
 }
 
 impl App {
     fn new() -> Result<Self> {
-        let mut game = Game::from_game_data(&GameData::default())?;
-        game.post_small_and_big_blind()?;
         Ok(Self {
-            game: GameView::new(game),
-            game_builder: GameBuilder::new(),
+            game: GameView::new(),
         })
     }
 }
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &Context, _frame: &mut Frame) {
-        egui::CentralPanel::default().show(ctx, |ui| self.game.view(ui).unwrap());
-        if let Some(mut game) = self.game_builder.window(ctx, "New game".to_string()) {
-            game.post_small_and_big_blind().unwrap();
-            self.game = GameView::new(game);
-        }
+        egui::CentralPanel::default().show(ctx, |ui| {
+            let table_height = ui.clip_rect().height() * 0.9;
+            let bounding_rect = Rect::from_center_size(
+                ui.clip_rect().center(),
+                Vec2 {
+                    x: table_height * 4.0 / 3.0,
+                    y: table_height,
+                },
+            );
+            ui.allocate_new_ui(UiBuilder::new().max_rect(bounding_rect), |ui| {
+                self.game.view(ui).unwrap()
+            });
+        });
     }
 }
 
 struct GameView {
     game: Game,
     card_selector: CardSelector,
+    game_builder: GameBuilder,
+    player_action_generators: Vec<(
+        &'static str,
+        Box<dyn FnMut() -> Box<dyn PlayerActionGenerator>>,
+    )>,
+    // TODO: Offload to background thread.
+    current_player_action_generators: HashMap<usize, Box<dyn PlayerActionGenerator>>,
     current_amount: u32,
+    pick_community_cards: bool,
 }
 
 impl GameView {
-    fn new(game: Game) -> Self {
-        Self {
-            game,
+    fn new() -> Self {
+        let player_action_generators: Vec<(
+            &'static str,
+            Box<dyn FnMut() -> Box<dyn PlayerActionGenerator>>,
+        )> = vec![
+            ("Fold", Box::new(|| Box::new(AlwaysFold))),
+            ("Check/Call", Box::new(|| Box::new(AlwaysCheckCall))),
+        ];
+        let player_action_generator_names = player_action_generators
+            .iter()
+            .map(|(name, _)| *name)
+            .collect();
+
+        let mut game_view = Self {
+            game: Game::from_game_data(&GameData::default()).unwrap(),
             card_selector: CardSelector::new(),
+            game_builder: GameBuilder::new(player_action_generator_names, Some(0)),
+            player_action_generators,
+            current_player_action_generators: HashMap::new(),
             current_amount: 0,
-        }
+            pick_community_cards: false,
+        };
+        game_view.game.draw_unset_hands(&mut rand::thread_rng());
+        game_view.game.post_small_and_big_blind().unwrap();
+        game_view
     }
 
     fn view(&mut self, ui: &mut Ui) -> Result<()> {
-        let table_height = ui.clip_rect().height() * 0.9;
-        let bounding_rect = Rect::from_center_size(
-            ui.clip_rect().center(),
-            Vec2 {
-                x: table_height * 4.0 / 3.0,
-                y: table_height,
-            },
-        );
+        let bounding_rect = ui.max_rect();
         assert!(((bounding_rect.width() / 4.0 * 3.0) - bounding_rect.height()).abs() <= 0.1);
 
         let table_bounding_rect =
@@ -106,26 +132,39 @@ impl GameView {
 
         self.view_card_selector(ui)?;
 
-        self.finalize()
+        self.view_game_builder(ui.ctx())?;
+
+        self.finalize(ui.ctx())
     }
 
-    fn finalize(&mut self) -> Result<()> {
+    fn finalize(&mut self, ctx: &Context) -> Result<()> {
         if self.game.can_next() {
             return Ok(());
         }
 
         loop {
             match self.game.state() {
+                State::Player(player)
+                    if self.current_player_action_generators.contains_key(&player) =>
+                {
+                    // TODO: Gracefully handle errors and check action is valid.
+                    let action = self
+                        .current_player_action_generators
+                        .get_mut(&player)
+                        .unwrap()
+                        .player_action(&self.game)?;
+                    self.game.apply_action(action)?;
+                    ctx.request_repaint();
+                    return Ok(());
+                }
+                State::Street(_) if !self.pick_community_cards => {
+                    let mut rng = rand::thread_rng();
+                    self.game.draw_next_street(&mut rng)?;
+                }
                 State::UncalledBet { .. } => {
                     self.game.uncalled_bet()?;
                 }
-                State::ShowOrMuck(player) => {
-                    if self.game.get_hand(player).is_none() {
-                        // TODO: Custom set dialog.
-                        let mut rng = rand::thread_rng();
-                        let mut deck = Deck::from_cards(&mut rng, self.game.known_cards());
-                        self.game.set_hand(player, deck.hand(&mut rng).unwrap())?;
-                    }
+                State::ShowOrMuck(_) => {
                     self.game.show_hand()?;
                 }
                 State::Showdown => self.game.showdown_simple()?,
@@ -217,7 +256,12 @@ impl GameView {
         )
         .inner?;
 
-        if self.game.can_next() || self.game.current_player().is_none() {
+        if self.game.can_next()
+            || self.game.current_player().is_none()
+            || self
+                .current_player_action_generators
+                .contains_key(&self.game.current_player().unwrap())
+        {
             return Ok(());
         }
         ui.allocate_new_ui(
@@ -556,8 +600,42 @@ impl GameView {
         })
     }
 
+    fn view_game_builder(&mut self, ctx: &Context) -> Result<()> {
+        let Some(config) = self.game_builder.window(ctx, "Configure game".to_string()) else {
+            return Ok(());
+        };
+
+        self.game = config.game;
+        self.game.draw_unset_hands(&mut rand::thread_rng());
+        if self.game.state() == State::Post && !self.game.can_next() {
+            self.game.post_small_and_big_blind()?;
+        }
+
+        self.current_amount = 0;
+        self.pick_community_cards = config.pick_community_cards;
+
+        self.current_player_action_generators.clear();
+        for (player_index, player) in config.players.into_iter().enumerate() {
+            let Some(ai_index) = player.action_generator else {
+                continue;
+            };
+            let action_generator = (self.player_action_generators[ai_index].1)();
+            self.current_player_action_generators
+                .insert(player_index, action_generator);
+        }
+
+        ctx.request_repaint();
+        Ok(())
+    }
+
     fn visible_hand(&self, player: usize) -> Option<Hand> {
-        self.game.get_hand(player)
+        if self.current_player_action_generators.contains_key(&player)
+            && !self.game.hand_shown(player)
+        {
+            None
+        } else {
+            self.game.get_hand(player)
+        }
     }
 }
 
@@ -634,10 +712,28 @@ fn suite_color(suite: Suite) -> Color32 {
     }
 }
 
+struct GameBuilderConfig {
+    game: Game,
+    players: Vec<GameBuilderPlayer>,
+    pick_community_cards: bool,
+}
+
+#[derive(Clone)]
+struct GameBuilderPlayer {
+    player: Player,
+    action_generator: Option<usize>,
+}
+
 struct GameBuilder {
-    game: GameData,
+    players: Vec<GameBuilderPlayer>,
+    button_index: u8,
+    small_blind: u32,
+    big_blind: u32,
     hand_selector: CardSelector,
     hand_selector_for: Option<usize>,
+    player_action_generators: Vec<&'static str>,
+    default_player_action_generator: Option<usize>,
+    pick_community_cards: bool,
     error: String,
     remove_hand: Option<usize>,
     remove_player: Option<usize>,
@@ -647,13 +743,32 @@ struct GameBuilder {
 impl GameBuilder {
     const ROW_HEIGHT: f32 = 20.0;
 
-    fn new() -> Self {
+    fn new(
+        player_action_generators: Vec<&'static str>,
+        default_player_action_generator: Option<usize>,
+    ) -> Self {
         let mut hand_selector = CardSelector::new();
         hand_selector.set_min_max(2, 2);
+        let default_game_data = GameData::default();
+        let players = default_game_data
+            .players
+            .into_iter()
+            .map(|player| GameBuilderPlayer {
+                player,
+                action_generator: default_player_action_generator,
+            })
+            .collect();
+
         Self {
-            game: GameData::default(),
+            players,
+            button_index: default_game_data.button_index,
+            small_blind: default_game_data.small_blind,
+            big_blind: default_game_data.big_blind,
             hand_selector,
             hand_selector_for: None,
+            player_action_generators,
+            default_player_action_generator,
+            pick_community_cards: false,
             error: String::new(),
             remove_hand: None,
             remove_player: None,
@@ -661,7 +776,7 @@ impl GameBuilder {
         }
     }
 
-    fn window(&mut self, ctx: &Context, title: String) -> Option<Game> {
+    fn window(&mut self, ctx: &Context, title: String) -> Option<GameBuilderConfig> {
         let response = Window::new(title)
             .resizable([true, true])
             .default_size([450.0, 600.0])
@@ -669,9 +784,9 @@ impl GameBuilder {
         response.and_then(|inner| inner.inner).flatten()
     }
 
-    fn view(&mut self, ui: &mut Ui) -> Option<Game> {
+    fn view(&mut self, ui: &mut Ui) -> Option<GameBuilderConfig> {
         self.view_reset();
-        self.blinds(ui);
+        self.top_controls(ui);
         ui.separator();
         self.players_table(ui);
         self.hand_selector(ui);
@@ -685,31 +800,34 @@ impl GameBuilder {
         self.swap_players = None;
     }
 
-    fn blinds(&mut self, ui: &mut Ui) {
+    fn top_controls(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
             ui.label("Small blind:");
-            ui.add(DragValue::new(&mut self.game.small_blind));
+            ui.add(DragValue::new(&mut self.small_blind));
             ui.separator();
 
             ui.label("Big blind:");
-            ui.add(DragValue::new(&mut self.game.big_blind));
+            ui.add(DragValue::new(&mut self.big_blind));
             ui.separator();
 
             if ui.button("100BB Stacks").clicked() {
-                let Some(stack) = self.game.big_blind.checked_mul(100) else {
+                let Some(stack) = self.big_blind.checked_mul(100) else {
                     return;
                 };
-                for player in self.game.players.iter_mut() {
-                    player.starting_stack = stack;
+                for player in self.players.iter_mut() {
+                    player.player.starting_stack = stack;
                 }
             }
         });
+
+        ui.horizontal(|ui| ui.checkbox(&mut self.pick_community_cards, "Pick community cards"));
     }
 
     fn players_table(&mut self, ui: &mut Ui) {
         let table = TableBuilder::new(ui)
             .striped(true)
             .cell_layout(Layout::left_to_right(egui::Align::Center))
+            .column(Column::remainder())
             .column(Column::remainder())
             .column(Column::remainder())
             .column(Column::remainder())
@@ -730,6 +848,9 @@ impl GameBuilder {
                     ui.strong("Hand");
                 });
                 header.col(|ui| {
+                    ui.strong("AI");
+                });
+                header.col(|ui| {
                     ui.strong("Button");
                 });
             })
@@ -737,7 +858,7 @@ impl GameBuilder {
     }
 
     fn players_table_body(&mut self, mut body: TableBody<'_>) {
-        for player_index in 0..self.game.players.len() {
+        for player_index in 0..self.players.len() {
             body.row(Self::ROW_HEIGHT, |row| {
                 self.players_table_row(row, player_index)
             });
@@ -747,21 +868,23 @@ impl GameBuilder {
     }
 
     fn players_table_row(&mut self, mut row: TableRow<'_, '_>, player_index: usize) {
-        let player_count = self.game.players.len();
+        let player_count = self.players.len();
 
         row.col(|ui| self.players_table_name_column(ui, player_index));
 
         row.col(|ui| {
-            let player = &mut self.game.players[player_index];
+            let player = &mut self.players[player_index].player;
             let drag_value = DragValue::new(&mut player.starting_stack).speed(1.0);
             ui.add(drag_value);
         });
 
         row.col(|ui| self.players_table_hand_column(ui, player_index));
 
+        row.col(|ui| self.players_table_ai_column(ui, player_index));
+
         row.col(|ui| {
             ui.radio_value(
-                &mut self.game.button_index,
+                &mut self.button_index,
                 u8::try_from(player_index).unwrap(),
                 "",
             );
@@ -792,16 +915,13 @@ impl GameBuilder {
     }
 
     fn players_table_name_column(&mut self, ui: &mut Ui, player_index: usize) {
-        let player_count = self.game.players.len();
-        let player = &mut self.game.players[player_index];
+        let player_count = self.players.len();
+        let player = &mut self.players[player_index].player;
 
-        let position_name = Game::position_name(
-            player_count,
-            usize::from(self.game.button_index),
-            player_index,
-        )
-        .map(|(short_name, _)| short_name)
-        .unwrap_or("Player");
+        let position_name =
+            Game::position_name(player_count, usize::from(self.button_index), player_index)
+                .map(|(short_name, _)| short_name)
+                .unwrap_or("Player");
 
         let mut name = player
             .name
@@ -817,15 +937,33 @@ impl GameBuilder {
         }
     }
 
+    fn players_table_ai_column(&mut self, ui: &mut Ui, player_index: usize) {
+        let player = &mut self.players[player_index];
+        const NONE: &str = "None";
+        let action_generator_name = player
+            .action_generator
+            .map(|index| self.player_action_generators[index])
+            .unwrap_or(NONE);
+
+        ComboBox::from_id_salt(format!("AI Player Combobox - {player_index}"))
+            .selected_text(action_generator_name)
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut player.action_generator, None, NONE);
+                for (ai_index, ai_name) in self.player_action_generators.iter().copied().enumerate()
+                {
+                    ui.selectable_value(&mut player.action_generator, Some(ai_index), ai_name);
+                }
+            });
+    }
+
     fn players_table_hand_column(&mut self, ui: &mut Ui, player_index: usize) {
         let known_cards = self
-            .game
             .players
             .iter()
-            .filter_map(|player| player.hand)
+            .filter_map(|player| player.player.hand)
             .flat_map(|hand| hand.to_cards().iter())
             .fold(Cards::EMPTY, |cards, card| cards.with(card));
-        let player = &mut self.game.players[player_index];
+        let player = &mut self.players[player_index].player;
 
         let text = if let Some(hand) = player.hand {
             hand.to_string()
@@ -857,28 +995,28 @@ impl GameBuilder {
         }
 
         if let Some(player) = self.remove_hand {
-            self.game.players[player].hand = None;
+            self.players[player].player.hand = None;
         }
 
         if let Some(remove_player) = self.remove_player {
-            if self.game.players.len() > Game::MIN_PLAYERS {
-                self.game.players.remove(remove_player);
+            if self.players.len() > Game::MIN_PLAYERS {
+                self.players.remove(remove_player);
 
-                if remove_player == usize::from(self.game.button_index) {
-                    self.game.button_index = 0;
+                if remove_player == usize::from(self.button_index) {
+                    self.button_index = 0;
                 }
             }
         }
 
         if let Some((a, b)) = self.swap_players {
-            self.game.players.swap(a, b);
+            self.players.swap(a, b);
 
             let a = u8::try_from(a).unwrap();
             let b = u8::try_from(b).unwrap();
-            if self.game.button_index == a {
-                self.game.button_index = b;
-            } else if self.game.button_index == b {
-                self.game.button_index = a;
+            if self.button_index == a {
+                self.button_index = b;
+            } else if self.button_index == b {
+                self.button_index = a;
             }
         }
     }
@@ -890,19 +1028,34 @@ impl GameBuilder {
                 .window(ui.ctx(), "Select hand".to_string())
             {
                 let hand = self.hand_selector.cards.to_hand().unwrap();
-                self.game.players[player].hand = Some(hand);
+                self.players[player].player.hand = Some(hand);
                 self.hand_selector.reset();
                 self.hand_selector_for = None;
             }
         }
     }
 
-    fn bottom_controls(&mut self, ui: &mut Ui) -> Option<Game> {
+    fn bottom_controls(&mut self, ui: &mut Ui) -> Option<GameBuilderConfig> {
         let game = ui
             .horizontal(|ui| {
-                let game = if ui.button("Create").clicked() {
+                let game = if ui.button("Configure").clicked() {
                     self.error = String::new();
-                    match Game::from_game_data(&self.game) {
+
+                    let players = self
+                        .players
+                        .iter()
+                        .map(|player| player.player.clone())
+                        .collect();
+                    let game_data = GameData {
+                        players,
+                        button_index: self.button_index,
+                        small_blind: self.small_blind,
+                        big_blind: self.big_blind,
+                        actions: Vec::new(),
+                        showdown_stacks: None,
+                    };
+
+                    match Game::from_game_data(&game_data) {
                         Ok(game) => Some(game),
                         Err(err) => {
                             self.error = err.to_string();
@@ -916,12 +1069,13 @@ impl GameBuilder {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui.button("+").clicked()
                         && self.hand_selector_for.is_none()
-                        && self.game.players.len() < Game::MAX_PLAYERS
+                        && self.players.len() < Game::MAX_PLAYERS
                     {
-                        let starting_stack = self.game.big_blind.saturating_mul(100);
-                        self.game
-                            .players
-                            .push(Player::with_starting_stack(starting_stack));
+                        let starting_stack = self.big_blind.saturating_mul(100);
+                        self.players.push(GameBuilderPlayer {
+                            player: Player::with_starting_stack(starting_stack),
+                            action_generator: self.default_player_action_generator,
+                        });
                     };
                 });
 
@@ -932,7 +1086,11 @@ impl GameBuilder {
         if !self.error.is_empty() {
             ui.label(&self.error);
         }
-        game
+        game.map(|game| GameBuilderConfig {
+            game,
+            players: self.players.clone(),
+            pick_community_cards: self.pick_community_cards,
+        })
     }
 }
 
@@ -1087,4 +1245,8 @@ impl CardSelector {
         self.cards.remove(card);
         self.in_order.retain(|current_card| *current_card != card);
     }
+}
+
+pub trait PlayerActionGenerator {
+    fn player_action(&mut self, game: &Game) -> Result<Action>;
 }
