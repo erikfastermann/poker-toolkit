@@ -4,6 +4,7 @@ use std::{array, fmt, usize};
 
 use rand::Rng;
 use serde::{Deserialize, Serialize};
+use serde_with::skip_serializing_none;
 
 use crate::card::Card;
 use crate::cards::{Cards, Score};
@@ -87,7 +88,8 @@ impl Action {
 }
 
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Street {
     PreFlop = 0,
     Flop = 1,
@@ -211,12 +213,13 @@ impl<const SIZE: usize> BitAnd for Bitset<SIZE> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum State {
     Post,
     Player(usize),
     Street(Street),
-    UncalledBet(usize, u32),
+    UncalledBet { player: usize, amount: u32 },
     ShowOrMuck(usize),
     Showdown,
     End,
@@ -463,6 +466,28 @@ impl Game {
         }
     }
 
+    pub fn to_validation_data(&mut self) -> GameValidationData {
+        let game_data = self.to_game_data();
+        while self.previous() {}
+        let mut validations = Vec::new();
+        loop {
+            validations.push(GameValidationEntry {
+                state: self.state(),
+                check: self.can_check(),
+                call: self.can_call(),
+                bet: self.can_bet(),
+                raise: self.can_raise(),
+            });
+            if !self.next() {
+                break;
+            }
+        }
+        GameValidationData {
+            game: game_data,
+            validations,
+        }
+    }
+
     pub fn reset(&mut self) {
         self.actions.clear();
         for street_stacks in self.stacks_in_street.iter_mut() {
@@ -584,39 +609,16 @@ impl Game {
         let Some(player) = self.current_player() else {
             return false;
         };
-        if self.board.street == Street::PreFlop && player == self.big_blind_index() {
-            self.actions_in_street().iter().all(|action| {
-                matches!(
-                    action,
-                    Action::Fold(_) | Action::Call { .. } | Action::Post { .. }
-                )
-            })
-        } else {
-            self.actions_in_street()
-                .iter()
-                .all(|action| matches!(action, Action::Check(_) | Action::Fold(_)))
-        }
+        self.call_amount(player) == 0
     }
 
     pub fn can_call(&self) -> Option<u32> {
         let player = self.current_player()?;
-        let can_call = self.actions_in_street().iter().any(|action| {
-            matches!(
-                action,
-                Action::Post { .. } | Action::Bet { .. } | Action::Raise { .. }
-            )
-        });
-        if can_call {
-            let amount = self.call_amount(player);
-            if amount == 0 {
-                assert_eq!(self.board.street, Street::PreFlop);
-                assert_eq!(usize::from(self.current_player), self.big_blind_index());
-                None
-            } else {
-                Some(min(self.current_street_stacks()[player], amount))
-            }
-        } else {
+        let amount = self.call_amount(player);
+        if amount == 0 {
             None
+        } else {
+            Some(min(self.current_street_stacks()[player], amount))
         }
     }
 
@@ -794,7 +796,7 @@ impl Game {
         } else if let Some(player) = self.current_player() {
             State::Player(player)
         } else if let Some((player, amount)) = self.can_uncalled_bet() {
-            State::UncalledBet(player, amount)
+            State::UncalledBet { player, amount }
         } else if let Some(player) = self.next_show_or_muck() {
             State::ShowOrMuck(player)
         } else if let Some(street) = self.can_next_street() {
@@ -1011,7 +1013,7 @@ impl Game {
 
     pub fn uncalled_bet(&mut self) -> Result<()> {
         self.check_pre_update()?;
-        let State::UncalledBet(player, amount) = self.state() else {
+        let State::UncalledBet { player, amount } = self.state() else {
             return Err("uncalled bet: cannot return uncalled bet in current state".into());
         };
         self.current_street_stacks_mut()[player] += amount;
@@ -1357,7 +1359,11 @@ impl Game {
             Action::Turn(turn) => self.turn(turn),
             Action::River(river) => self.river(river),
             Action::UncalledBet { player, amount } => {
-                if self.state() != State::UncalledBet(usize::from(player), amount) {
+                let expected_state = State::UncalledBet {
+                    player: usize::from(player),
+                    amount,
+                };
+                if self.state() != expected_state {
                     return Err("apply action: uncalled bet not allowed or invalid".into());
                 }
                 self.uncalled_bet()
@@ -1570,6 +1576,7 @@ impl Game {
     }
 }
 
+#[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Player {
     pub name: Option<String>,
@@ -1587,6 +1594,7 @@ impl Player {
     }
 }
 
+#[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GameData {
     pub players: Vec<Player>,
@@ -1608,4 +1616,21 @@ impl Default for GameData {
             showdown_stacks: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GameValidationData {
+    #[serde(flatten)]
+    pub game: GameData,
+    pub validations: Vec<GameValidationEntry>,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GameValidationEntry {
+    pub state: State,
+    pub check: bool,
+    pub call: Option<u32>,
+    pub bet: Option<u32>,
+    pub raise: Option<(u32, u32)>,
 }

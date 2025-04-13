@@ -115,7 +115,7 @@ impl GameView {
 
         loop {
             match self.game.state() {
-                State::UncalledBet(_, _) => {
+                State::UncalledBet { .. } => {
                     self.game.uncalled_bet()?;
                 }
                 State::ShowOrMuck(_) => {
@@ -198,6 +198,13 @@ impl GameView {
         let upper_elements_max_y = bounding_rect.min.y + bounding_rect.size().y * 0.4;
         ui.allocate_new_ui(
             UiBuilder::new()
+                .max_rect(bounding_rect.with_max_y(upper_elements_max_y))
+                .layout(Layout::left_to_right(Align::Center)),
+            |ui| self.action_bar_upper_left_buttons(ui),
+        )
+        .inner?;
+        ui.allocate_new_ui(
+            UiBuilder::new()
                 .max_rect(bounding_rect.with_min_y(upper_elements_max_y))
                 .layout(Layout::left_to_right(Align::Center)),
             |ui| self.action_bar_history_buttons(ui),
@@ -211,7 +218,7 @@ impl GameView {
             UiBuilder::new()
                 .max_rect(bounding_rect.with_max_y(upper_elements_max_y))
                 .layout(Layout::right_to_left(Align::Center)),
-            |ui| self.action_bar_upper_elements(ui),
+            |ui| self.action_bar_upper_right_elements(ui),
         )
         .inner?;
         ui.allocate_new_ui(
@@ -317,7 +324,17 @@ impl GameView {
         Ok(())
     }
 
-    fn action_bar_upper_elements(&mut self, ui: &mut Ui) -> Result<()> {
+    fn action_bar_upper_left_buttons(&self, ui: &mut Ui) -> Result<()> {
+        let bounding_rect = ui.max_rect();
+        let button_size = Vec2::new(bounding_rect.width() / 15.0, bounding_rect.height() * 0.8);
+        if ui.add_sized(button_size, Button::new("📋")).clicked() {
+            let json = serde_json::to_string_pretty(&self.game.clone().to_validation_data())?;
+            ui.ctx().copy_text(json);
+        }
+        Ok(())
+    }
+
+    fn action_bar_upper_right_elements(&mut self, ui: &mut Ui) -> Result<()> {
         let Some(amount) = self
             .game
             .can_bet()

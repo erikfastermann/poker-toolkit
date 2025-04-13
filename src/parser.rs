@@ -267,7 +267,7 @@ impl GGHandHistoryParser {
                 State::Post | State::End => unreachable!(),
                 State::Player(_) => self.parse_and_apply_player_action(lines, game)?,
                 State::Street(_) => self.parse_and_apply_street_action(lines, game)?,
-                State::UncalledBet(_, _) => self.parse_uncalled_bet(lines, game)?,
+                State::UncalledBet { .. } => self.parse_uncalled_bet(lines, game)?,
                 State::ShowOrMuck(_) => self.parse_shows(lines, game)?,
                 State::Showdown => break Ok(()),
             }
@@ -441,7 +441,11 @@ impl GGHandHistoryParser {
         lines: &mut impl Iterator<Item = &'a str>,
         game: &mut Game,
     ) -> Result<()> {
-        let State::UncalledBet(expected_player, expected_amount) = game.state() else {
+        let State::UncalledBet {
+            player: expected_player,
+            amount: expected_amount,
+        } = game.state()
+        else {
             unreachable!();
         };
 
