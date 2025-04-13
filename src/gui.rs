@@ -11,7 +11,8 @@ use egui_extras::{Column, TableBody, TableBuilder, TableRow};
 use crate::{
     card::Card,
     cards::Cards,
-    game::{Game, GameData, Player, State, Street},
+    deck::Deck,
+    game::{Action, Game, GameData, Player, State, Street},
     hand::Hand,
     rank::Rank,
     result::Result,
@@ -118,8 +119,13 @@ impl GameView {
                 State::UncalledBet { .. } => {
                     self.game.uncalled_bet()?;
                 }
-                State::ShowOrMuck(_) => {
-                    // TODO: Handle unknown hand more gracefully.
+                State::ShowOrMuck(player) => {
+                    if self.game.get_hand(player).is_none() {
+                        // TODO: Custom set dialog.
+                        let mut rng = rand::thread_rng();
+                        let mut deck = Deck::from_cards(&mut rng, self.game.known_cards());
+                        self.game.set_hand(player, deck.hand(&mut rng).unwrap())?;
+                    }
                     self.game.show_hand()?;
                 }
                 State::Showdown => self.game.showdown_simple()?,
@@ -358,8 +364,12 @@ impl GameView {
         const PERCENT_BUTTONS: &[(&str, f64)] = &[("20%", 0.2), ("60%", 0.6), (("130%", 1.3))];
         const BIG_BLIND_BUTTONS: &[(&str, f64)] = &[("2BB", 2.0), ("2.5BB", 2.5), (("3BB", 3.0))];
 
-        let use_big_blind_buttons =
-            self.game.board().street() == Street::PreFlop && !self.game.raise_in_street();
+        let use_big_blind_buttons = self.game.board().street() == Street::PreFlop
+            && !self
+                .game
+                .actions_in_street()
+                .iter()
+                .any(|action| matches!(action, Action::Raise { .. }));
         let button_config = if use_big_blind_buttons {
             BIG_BLIND_BUTTONS
         } else {

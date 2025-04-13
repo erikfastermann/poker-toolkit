@@ -1,0 +1,2441 @@
+[
+    {
+        "players": [
+            {
+                "name": "BTN",
+                "starting_stack": 1000
+            },
+            {
+                "name": "SB",
+                "starting_stack": 1000
+            },
+            {
+                "name": "BB",
+                "starting_stack": 1000
+            },
+            {
+                "name": "UTG",
+                "starting_stack": 1000
+            },
+            {
+                "name": "HJ",
+                "starting_stack": 1000
+            },
+            {
+                "name": "CO",
+                "starting_stack": 1000
+            }
+        ],
+        "button_index": 0,
+        "small_blind": 5,
+        "big_blind": 10,
+        "actions": [
+            {
+                "post": {
+                    "player": 1,
+                    "amount": 5
+                }
+            },
+            {
+                "post": {
+                    "player": 2,
+                    "amount": 10
+                }
+            },
+            {
+                "raise": {
+                    "player": 3,
+                    "old_stack": 1000,
+                    "amount": 15,
+                    "to": 25
+                }
+            },
+            {
+                "fold": 4
+            },
+            {
+                "fold": 5
+            },
+            {
+                "fold": 0
+            },
+            {
+                "call": {
+                    "player": 1,
+                    "amount": 20
+                }
+            },
+            {
+                "call": {
+                    "player": 2,
+                    "amount": 15
+                }
+            },
+            {
+                "flop": [
+                    "9h",
+                    "8c",
+                    "5s"
+                ]
+            },
+            {
+                "bet": {
+                    "player": 1,
+                    "amount": 10
+                }
+            },
+            {
+                "raise": {
+                    "player": 2,
+                    "old_stack": 975,
+                    "amount": 40,
+                    "to": 50
+                }
+            },
+            {
+                "call": {
+                    "player": 3,
+                    "amount": 50
+                }
+            },
+            {
+                "raise": {
+                    "player": 1,
+                    "old_stack": 965,
+                    "amount": 190,
+                    "to": 240
+                }
+            },
+            {
+                "call": {
+                    "player": 2,
+                    "amount": 190
+                }
+            },
+            {
+                "raise": {
+                    "player": 3,
+                    "old_stack": 925,
+                    "amount": 190,
+                    "to": 430
+                }
+            },
+            {
+                "fold": 1
+            },
+            {
+                "call": {
+                    "player": 2,
+                    "amount": 190
+                }
+            },
+            {
+                "turn": "6d"
+            },
+            {
+                "check": 2
+            },
+            {
+                "fold": 3
+            }
+        ],
+        "showdown_stacks": [
+            1000,
+            735,
+            1720,
+            545,
+            1000,
+            1000
+        ],
+        "validations": [
+            {
+                "state": "post",
+                "check": false
+            },
+            {
+                "state": {
+                    "player": 3
+                },
+                "check": false,
+                "call": 10,
+                "raise": [
+                    10,
+                    20
+                ]
+            },
+            {
+                "state": {
+                    "player": 4
+                },
+                "check": false,
+                "call": 25,
+                "raise": [
+                    15,
+                    40
+                ]
+            },
+            {
+                "state": {
+                    "player": 5
+                },
+                "check": false,
+                "call": 25,
+                "raise": [
+                    15,
+                    40
+                ]
+            },
+            {
+                "state": {
+                    "player": 0
+                },
+                "check": false,
+                "call": 25,
+                "raise": [
+                    15,
+                    40
+                ]
+            },
+            {
+                "state": {
+                    "player": 1
+                },
+                "check": false,
+                "call": 20,
+                "raise": [
+                    15,
+                    40
+                ]
+            },
+            {
+                "state": {
+                    "player": 2
+                },
+                "check": false,
+                "call": 15,
+                "raise": [
+                    15,
+                    40
+                ]
+            },
+            {
+                "state": {
+                    "street": "flop"
+                },
+                "check": false
+            },
+            {
+                "state": {
+                    "player": 1
+                },
+                "check": true,
+                "bet": 10
+            },
+            {
+                "state": {
+                    "player": 2
+                },
+                "check": false,
+                "call": 10,
+                "raise": [
+                    10,
+                    20
+                ]
+            },
+            {
+                "state": {
+                    "player": 3
+                },
+                "check": false,
+                "call": 50,
+                "raise": [
+                    40,
+                    90
+                ]
+            },
+            {
+                "state": {
+                    "player": 1
+                },
+                "check": false,
+                "call": 40,
+                "raise": [
+                    40,
+                    90
+                ]
+            },
+            {
+                "state": {
+                    "player": 2
+                },
+                "check": false,
+                "call": 190,
+                "raise": [
+                    190,
+                    430
+                ]
+            },
+            {
+                "state": {
+                    "player": 3
+                },
+                "check": false,
+                "call": 190,
+                "raise": [
+                    190,
+                    430
+                ]
+            },
+            {
+                "state": {
+                    "player": 1
+                },
+                "check": false,
+                "call": 190,
+                "raise": [
+                    190,
+                    620
+                ]
+            },
+            {
+                "state": {
+                    "player": 2
+                },
+                "check": false,
+                "call": 190,
+                "raise": [
+                    190,
+                    620
+                ]
+            },
+            {
+                "state": {
+                    "street": "turn"
+                },
+                "check": false
+            },
+            {
+                "state": {
+                    "player": 2
+                },
+                "check": true,
+                "bet": 10
+            },
+            {
+                "state": {
+                    "player": 3
+                },
+                "check": true,
+                "bet": 10
+            },
+            {
+                "state": "showdown",
+                "check": false
+            },
+            {
+                "state": "end",
+                "check": false
+            }
+        ]
+    },
+    {
+        "players": [
+            {
+                "name": "BTN",
+                "starting_stack": 2000
+            },
+            {
+                "name": "SB",
+                "starting_stack": 2000
+            },
+            {
+                "name": "BB",
+                "starting_stack": 2000
+            },
+            {
+                "name": "UTG",
+                "hand": "Kc5h",
+                "starting_stack": 9
+            },
+            {
+                "name": "HJ",
+                "hand": "7d6d",
+                "starting_stack": 23
+            },
+            {
+                "name": "CO",
+                "hand": "Ac2d",
+                "starting_stack": 2000
+            }
+        ],
+        "button_index": 0,
+        "small_blind": 10,
+        "big_blind": 20,
+        "actions": [
+            {
+                "post": {
+                    "player": 1,
+                    "amount": 10
+                }
+            },
+            {
+                "post": {
+                    "player": 2,
+                    "amount": 20
+                }
+            },
+            {
+                "call": {
+                    "player": 3,
+                    "amount": 9
+                }
+            },
+            {
+                "raise": {
+                    "player": 4,
+                    "old_stack": 23,
+                    "amount": 23,
+                    "to": 23
+                }
+            },
+            {
+                "raise": {
+                    "player": 5,
+                    "old_stack": 2000,
+                    "amount": 23,
+                    "to": 46
+                }
+            },
+            {
+                "fold": 0
+            },
+            {
+                "fold": 1
+            },
+            {
+                "fold": 2
+            },
+            {
+                "uncalled_bet": {
+                    "player": 5,
+                    "amount": 23
+                }
+            },
+            {
+                "shows": {
+                    "player": 5,
+                    "hand": "Ac2d"
+                }
+            },
+            {
+                "shows": {
+                    "player": 3,
+                    "hand": "Kc5h"
+                }
+            },
+            {
+                "shows": {
+                    "player": 4,
+                    "hand": "7d6d"
+                }
+            },
+            {
+                "flop": [
+                    "Jc",
+                    "Tc",
+                    "9c"
+                ]
+            },
+            {
+                "turn": "9h"
+            },
+            {
+                "river": "Kd"
+            }
+        ],
+        "showdown_stacks": [
+            2000,
+            1990,
+            1980,
+            45,
+            0,
+            2017
+        ],
+        "validations": [
+            {
+                "state": "post",
+                "check": false
+            },
+            {
+                "state": {
+                    "player": 3
+                },
+                "check": false,
+                "call": 9
+            },
+            {
+                "state": {
+                    "player": 4
+                },
+                "check": false,
+                "call": 20,
+                "raise": [
+                    23,
+                    23
+                ]
+            },
+            {
+                "state": {
+                    "player": 5
+                },
+                "check": false,
+                "call": 23,
+                "raise": [
+                    23,
+                    46
+                ]
+            },
+            {
+                "state": {
+                    "player": 0
+                },
+                "check": false,
+                "call": 46,
+                "raise": [
+                    23,
+                    69
+                ]
+            },
+            {
+                "state": {
+                    "player": 1
+                },
+                "check": false,
+                "call": 36,
+                "raise": [
+                    23,
+                    69
+                ]
+            },
+            {
+                "state": {
+                    "player": 2
+                },
+                "check": false,
+                "call": 26,
+                "raise": [
+                    23,
+                    69
+                ]
+            },
+            {
+                "state": {
+                    "uncalled_bet": {
+                        "player": 5,
+                        "amount": 23
+                    }
+                },
+                "check": false
+            },
+            {
+                "state": {
+                    "show_or_muck": 5
+                },
+                "check": false
+            },
+            {
+                "state": {
+                    "show_or_muck": 3
+                },
+                "check": false
+            },
+            {
+                "state": {
+                    "show_or_muck": 4
+                },
+                "check": false
+            },
+            {
+                "state": {
+                    "street": "flop"
+                },
+                "check": false
+            },
+            {
+                "state": {
+                    "street": "turn"
+                },
+                "check": false
+            },
+            {
+                "state": {
+                    "street": "river"
+                },
+                "check": false
+            },
+            {
+                "state": "showdown",
+                "check": false
+            },
+            {
+                "state": "end",
+                "check": false
+            }
+        ]
+    },
+    {
+        "players": [
+            {
+                "name": "BTN",
+                "starting_stack": 2000
+            },
+            {
+                "name": "SB",
+                "starting_stack": 2000
+            },
+            {
+                "name": "BB",
+                "hand": "8c7d",
+                "starting_stack": 2000
+            },
+            {
+                "name": "UTG",
+                "hand": "6c4c",
+                "starting_stack": 29
+            },
+            {
+                "name": "HJ",
+                "hand": "8d5c",
+                "starting_stack": 43
+            },
+            {
+                "name": "CO",
+                "starting_stack": 2000
+            }
+        ],
+        "button_index": 0,
+        "small_blind": 10,
+        "big_blind": 20,
+        "actions": [
+            {
+                "post": {
+                    "player": 1,
+                    "amount": 10
+                }
+            },
+            {
+                "post": {
+                    "player": 2,
+                    "amount": 20
+                }
+            },
+            {
+                "call": {
+                    "player": 3,
+                    "amount": 20
+                }
+            },
+            {
+                "call": {
+                    "player": 4,
+                    "amount": 20
+                }
+            },
+            {
+                "fold": 5
+            },
+            {
+                "fold": 0
+            },
+            {
+                "fold": 1
+            },
+            {
+                "check": 2
+            },
+            {
+                "flop": [
+                    "8h",
+                    "7h",
+                    "Js"
+                ]
+            },
+            {
+                "check": 2
+            },
+            {
+                "bet": {
+                    "player": 3,
+                    "amount": 9
+                }
+            },
+            {
+                "raise": {
+                    "player": 4,
+                    "old_stack": 23,
+                    "amount": 23,
+                    "to": 23
+                }
+            },
+            {
+                "raise": {
+                    "player": 2,
+                    "old_stack": 1980,
+                    "amount": 23,
+                    "to": 46
+                }
+            },
+            {
+                "uncalled_bet": {
+                    "player": 2,
+                    "amount": 23
+                }
+            },
+            {
+                "shows": {
+                    "player": 2,
+                    "hand": "8c7d"
+                }
+            },
+            {
+                "shows": {
+                    "player": 3,
+                    "hand": "6c4c"
+                }
+            },
+            {
+                "shows": {
+                    "player": 4,
+                    "hand": "8d5c"
+                }
+            },
+            {
+                "turn": "Kd"
+            },
+            {
+                "river": "Td"
+            }
+        ],
+        "showdown_stacks": [
+            2000,
+            1990,
+            2082,
+            0,
+            0,
+            2000
+        ],
+        "validations": [
+            {
+                "state": "post",
+                "check": false
+            },
+            {
+                "state": {
+                    "player": 3
+                },
+                "check": false,
+                "call": 20,
+                "raise": [
+                    29,
+                    29
+                ]
+            },
+            {
+                "state": {
+                    "player": 4
+                },
+                "check": false,
+                "call": 20,
+                "raise": [
+                    20,
+                    40
+                ]
+            },
+            {
+                "state": {
+                    "player": 5
+                },
+                "check": false,
+                "call": 20,
+                "raise": [
+                    20,
+                    40
+                ]
+            },
+            {
+                "state": {
+                    "player": 0
+                },
+                "check": false,
+                "call": 20,
+                "raise": [
+                    20,
+                    40
+                ]
+            },
+            {
+                "state": {
+                    "player": 1
+                },
+                "check": false,
+                "call": 10,
+                "raise": [
+                    20,
+                    40
+                ]
+            },
+            {
+                "state": {
+                    "player": 2
+                },
+                "check": true,
+                "raise": [
+                    20,
+                    40
+                ]
+            },
+            {
+                "state": {
+                    "street": "flop"
+                },
+                "check": false
+            },
+            {
+                "state": {
+                    "player": 2
+                },
+                "check": true,
+                "bet": 20
+            },
+            {
+                "state": {
+                    "player": 3
+                },
+                "check": true,
+                "bet": 9
+            },
+            {
+                "state": {
+                    "player": 4
+                },
+                "check": false,
+                "call": 9,
+                "raise": [
+                    23,
+                    23
+                ]
+            },
+            {
+                "state": {
+                    "player": 2
+                },
+                "check": false,
+                "call": 23,
+                "raise": [
+                    23,
+                    46
+                ]
+            },
+            {
+                "state": {
+                    "uncalled_bet": {
+                        "player": 2,
+                        "amount": 23
+                    }
+                },
+                "check": false
+            },
+            {
+                "state": {
+                    "show_or_muck": 2
+                },
+                "check": false
+            },
+            {
+                "state": {
+                    "show_or_muck": 3
+                },
+                "check": false
+            },
+            {
+                "state": {
+                    "show_or_muck": 4
+                },
+                "check": false
+            },
+            {
+                "state": {
+                    "street": "turn"
+                },
+                "check": false
+            },
+            {
+                "state": {
+                    "street": "river"
+                },
+                "check": false
+            },
+            {
+                "state": "showdown",
+                "check": false
+            },
+            {
+                "state": "end",
+                "check": false
+            }
+        ]
+    },
+    {
+        "players": [
+            {
+                "name": "BTN",
+                "hand": "Qc5h",
+                "starting_stack": 2000
+            },
+            {
+                "name": "SB",
+                "hand": "Th7d",
+                "starting_stack": 9
+            },
+            {
+                "name": "BB",
+                "hand": "Qd9c",
+                "starting_stack": 19
+            },
+            {
+                "name": "UTG",
+                "starting_stack": 2000
+            },
+            {
+                "name": "HJ",
+                "starting_stack": 2000
+            },
+            {
+                "name": "CO",
+                "starting_stack": 2000
+            }
+        ],
+        "button_index": 0,
+        "small_blind": 10,
+        "big_blind": 20,
+        "actions": [
+            {
+                "post": {
+                    "player": 1,
+                    "amount": 9
+                }
+            },
+            {
+                "post": {
+                    "player": 2,
+                    "amount": 19
+                }
+            },
+            {
+                "raise": {
+                    "player": 3,
+                    "old_stack": 2000,
+                    "amount": 20,
+                    "to": 39
+                }
+            },
+            {
+                "fold": 4
+            },
+            {
+                "fold": 5
+            },
+            {
+                "call": {
+                    "player": 0,
+                    "amount": 39
+                }
+            },
+            {
+                "flop": [
+                    "9h",
+                    "6s",
+                    "4s"
+                ]
+            },
+            {
+                "fold": 3
+            },
+            {
+                "shows": {
+                    "player": 1,
+                    "hand": "Th7d"
+                }
+            },
+            {
+                "shows": {
+                    "player": 2,
+                    "hand": "Qd9c"
+                }
+            },
+            {
+                "shows": {
+                    "player": 0,
+                    "hand": "Qc5h"
+                }
+            },
+            {
+                "turn": "4d"
+            },
+            {
+                "river": "Tc"
+            }
+        ],
+        "showdown_stacks": [
+            2001,
+            36,
+            30,
+            1961,
+            2000,
+            2000
+        ],
+        "validations": [
+            {
+                "state": "post",
+                "check": false
+            },
+            {
+                "state": {
+                    "player": 3
+                },
+                "check": false,
+                "call": 19,
+                "raise": [
+                    20,
+                    39
+                ]
+            },
+            {
+                "state": {
+                    "player": 4
+                },
+                "check": false,
+                "call": 39,
+                "raise": [
+                    20,
+                    59
+                ]
+            },
+            {
+                "state": {
+                    "player": 5
+                },
+                "check": false,
+                "call": 39,
+                "raise": [
+                    20,
+                    59
+                ]
+            },
+            {
+                "state": {
+                    "player": 0
+                },
+                "check": false,
+                "call": 39,
+                "raise": [
+                    20,
+                    59
+                ]
+            },
+            {
+                "state": {
+                    "street": "flop"
+                },
+                "check": false
+            },
+            {
+                "state": {
+                    "player": 3
+                },
+                "check": true,
+                "bet": 20
+            },
+            {
+                "state": {
+                    "show_or_muck": 1
+                },
+                "check": false
+            },
+            {
+                "state": {
+                    "show_or_muck": 2
+                },
+                "check": false
+            },
+            {
+                "state": {
+                    "show_or_muck": 0
+                },
+                "check": false
+            },
+            {
+                "state": {
+                    "street": "turn"
+                },
+                "check": false
+            },
+            {
+                "state": {
+                    "street": "river"
+                },
+                "check": false
+            },
+            {
+                "state": "showdown",
+                "check": false
+            },
+            {
+                "state": "end",
+                "check": false
+            }
+        ]
+    },
+    {
+        "players": [
+            {
+                "name": "BTN",
+                "starting_stack": 2000
+            },
+            {
+                "name": "SB",
+                "hand": "AcQc",
+                "starting_stack": 9
+            },
+            {
+                "name": "BB",
+                "hand": "Qd3c",
+                "starting_stack": 19
+            },
+            {
+                "name": "UTG",
+                "hand": "Ad4c",
+                "starting_stack": 2000
+            },
+            {
+                "name": "HJ",
+                "starting_stack": 2000
+            },
+            {
+                "name": "CO",
+                "starting_stack": 2000
+            }
+        ],
+        "button_index": 0,
+        "small_blind": 20,
+        "big_blind": 10,
+        "actions": [
+            {
+                "post": {
+                    "player": 1,
+                    "amount": 9
+                }
+            },
+            {
+                "post": {
+                    "player": 2,
+                    "amount": 10
+                }
+            },
+            {
+                "call": {
+                    "player": 3,
+                    "amount": 10
+                }
+            },
+            {
+                "fold": 4
+            },
+            {
+                "fold": 5
+            },
+            {
+                "fold": 0
+            },
+            {
+                "raise": {
+                    "player": 2,
+                    "old_stack": 9,
+                    "amount": 9,
+                    "to": 19
+                }
+            },
+            {
+                "raise": {
+                    "player": 3,
+                    "old_stack": 1990,
+                    "amount": 10,
+                    "to": 29
+                }
+            },
+            {
+                "uncalled_bet": {
+                    "player": 3,
+                    "amount": 10
+                }
+            },
+            {
+                "shows": {
+                    "player": 3,
+                    "hand": "Ad4c"
+                }
+            },
+            {
+                "shows": {
+                    "player": 1,
+                    "hand": "AcQc"
+                }
+            },
+            {
+                "shows": {
+                    "player": 2,
+                    "hand": "Qd3c"
+                }
+            },
+            {
+                "flop": [
+                    "5s",
+                    "4s",
+                    "3s"
+                ]
+            },
+            {
+                "turn": "9h"
+            },
+            {
+                "river": "Td"
+            }
+        ],
+        "showdown_stacks": [
+            2000,
+            0,
+            0,
+            2028,
+            2000,
+            2000
+        ],
+        "validations": [
+            {
+                "state": "post",
+                "check": false
+            },
+            {
+                "state": {
+                    "player": 3
+                },
+                "check": false,
+                "call": 10,
+                "raise": [
+                    10,
+                    20
+                ]
+            },
+            {
+                "state": {
+                    "player": 4
+                },
+                "check": false,
+                "call": 10,
+                "raise": [
+                    10,
+                    20
+                ]
+            },
+            {
+                "state": {
+                    "player": 5
+                },
+                "check": false,
+                "call": 10,
+                "raise": [
+                    10,
+                    20
+                ]
+            },
+            {
+                "state": {
+                    "player": 0
+                },
+                "check": false,
+                "call": 10,
+                "raise": [
+                    10,
+                    20
+                ]
+            },
+            {
+                "state": {
+                    "player": 2
+                },
+                "check": true,
+                "raise": [
+                    9,
+                    19
+                ]
+            },
+            {
+                "state": {
+                    "player": 3
+                },
+                "check": false,
+                "call": 9,
+                "raise": [
+                    10,
+                    29
+                ]
+            },
+            {
+                "state": {
+                    "uncalled_bet": {
+                        "player": 3,
+                        "amount": 10
+                    }
+                },
+                "check": false
+            },
+            {
+                "state": {
+                    "show_or_muck": 3
+                },
+                "check": false
+            },
+            {
+                "state": {
+                    "show_or_muck": 1
+                },
+                "check": false
+            },
+            {
+                "state": {
+                    "show_or_muck": 2
+                },
+                "check": false
+            },
+            {
+                "state": {
+                    "street": "flop"
+                },
+                "check": false
+            },
+            {
+                "state": {
+                    "street": "turn"
+                },
+                "check": false
+            },
+            {
+                "state": {
+                    "street": "river"
+                },
+                "check": false
+            },
+            {
+                "state": "showdown",
+                "check": false
+            },
+            {
+                "state": "end",
+                "check": false
+            }
+        ]
+    },
+    {
+        "players": [
+            {
+                "name": "BTN",
+                "starting_stack": 1000
+            },
+            {
+                "name": "SB",
+                "starting_stack": 1000
+            },
+            {
+                "name": "BB",
+                "starting_stack": 1000
+            },
+            {
+                "name": "UTG",
+                "starting_stack": 1000
+            },
+            {
+                "name": "HJ",
+                "starting_stack": 1000
+            },
+            {
+                "name": "CO",
+                "starting_stack": 1000
+            }
+        ],
+        "button_index": 0,
+        "small_blind": 10,
+        "big_blind": 10,
+        "actions": [
+            {
+                "post": {
+                    "player": 1,
+                    "amount": 10
+                }
+            },
+            {
+                "post": {
+                    "player": 2,
+                    "amount": 10
+                }
+            },
+            {
+                "fold": 3
+            },
+            {
+                "fold": 4
+            },
+            {
+                "fold": 5
+            },
+            {
+                "fold": 0
+            },
+            {
+                "check": 1
+            },
+            {
+                "check": 2
+            },
+            {
+                "flop": [
+                    "7h",
+                    "8h",
+                    "Kc"
+                ]
+            },
+            {
+                "bet": {
+                    "player": 1,
+                    "amount": 46
+                }
+            },
+            {
+                "call": {
+                    "player": 2,
+                    "amount": 46
+                }
+            },
+            {
+                "turn": "Qd"
+            },
+            {
+                "fold": 1
+            }
+        ],
+        "showdown_stacks": [
+            1000,
+            944,
+            1056,
+            1000,
+            1000,
+            1000
+        ],
+        "validations": [
+            {
+                "state": "post",
+                "check": false
+            },
+            {
+                "state": {
+                    "player": 3
+                },
+                "check": false,
+                "call": 10,
+                "raise": [
+                    10,
+                    20
+                ]
+            },
+            {
+                "state": {
+                    "player": 4
+                },
+                "check": false,
+                "call": 10,
+                "raise": [
+                    10,
+                    20
+                ]
+            },
+            {
+                "state": {
+                    "player": 5
+                },
+                "check": false,
+                "call": 10,
+                "raise": [
+                    10,
+                    20
+                ]
+            },
+            {
+                "state": {
+                    "player": 0
+                },
+                "check": false,
+                "call": 10,
+                "raise": [
+                    10,
+                    20
+                ]
+            },
+            {
+                "state": {
+                    "player": 1
+                },
+                "check": true,
+                "raise": [
+                    10,
+                    20
+                ]
+            },
+            {
+                "state": {
+                    "player": 2
+                },
+                "check": true,
+                "raise": [
+                    10,
+                    20
+                ]
+            },
+            {
+                "state": {
+                    "street": "flop"
+                },
+                "check": false
+            },
+            {
+                "state": {
+                    "player": 1
+                },
+                "check": true,
+                "bet": 10
+            },
+            {
+                "state": {
+                    "player": 2
+                },
+                "check": false,
+                "call": 46,
+                "raise": [
+                    46,
+                    92
+                ]
+            },
+            {
+                "state": {
+                    "street": "turn"
+                },
+                "check": false
+            },
+            {
+                "state": {
+                    "player": 1
+                },
+                "check": true,
+                "bet": 10
+            },
+            {
+                "state": "showdown",
+                "check": false
+            },
+            {
+                "state": "end",
+                "check": false
+            }
+        ]
+    },
+    {
+        "players": [
+            {
+                "name": "BTN",
+                "starting_stack": 1000
+            },
+            {
+                "name": "SB",
+                "starting_stack": 1000
+            },
+            {
+                "name": "BB",
+                "starting_stack": 1000
+            },
+            {
+                "name": "UTG",
+                "starting_stack": 1000
+            },
+            {
+                "name": "HJ",
+                "starting_stack": 1000
+            },
+            {
+                "name": "CO",
+                "starting_stack": 1000
+            }
+        ],
+        "button_index": 0,
+        "small_blind": 10,
+        "big_blind": 10,
+        "actions": [
+            {
+                "post": {
+                    "player": 1,
+                    "amount": 10
+                }
+            },
+            {
+                "post": {
+                    "player": 2,
+                    "amount": 10
+                }
+            },
+            {
+                "fold": 3
+            },
+            {
+                "fold": 4
+            },
+            {
+                "fold": 5
+            },
+            {
+                "fold": 0
+            },
+            {
+                "raise": {
+                    "player": 1,
+                    "old_stack": 990,
+                    "amount": 20,
+                    "to": 30
+                }
+            },
+            {
+                "raise": {
+                    "player": 2,
+                    "old_stack": 990,
+                    "amount": 20,
+                    "to": 50
+                }
+            },
+            {
+                "raise": {
+                    "player": 1,
+                    "old_stack": 970,
+                    "amount": 20,
+                    "to": 70
+                }
+            },
+            {
+                "call": {
+                    "player": 2,
+                    "amount": 20
+                }
+            },
+            {
+                "flop": [
+                    "8h",
+                    "9c",
+                    "Qc"
+                ]
+            },
+            {
+                "check": 1
+            },
+            {
+                "fold": 2
+            }
+        ],
+        "showdown_stacks": [
+            1000,
+            1070,
+            930,
+            1000,
+            1000,
+            1000
+        ],
+        "validations": [
+            {
+                "state": "post",
+                "check": false
+            },
+            {
+                "state": {
+                    "player": 3
+                },
+                "check": false,
+                "call": 10,
+                "raise": [
+                    10,
+                    20
+                ]
+            },
+            {
+                "state": {
+                    "player": 4
+                },
+                "check": false,
+                "call": 10,
+                "raise": [
+                    10,
+                    20
+                ]
+            },
+            {
+                "state": {
+                    "player": 5
+                },
+                "check": false,
+                "call": 10,
+                "raise": [
+                    10,
+                    20
+                ]
+            },
+            {
+                "state": {
+                    "player": 0
+                },
+                "check": false,
+                "call": 10,
+                "raise": [
+                    10,
+                    20
+                ]
+            },
+            {
+                "state": {
+                    "player": 1
+                },
+                "check": true,
+                "raise": [
+                    10,
+                    20
+                ]
+            },
+            {
+                "state": {
+                    "player": 2
+                },
+                "check": false,
+                "call": 20,
+                "raise": [
+                    20,
+                    50
+                ]
+            },
+            {
+                "state": {
+                    "player": 1
+                },
+                "check": false,
+                "call": 20,
+                "raise": [
+                    20,
+                    70
+                ]
+            },
+            {
+                "state": {
+                    "player": 2
+                },
+                "check": false,
+                "call": 20,
+                "raise": [
+                    20,
+                    90
+                ]
+            },
+            {
+                "state": {
+                    "street": "flop"
+                },
+                "check": false
+            },
+            {
+                "state": {
+                    "player": 1
+                },
+                "check": true,
+                "bet": 10
+            },
+            {
+                "state": {
+                    "player": 2
+                },
+                "check": true,
+                "bet": 10
+            },
+            {
+                "state": "showdown",
+                "check": false
+            },
+            {
+                "state": "end",
+                "check": false
+            }
+        ]
+    },
+    {
+        "players": [
+            {
+                "name": "BTN",
+                "starting_stack": 1000
+            },
+            {
+                "name": "SB",
+                "hand": "Qs4d",
+                "starting_stack": 1000
+            },
+            {
+                "name": "BB",
+                "hand": "Ts8s",
+                "starting_stack": 1010
+            },
+            {
+                "name": "UTG",
+                "starting_stack": 1000
+            },
+            {
+                "name": "HJ",
+                "starting_stack": 1000
+            },
+            {
+                "name": "CO",
+                "starting_stack": 1000
+            }
+        ],
+        "button_index": 0,
+        "small_blind": 10,
+        "big_blind": 10,
+        "actions": [
+            {
+                "post": {
+                    "player": 1,
+                    "amount": 10
+                }
+            },
+            {
+                "post": {
+                    "player": 2,
+                    "amount": 10
+                }
+            },
+            {
+                "fold": 3
+            },
+            {
+                "fold": 4
+            },
+            {
+                "fold": 5
+            },
+            {
+                "fold": 0
+            },
+            {
+                "raise": {
+                    "player": 1,
+                    "old_stack": 990,
+                    "amount": 990,
+                    "to": 1000
+                }
+            },
+            {
+                "raise": {
+                    "player": 2,
+                    "old_stack": 1000,
+                    "amount": 1000,
+                    "to": 1010
+                }
+            },
+            {
+                "uncalled_bet": {
+                    "player": 2,
+                    "amount": 10
+                }
+            },
+            {
+                "shows": {
+                    "player": 2,
+                    "hand": "Ts8s"
+                }
+            },
+            {
+                "shows": {
+                    "player": 1,
+                    "hand": "Qs4d"
+                }
+            },
+            {
+                "flop": [
+                    "Tc",
+                    "9c",
+                    "8c"
+                ]
+            },
+            {
+                "turn": "Qd"
+            },
+            {
+                "river": "Qh"
+            }
+        ],
+        "showdown_stacks": [
+            1000,
+            2000,
+            10,
+            1000,
+            1000,
+            1000
+        ],
+        "validations": [
+            {
+                "state": "post",
+                "check": false
+            },
+            {
+                "state": {
+                    "player": 3
+                },
+                "check": false,
+                "call": 10,
+                "raise": [
+                    10,
+                    20
+                ]
+            },
+            {
+                "state": {
+                    "player": 4
+                },
+                "check": false,
+                "call": 10,
+                "raise": [
+                    10,
+                    20
+                ]
+            },
+            {
+                "state": {
+                    "player": 5
+                },
+                "check": false,
+                "call": 10,
+                "raise": [
+                    10,
+                    20
+                ]
+            },
+            {
+                "state": {
+                    "player": 0
+                },
+                "check": false,
+                "call": 10,
+                "raise": [
+                    10,
+                    20
+                ]
+            },
+            {
+                "state": {
+                    "player": 1
+                },
+                "check": true,
+                "raise": [
+                    10,
+                    20
+                ]
+            },
+            {
+                "state": {
+                    "player": 2
+                },
+                "check": false,
+                "call": 990,
+                "raise": [
+                    1000,
+                    1010
+                ]
+            },
+            {
+                "state": {
+                    "uncalled_bet": {
+                        "player": 2,
+                        "amount": 10
+                    }
+                },
+                "check": false
+            },
+            {
+                "state": {
+                    "show_or_muck": 2
+                },
+                "check": false
+            },
+            {
+                "state": {
+                    "show_or_muck": 1
+                },
+                "check": false
+            },
+            {
+                "state": {
+                    "street": "flop"
+                },
+                "check": false
+            },
+            {
+                "state": {
+                    "street": "turn"
+                },
+                "check": false
+            },
+            {
+                "state": {
+                    "street": "river"
+                },
+                "check": false
+            },
+            {
+                "state": "showdown",
+                "check": false
+            },
+            {
+                "state": "end",
+                "check": false
+            }
+        ]
+    },
+    {
+        "players": [
+            {
+                "name": "BTN",
+                "starting_stack": 1000
+            },
+            {
+                "name": "SB",
+                "hand": "8d2s",
+                "starting_stack": 1000
+            },
+            {
+                "name": "BB",
+                "hand": "AhTh",
+                "starting_stack": 500
+            },
+            {
+                "name": "UTG",
+                "starting_stack": 1000
+            },
+            {
+                "name": "HJ",
+                "starting_stack": 1000
+            },
+            {
+                "name": "CO",
+                "starting_stack": 1000
+            }
+        ],
+        "button_index": 0,
+        "small_blind": 10,
+        "big_blind": 10,
+        "actions": [
+            {
+                "post": {
+                    "player": 1,
+                    "amount": 10
+                }
+            },
+            {
+                "post": {
+                    "player": 2,
+                    "amount": 10
+                }
+            },
+            {
+                "fold": 3
+            },
+            {
+                "fold": 4
+            },
+            {
+                "fold": 5
+            },
+            {
+                "fold": 0
+            },
+            {
+                "raise": {
+                    "player": 1,
+                    "old_stack": 990,
+                    "amount": 990,
+                    "to": 1000
+                }
+            },
+            {
+                "call": {
+                    "player": 2,
+                    "amount": 490
+                }
+            },
+            {
+                "uncalled_bet": {
+                    "player": 1,
+                    "amount": 500
+                }
+            },
+            {
+                "shows": {
+                    "player": 1,
+                    "hand": "8d2s"
+                }
+            },
+            {
+                "shows": {
+                    "player": 2,
+                    "hand": "AhTh"
+                }
+            },
+            {
+                "flop": [
+                    "Tc",
+                    "9c",
+                    "8c"
+                ]
+            },
+            {
+                "turn": "4c"
+            },
+            {
+                "river": "Kd"
+            }
+        ],
+        "showdown_stacks": [
+            1000,
+            500,
+            1000,
+            1000,
+            1000,
+            1000
+        ],
+        "validations": [
+            {
+                "state": "post",
+                "check": false
+            },
+            {
+                "state": {
+                    "player": 3
+                },
+                "check": false,
+                "call": 10,
+                "raise": [
+                    10,
+                    20
+                ]
+            },
+            {
+                "state": {
+                    "player": 4
+                },
+                "check": false,
+                "call": 10,
+                "raise": [
+                    10,
+                    20
+                ]
+            },
+            {
+                "state": {
+                    "player": 5
+                },
+                "check": false,
+                "call": 10,
+                "raise": [
+                    10,
+                    20
+                ]
+            },
+            {
+                "state": {
+                    "player": 0
+                },
+                "check": false,
+                "call": 10,
+                "raise": [
+                    10,
+                    20
+                ]
+            },
+            {
+                "state": {
+                    "player": 1
+                },
+                "check": true,
+                "raise": [
+                    10,
+                    20
+                ]
+            },
+            {
+                "state": {
+                    "player": 2
+                },
+                "check": false,
+                "call": 490
+            },
+            {
+                "state": {
+                    "uncalled_bet": {
+                        "player": 1,
+                        "amount": 500
+                    }
+                },
+                "check": false
+            },
+            {
+                "state": {
+                    "show_or_muck": 1
+                },
+                "check": false
+            },
+            {
+                "state": {
+                    "show_or_muck": 2
+                },
+                "check": false
+            },
+            {
+                "state": {
+                    "street": "flop"
+                },
+                "check": false
+            },
+            {
+                "state": {
+                    "street": "turn"
+                },
+                "check": false
+            },
+            {
+                "state": {
+                    "street": "river"
+                },
+                "check": false
+            },
+            {
+                "state": "showdown",
+                "check": false
+            },
+            {
+                "state": "end",
+                "check": false
+            }
+        ]
+    },
+    {
+        "players": [
+            {
+                "name": "BB",
+                "starting_stack": 1000
+            },
+            {
+                "name": "BTN",
+                "starting_stack": 1000
+            }
+        ],
+        "button_index": 1,
+        "small_blind": 5,
+        "big_blind": 10,
+        "actions": [
+            {
+                "post": {
+                    "player": 1,
+                    "amount": 5
+                }
+            },
+            {
+                "post": {
+                    "player": 0,
+                    "amount": 10
+                }
+            },
+            {
+                "call": {
+                    "player": 1,
+                    "amount": 5
+                }
+            },
+            {
+                "check": 0
+            },
+            {
+                "flop": [
+                    "8c",
+                    "9c",
+                    "Tc"
+                ]
+            },
+            {
+                "bet": {
+                    "player": 0,
+                    "amount": 10
+                }
+            },
+            {
+                "raise": {
+                    "player": 1,
+                    "old_stack": 990,
+                    "amount": 50,
+                    "to": 60
+                }
+            },
+            {
+                "call": {
+                    "player": 0,
+                    "amount": 50
+                }
+            },
+            {
+                "turn": "7h"
+            },
+            {
+                "check": 0
+            },
+            {
+                "bet": {
+                    "player": 1,
+                    "amount": 930
+                }
+            },
+            {
+                "fold": 0
+            },
+            {
+                "uncalled_bet": {
+                    "player": 1,
+                    "amount": 930
+                }
+            }
+        ],
+        "showdown_stacks": [
+            930,
+            1070
+        ],
+        "validations": [
+            {
+                "state": "post",
+                "check": false
+            },
+            {
+                "state": {
+                    "player": 1
+                },
+                "check": false,
+                "call": 5,
+                "raise": [
+                    10,
+                    20
+                ]
+            },
+            {
+                "state": {
+                    "player": 0
+                },
+                "check": true,
+                "raise": [
+                    10,
+                    20
+                ]
+            },
+            {
+                "state": {
+                    "street": "flop"
+                },
+                "check": false
+            },
+            {
+                "state": {
+                    "player": 0
+                },
+                "check": true,
+                "bet": 10
+            },
+            {
+                "state": {
+                    "player": 1
+                },
+                "check": false,
+                "call": 10,
+                "raise": [
+                    10,
+                    20
+                ]
+            },
+            {
+                "state": {
+                    "player": 0
+                },
+                "check": false,
+                "call": 50,
+                "raise": [
+                    50,
+                    110
+                ]
+            },
+            {
+                "state": {
+                    "street": "turn"
+                },
+                "check": false
+            },
+            {
+                "state": {
+                    "player": 0
+                },
+                "check": true,
+                "bet": 10
+            },
+            {
+                "state": {
+                    "player": 1
+                },
+                "check": true,
+                "bet": 10
+            },
+            {
+                "state": {
+                    "player": 0
+                },
+                "check": false,
+                "call": 930
+            },
+            {
+                "state": {
+                    "uncalled_bet": {
+                        "player": 1,
+                        "amount": 930
+                    }
+                },
+                "check": false
+            },
+            {
+                "state": "showdown",
+                "check": false
+            },
+            {
+                "state": "end",
+                "check": false
+            }
+        ]
+    }
+]

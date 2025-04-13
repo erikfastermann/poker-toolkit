@@ -89,7 +89,6 @@ impl GGHandHistoryParser {
             if line.is_empty() {
                 let entry = &entries[last_empty_index..index];
                 if entry.trim().len() != 0 {
-                    println!("{entry}"); // TODO
                     let game = self.parse_str_single(entry)?;
                     games.push(game);
                 }
@@ -118,7 +117,6 @@ impl GGHandHistoryParser {
         self.parse_and_apply_actions(&mut lines, &mut game)?;
         let winnings = self.parse_showdown(&mut lines, &mut game)?;
         self.parse_summary(&mut lines, &mut game, &winnings)?;
-        game.internal_asserts_history();
         Ok(game)
     }
 
@@ -306,37 +304,12 @@ impl GGHandHistoryParser {
         const RAISE_INDEX: usize = 11;
         const RAISE_ALL_IN_INDEX: usize = 14;
 
-        assert!(game.board().street() != Street::PreFlop || game.can_bet().is_none());
-        assert!(game.can_next_street().is_none());
-        assert_eq!(game.state(), State::Player(player_index));
-        assert!(game.has_cards(player_index));
-        assert!(game.next_show_or_muck().is_none());
+        game.internal_asserts_state();
         if action.get(FOLD_INDEX).is_some() {
-            let asserts = (game.can_check()
-                && game.board().street() == Street::PreFlop
-                && player_index == game.big_blind_index()
-                && game.can_bet().is_none()
-                && game.can_call().is_none())
-                || (game.can_check()
-                    && game.can_bet().is_some()
-                    && game.can_call().is_none()
-                    && game.can_raise().is_none())
-                || (!game.can_check() && game.can_bet().is_none() && game.can_call().is_some());
             game.fold()?;
-            assert!(asserts);
         } else if action.get(CHECK_INDEX).is_some() {
-            let asserts = game.can_check()
-                && ((player_index == game.big_blind_index()
-                    && game.can_bet().is_none()
-                    && game.can_call().is_none())
-                    || (game.can_bet().is_some()
-                        && game.can_call().is_none()
-                        && game.can_raise().is_none()));
             game.check()?;
-            assert!(asserts);
         } else if action.get(CALL_INDEX).is_some() {
-            let asserts =
-                game.can_call().is_some() && !game.can_check() && game.can_bet().is_none();
             let call_amount = Self::parse_price_as_cent(&action[CALL_INDEX + 1])?;
             if game
                 .can_call()
@@ -351,35 +324,19 @@ impl GGHandHistoryParser {
             if action.get(CALL_ALL_IN_INDEX).is_some() && game.current_stacks()[player_index] != 0 {
                 return Err("action: invalid call all-in".into());
             }
-            assert!(asserts);
         } else if action.get(BET_INDEX).is_some() {
-            let asserts = game.can_bet().is_some()
-                && game.can_check()
-                && game.can_call().is_none()
-                && game.can_raise().is_none();
             let bet_amount = Self::parse_price_as_cent(&action[BET_INDEX + 1])?;
             game.bet(bet_amount)?;
             if action.get(BET_ALL_IN_INDEX).is_some() && game.current_stacks()[player_index] != 0 {
                 return Err("action: invalid bet all-in".into());
             }
-            assert!(asserts);
         } else if action.get(RAISE_INDEX).is_some() {
-            let asserts = game.can_raise().is_some()
-                && ((game.board().street() == Street::PreFlop
-                    && player_index == game.big_blind_index()
-                    && game.can_bet().is_none()
-                    && game.can_call().is_none()
-                    && game.can_check())
-                    || (!game.can_check()
-                        && game.can_call().is_some()
-                        && game.can_bet().is_none()));
             let raise_to = Self::parse_price_as_cent(&action[RAISE_INDEX + 2])?;
             game.raise(raise_to)?;
             if action.get(RAISE_ALL_IN_INDEX).is_some() && game.current_stacks()[player_index] != 0
             {
                 return Err("action: invalid raise all-in".into());
             }
-            assert!(asserts);
         } else {
             unreachable!()
         }
@@ -392,16 +349,7 @@ impl GGHandHistoryParser {
         lines: &mut impl Iterator<Item = &'a str>,
         game: &mut Game,
     ) -> Result<()> {
-        assert!(
-            !game.can_check()
-                && game.can_call().is_none()
-                && game.can_bet().is_none()
-                && game.can_raise().is_none()
-                && game.can_next_street().is_some()
-                && game.current_player().is_none()
-                && game.next_show_or_muck().is_none()
-                && game.next_show_or_muck().is_none()
-        );
+        game.internal_asserts_state();
         let State::Street(street) = game.state() else {
             unreachable!()
         };
@@ -608,7 +556,7 @@ impl GGHandHistoryParser {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{fs, path::Path};
 
     use super::*;
 
@@ -618,15 +566,13 @@ mod tests {
             crate::init::init();
         }
 
-        // TODO
-        let history = fs::read_to_string(r"C:\Users\Erik\Downloads\gg_hands.txt").unwrap();
+        let path = Path::new("src")
+            .join("test_data")
+            .join("gg_hands_example.txt");
+        let history = fs::read_to_string(path).unwrap();
         let games = GGHandHistoryParser::new().parse_str(&history).unwrap();
-        dbg!(&games);
         for game in games {
-            let data = serde_json::to_string_pretty(&game.to_game_data()).unwrap();
-            println!("{data}");
-            let parsed_game = Game::from_game_data(&serde_json::from_str(&data).unwrap()).unwrap();
-            assert_eq!(&game, &parsed_game);
+            game.internal_asserts_full();
         }
     }
 }

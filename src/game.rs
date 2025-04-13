@@ -1,4 +1,5 @@
 use std::cmp::min;
+use std::collections::HashSet;
 use std::ops::BitAnd;
 use std::{array, fmt, usize};
 
@@ -351,12 +352,13 @@ impl Game {
             )
             .into());
         }
+        if button_index >= player_count {
+            return Err("invalid button position".into());
+        }
+
         let stacks: Vec<_> = players.iter().map(|player| player.starting_stack).collect();
         if stacks.iter().any(|stack| *stack == 0) {
             return Err("empty stacks not allowed in hand".into());
-        }
-        if button_index >= player_count {
-            return Err("invalid button position".into());
         }
         let total_stacks = stacks
             .iter()
@@ -365,6 +367,7 @@ impl Game {
         if total_stacks.is_none() {
             return Err("total stacks overflows".into());
         }
+
         let names: Vec<_> = players
             .iter()
             .enumerate()
@@ -377,7 +380,13 @@ impl Game {
                 })
             })
             .collect();
-        // TODO: Check names are unique.
+        if names.iter().cloned().collect::<HashSet<String>>().len() != player_count {
+            return Err("duplicate player name".into());
+        }
+        if names.iter().any(|name| name.is_empty()) {
+            return Err("empty player name".into());
+        }
+
         let hands: Vec<_> = players
             .iter()
             .map(|player| player.hand.unwrap_or(Hand::UNDEFINED))
@@ -468,7 +477,7 @@ impl Game {
 
     pub fn to_validation_data(&mut self) -> GameValidationData {
         let game_data = self.to_game_data();
-        while self.previous() {}
+        self.rewind();
         let mut validations = Vec::new();
         loop {
             validations.push(GameValidationEntry {
@@ -592,7 +601,7 @@ impl Game {
         self.players_in_hand.has(index) && !self.is_all_in(index)
     }
 
-    fn actions_in_street(&self) -> &[Action] {
+    pub fn actions_in_street(&self) -> &[Action] {
         assert!(
             self.current_street_index == 0
                 || self.actions[self.current_street_index - 1].is_street()
@@ -640,6 +649,8 @@ impl Game {
     }
 
     pub fn can_raise(&self) -> Option<(u32, u32)> {
+        // TODO: Should raise be allowed after all other players are all in?
+
         let player = self.current_player()?;
         let actions = self.actions_in_street();
         let mut last_amount = 0;
@@ -692,14 +703,6 @@ impl Game {
         } else {
             Some((last_amount, to))
         }
-    }
-
-    pub fn raise_in_street(&self) -> bool {
-        // TODO: Probably not a nice method for our interface.
-
-        self.actions_in_street()
-            .iter()
-            .any(|action| matches!(action, Action::Raise { .. }))
     }
 
     fn is_all_in(&self, player: usize) -> bool {
@@ -768,7 +771,7 @@ impl Game {
         }
     }
 
-    pub(crate) fn next_show_or_muck(&self) -> Option<usize> {
+    fn next_show_or_muck(&self) -> Option<usize> {
         let not_allowed = !self.action_ended()
             || self.players_in_hand.count() == 1
             || self.hand_shown.count() == self.players_in_hand.count();
@@ -834,9 +837,7 @@ impl Game {
         Ok(())
     }
 
-    fn next_player(&mut self) -> Result<()> {
-        // TODO: No need to return a result.
-
+    fn next_player(&mut self) {
         assert!(self.current_player().is_some());
         let actions = self.actions_in_street();
 
@@ -862,23 +863,23 @@ impl Game {
             && all_equal_investments;
         if can_skip {
             self.current_player = u8::MAX;
-            return Ok(());
+            return;
         }
 
-        self.next_player_in_hand_not_all_in()
+        self.next_player_in_hand_not_all_in();
     }
 
-    fn next_player_in_hand_not_all_in(&mut self) -> Result<()> {
-        self.current_player_result()?;
+    fn next_player_in_hand_not_all_in(&mut self) {
+        assert!(self.current_player().is_some());
         let current_player_start = self.current_player;
         loop {
             self.current_player = (self.current_player + 1) % self.player_count_u8();
             if self.current_player == current_player_start {
                 self.current_player = u8::MAX;
-                return Ok(());
+                return;
             }
             if self.in_hand_not_all_in(usize::from(self.current_player)) {
-                return Ok(());
+                return;
             }
         }
     }
@@ -917,7 +918,8 @@ impl Game {
             player: self.current_player,
             amount,
         });
-        self.next_player()
+        self.next_player();
+        Ok(())
     }
 
     pub fn post_small_and_big_blind(&mut self) -> Result<()> {
@@ -940,7 +942,8 @@ impl Game {
         assert!(self.players_in_hand.has(player));
         self.players_in_hand.remove(player);
         self.add_action(Action::Fold(self.current_player));
-        self.next_player()
+        self.next_player();
+        Ok(())
     }
 
     pub fn check(&mut self) -> Result<()> {
@@ -950,7 +953,8 @@ impl Game {
             return Err("player is not allowed to check".into());
         }
         self.add_action(Action::Check(self.current_player));
-        self.next_player()
+        self.next_player();
+        Ok(())
     }
 
     pub fn call(&mut self) -> Result<()> {
@@ -964,7 +968,8 @@ impl Game {
             player: self.current_player,
             amount,
         });
-        self.next_player()
+        self.next_player();
+        Ok(())
     }
 
     pub fn bet(&mut self, amount: u32) -> Result<()> {
@@ -981,7 +986,8 @@ impl Game {
             player: self.current_player,
             amount,
         });
-        self.next_player()
+        self.next_player();
+        Ok(())
     }
 
     pub fn raise(&mut self, to: u32) -> Result<()> {
@@ -1008,7 +1014,8 @@ impl Game {
             amount,
             to,
         });
-        self.next_player()
+        self.next_player();
+        Ok(())
     }
 
     pub fn uncalled_bet(&mut self) -> Result<()> {
@@ -1024,7 +1031,7 @@ impl Game {
         Ok(())
     }
 
-    pub(crate) fn can_next_street(&self) -> Option<Street> {
+    fn can_next_street(&self) -> Option<Street> {
         let allowed = self.next_show_or_muck().is_none()
             && self.current_player().is_none()
             && (!self.actions_in_street().is_empty() || self.players_in_hand_not_all_in() <= 1)
@@ -1085,7 +1092,7 @@ impl Game {
             self.current_player = u8::MAX;
         } else {
             self.current_player = self.button_index;
-            self.next_player_in_hand_not_all_in()?;
+            self.next_player_in_hand_not_all_in();
         }
         self.current_street_index = self.current_action_index;
         Ok(())
@@ -1387,6 +1394,10 @@ impl Game {
         self.current_action_index > 0
     }
 
+    pub fn rewind(&mut self) {
+        while self.previous() {}
+    }
+
     pub fn previous(&mut self) -> bool {
         if !self.can_previous() {
             return false;
@@ -1511,6 +1522,73 @@ impl Game {
         true
     }
 
+    pub(crate) fn internal_asserts_full(&self) {
+        self.internal_asserts_state();
+        self.internal_asserts_parse_roundtrip();
+        self.internal_asserts_history();
+    }
+
+    pub(crate) fn internal_asserts_state(&self) {
+        if let Some(player) = self.current_player() {
+            assert_eq!(self.state(), State::Player(player));
+            assert!(self.has_cards(player));
+            assert!(!self.is_all_in(player));
+            assert!(self.can_next_street().is_none());
+            assert!(self.next_show_or_muck().is_none());
+            assert!(
+                self.can_check()
+                    || self.can_call().is_some()
+                    || self.can_bet().is_some()
+                    || self.can_raise().is_some()
+            );
+        }
+
+        if self.can_check() {
+            let player = self.current_player().unwrap();
+            assert!(self.can_call().is_none());
+
+            if self.board.street == Street::PreFlop {
+                assert!(player == self.small_blind_index() || player == self.big_blind_index());
+                assert_eq!(self.call_amount(player), 0);
+                assert!(!self
+                    .actions_in_street()
+                    .iter()
+                    .any(|action| matches!(action, Action::Raise { .. })));
+            } else {
+                assert!(self.can_bet().is_some());
+            }
+        }
+
+        if self.can_call().is_some() {
+            assert!(!self.can_check());
+            assert!(self.can_bet().is_none());
+        }
+
+        if self.can_bet().is_some() {
+            assert_ne!(self.board.street, Street::PreFlop);
+            assert!(self.can_check());
+            assert!(self.can_call().is_none());
+            assert!(self.can_raise().is_none());
+        }
+
+        if let Some((_, to)) = self.can_raise() {
+            let player = self.current_player().unwrap();
+            if let Some(call_amount) = self.can_call() {
+                let raise_investment = to.checked_sub(self.invested_in_street(player)).unwrap();
+                assert!(call_amount < raise_investment);
+            } else {
+                assert_eq!(self.board.street, Street::PreFlop);
+                assert!(player == self.small_blind_index() || player == self.big_blind_index());
+            }
+        }
+    }
+
+    pub(crate) fn internal_asserts_parse_roundtrip(&self) {
+        let data = serde_json::to_string_pretty(&self.to_game_data()).unwrap();
+        let parsed_game = Game::from_game_data(&serde_json::from_str(&data).unwrap()).unwrap();
+        assert_eq!(self, &parsed_game);
+    }
+
     pub(crate) fn internal_asserts_history(&self) {
         assert_eq!(self.state(), State::End);
         let mut games = Vec::new();
@@ -1553,6 +1631,8 @@ impl Game {
     }
 
     fn internal_asserts_history_compare(&self, expected: &Game) {
+        self.internal_asserts_state();
+
         assert_eq!(expected.board, self.board);
         assert_eq!(expected.names, self.names);
         assert_eq!(expected.starting_stacks, self.starting_stacks);
@@ -1633,4 +1713,41 @@ pub struct GameValidationEntry {
     pub call: Option<u32>,
     pub bet: Option<u32>,
     pub raise: Option<(u32, u32)>,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, path::Path};
+
+    use super::*;
+
+    #[test]
+    fn test_game_with_sample_hands() {
+        unsafe {
+            crate::init::init();
+        }
+
+        let path = Path::new("src")
+            .join("test_data")
+            .join("game_validation_data.json");
+        let validation_data_content = fs::read_to_string(path).unwrap();
+        let validation_data: Vec<GameValidationData> =
+            serde_json::from_str(&validation_data_content).unwrap();
+
+        for game_entry in validation_data {
+            let mut game = Game::from_game_data(&game_entry.game).unwrap();
+            game.internal_asserts_full();
+
+            game.rewind();
+            for validation in game_entry.validations {
+                assert_eq!(validation.state, game.state());
+                assert_eq!(validation.check, game.can_check());
+                assert_eq!(validation.call, game.can_call());
+                assert_eq!(validation.bet, game.can_bet());
+                assert_eq!(validation.raise, game.can_raise());
+                game.next();
+            }
+            assert!(!game.next());
+        }
+    }
 }
