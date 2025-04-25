@@ -1,4 +1,4 @@
-# Poker equity calculator, gui, and library
+# Poker Toolkit - Equity calculator, gui, and library
 
 Calculate the equity, win- and tie-percentage of a given hand in Texas Hold'em
 via the commandline.

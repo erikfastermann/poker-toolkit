@@ -1,8 +1,10 @@
+use eframe::egui::{CentralPanel, Context, Rect, Style, UiBuilder, Vec2, ViewportBuilder, Visuals};
+use eframe::Frame;
 use poker_core::cards::Cards;
 use poker_core::equity::Equity;
 use poker_core::range::RangeTable;
 use poker_core::result::Result;
-use poker_gui::gui::gui;
+use poker_gui::game_view::GameView;
 
 const INVALID_COMMAND_ERROR: &'static str = "Invalid command. See README for usage.";
 
@@ -64,5 +66,56 @@ fn print_equities(equities: &[Equity]) {
     assert!(equities.len() >= 2);
     for (i, equity) in equities.iter().enumerate() {
         println!("player {}: {}", i + 1, equity);
+    }
+}
+
+fn gui() -> eframe::Result {
+    env_logger::init();
+    let options = eframe::NativeOptions {
+        viewport: ViewportBuilder::default().with_maximized(true),
+        ..Default::default()
+    };
+    eframe::run_native(
+        "Poker Toolkit",
+        options,
+        Box::new(|cc| {
+            let style = Style {
+                visuals: Visuals::dark(),
+                ..Style::default()
+            };
+            cc.egui_ctx.set_style(style);
+            egui_extras::install_image_loaders(&cc.egui_ctx);
+            Ok(Box::new(App::new()?))
+        }),
+    )
+}
+
+struct App {
+    game: GameView,
+}
+
+impl App {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            game: GameView::new(),
+        })
+    }
+}
+
+impl eframe::App for App {
+    fn update(&mut self, ctx: &Context, _frame: &mut Frame) {
+        CentralPanel::default().show(ctx, |ui| {
+            let table_height = ui.clip_rect().height() * 0.9;
+            let bounding_rect = Rect::from_center_size(
+                ui.clip_rect().center(),
+                Vec2 {
+                    x: table_height * 4.0 / 3.0,
+                    y: table_height,
+                },
+            );
+            ui.allocate_new_ui(UiBuilder::new().max_rect(bounding_rect), |ui| {
+                self.game.view(ui).unwrap()
+            });
+        });
     }
 }
