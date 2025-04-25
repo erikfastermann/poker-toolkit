@@ -1,30 +1,13 @@
-#![allow(dead_code)] // TODO
-
-mod ai;
-mod card;
-mod cards;
-mod deck;
-mod equity;
-mod game;
-mod gui;
-mod hand;
-mod init;
-mod parser;
-mod range;
-mod rank;
-mod result;
-mod suite;
-
-use crate::cards::Cards;
-use crate::equity::Equity;
-use crate::gui::gui;
-use crate::range::RangeTable;
-use crate::result::Result;
+use poker_core::cards::Cards;
+use poker_core::equity::Equity;
+use poker_core::range::RangeTable;
+use poker_core::result::Result;
+use poker_gui::gui::gui;
 
 const INVALID_COMMAND_ERROR: &'static str = "Invalid command. See README for usage.";
 
 fn main() -> Result<()> {
-    unsafe { crate::init::init() };
+    unsafe { poker_core::init::init() };
 
     let args: Vec<_> = std::env::args().collect();
     if args.get(1).is_some_and(|cmd| cmd == "enumerate") {

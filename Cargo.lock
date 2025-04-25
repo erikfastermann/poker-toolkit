@@ -2492,17 +2492,34 @@ dependencies = [
 ]
 
 [[package]]
-name = "poker-equity"
+name = "poker-app"
 version = "0.1.0"
 dependencies = [
- "eframe",
- "egui_extras",
- "env_logger",
+ "poker-core",
+ "poker-gui",
+]
+
+[[package]]
+name = "poker-core"
+version = "0.1.0"
+dependencies = [
  "rand",
  "regex",
  "serde",
  "serde_json",
  "serde_with",
+]
+
+[[package]]
+name = "poker-gui"
+version = "0.1.0"
+dependencies = [
+ "eframe",
+ "egui_extras",
+ "env_logger",
+ "poker-core",
+ "rand",
+ "serde_json",
 ]
 
 [[package]]

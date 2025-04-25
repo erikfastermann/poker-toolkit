@@ -1,8 +1,11 @@
 use crate::{
     game::{Action, Game},
-    gui::PlayerActionGenerator,
     result::Result,
 };
+
+pub trait PlayerActionGenerator {
+    fn player_action(&mut self, game: &Game) -> Result<Action>;
+}
 
 pub struct AlwaysFold;
 

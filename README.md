@@ -1,10 +1,13 @@
-# Poker equity calculator
+# Poker equity calculator, gui, and library
 
-Calculate the equity, win- and tie-percentage of a given hand in Texas Hold'em.
+Calculate the equity, win- and tie-percentage of a given hand in Texas Hold'em
+via the commandline.
 
-TODO: Add GUI usage.
+Also includes simple gui and library methods.
 
-## Usage
+# Usage
+
+## Equity calculator
 
 ### Enumerate
 
@@ -14,6 +17,7 @@ Only useful if not that many combinations are possible.
 E.g.:
 
 ```
+cd poker-app
 cargo run --release -- enumerate AsTd3h      AhTh   AKo+,AKs+,TT+,33 full
 #                                ^           ^      ^                ^
 #                                community   hero   villain 1        villain 2 ...
@@ -33,6 +37,7 @@ and larger ranges, the precision decreases.
 E.g.:
 
 ```
+cd poker-app
 cargo run --release -- simulate  1000000 AsTd3h      AhTh   AKo+,AKs+,TT+,33 full        full
 #                                ^       ^           ^      ^                ^           ^
 #                                rounds  community   hero   villain 1        villain 2   villain 3 ...
@@ -41,4 +46,13 @@ cargo run --release -- simulate  1000000 AsTd3h      AhTh   AKo+,AKs+,TT+,33 ful
 # player 2: equity=20.42 win=20.22 tie=0.20
 # player 3: equity=5.34 win=5.02 tie=0.31
 # player 4: equity=5.36 win=5.05 tie=0.32
+```
+
+## Gui
+
+Currently only to play against trivial ai and program hands.
+
+```
+cd poker-app
+cargo run --release -- gui
 ```

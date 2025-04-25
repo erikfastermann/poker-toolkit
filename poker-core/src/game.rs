@@ -64,16 +64,6 @@ impl Action {
         self.player().is_some()
     }
 
-    fn to_amount(self) -> Option<u32> {
-        match self {
-            Action::Post { amount, .. } => Some(amount),
-            Action::Call { amount, .. } => Some(amount),
-            Action::Bet { amount, .. } => Some(amount),
-            Action::Raise { amount, .. } => Some(amount),
-            _ => None,
-        }
-    }
-
     fn player(self) -> Option<usize> {
         let player = match self {
             Action::Post { player, .. } => player,
@@ -1539,6 +1529,7 @@ impl Game {
         true
     }
 
+    #[cfg(test)]
     pub(crate) fn internal_asserts_full(&self) {
         self.internal_asserts_state();
         self.internal_asserts_parse_roundtrip();
@@ -1600,13 +1591,15 @@ impl Game {
         }
     }
 
-    pub(crate) fn internal_asserts_parse_roundtrip(&self) {
+    #[cfg(test)]
+    fn internal_asserts_parse_roundtrip(&self) {
         let data = serde_json::to_string_pretty(&self.to_game_data()).unwrap();
         let parsed_game = Game::from_game_data(&serde_json::from_str(&data).unwrap()).unwrap();
         assert_eq!(self, &parsed_game);
     }
 
-    pub(crate) fn internal_asserts_history(&self) {
+    #[cfg(test)]
+    fn internal_asserts_history(&self) {
         assert_eq!(self.state(), State::End);
         let mut games = Vec::new();
         let mut new_game = self.clone();
@@ -1647,6 +1640,7 @@ impl Game {
         assert!(!new_game.next());
     }
 
+    #[cfg(test)]
     fn internal_asserts_history_compare(&self, expected: &Game) {
         self.internal_asserts_state();
 

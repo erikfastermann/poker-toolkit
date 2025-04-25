@@ -62,7 +62,8 @@ impl Score {
         Score(self.0 + rhs.0)
     }
 
-    fn to_hand_ranking(self) -> HandRanking {
+    pub fn to_hand_ranking(self) -> HandRanking {
+        assert_ne!(self, Self::ZERO);
         let n = u16::try_from((self.0 >> 20) & 0xfff).unwrap();
         HandRanking::from_u16(n).unwrap()
     }
@@ -138,7 +139,7 @@ impl HandRanking {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Top5 {
     ranking: HandRanking,
     cards: Cards,
@@ -165,12 +166,20 @@ impl Top5 {
         Self { ranking, cards }
     }
 
-    pub fn compare(self, villain: Top5) -> Ordering {
-        self.to_score().cmp(&villain.to_score())
-    }
-
     pub fn to_score(self) -> Score {
         Score::from_ranking_cards(self.ranking, self.cards)
+    }
+}
+
+impl PartialOrd for Top5 {
+    fn partial_cmp(&self, villain: &Self) -> Option<Ordering> {
+        Some(self.cmp(villain))
+    }
+}
+
+impl Ord for Top5 {
+    fn cmp(&self, villain: &Self) -> Ordering {
+        self.to_score().cmp(&villain.to_score())
     }
 }
 
@@ -419,7 +428,7 @@ impl Cards {
         score
     }
 
-    pub unsafe fn init() {
+    pub(crate) unsafe fn init() {
         {
             assert_eq!(CARDS_FLUSH_MAP[0b11111], Score::ZERO);
             let flush_map = &mut (*addr_of_mut!(CARDS_FLUSH_MAP));
@@ -811,7 +820,7 @@ impl CardsByRank {
         self.0 &= !(1 << rank.to_i16());
     }
 
-    fn without(self, rank: Rank) -> Self {
+    pub fn without(self, rank: Rank) -> Self {
         assert!(self.has(rank));
         Self(self.0 & !(1 << rank.to_i16()))
     }

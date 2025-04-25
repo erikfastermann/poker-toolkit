@@ -10,8 +10,8 @@ use eframe::{
 };
 use egui_extras::{Column, TableBody, TableBuilder, TableRow};
 
-use crate::{
-    ai::{AlwaysCheckCall, AlwaysFold},
+use poker_core::{
+    ai::{AlwaysCheckCall, AlwaysFold, PlayerActionGenerator},
     card::Card,
     cards::Cards,
     game::{Action, Game, GameData, Player, State, Street},
@@ -1245,8 +1245,4 @@ impl CardSelector {
         self.cards.remove(card);
         self.in_order.retain(|current_card| *current_card != card);
     }
-}
-
-pub trait PlayerActionGenerator {
-    fn player_action(&mut self, game: &Game) -> Result<Action>;
 }

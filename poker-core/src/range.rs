@@ -317,7 +317,7 @@ impl RangeTable {
 
     pub const COUNT: usize = 52 * 51 / 2;
 
-    pub unsafe fn init() {
+    pub(crate) unsafe fn init() {
         let mut index = 0;
         Self::FULL.for_each_hand(|hand| {
             HANDS[index] = hand;

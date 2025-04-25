@@ -44,7 +44,7 @@ fn valid_input(community_cards: Cards, ranges: &[impl AsRef<RangeTable>]) -> boo
         && ranges.iter().all(|range| !range.as_ref().is_empty())
 }
 
-pub fn total_combos_upper_bound(community_cards: Cards, ranges: &[impl AsRef<RangeTable>]) -> u128 {
+fn total_combos_upper_bound(community_cards: Cards, ranges: &[impl AsRef<RangeTable>]) -> u128 {
     assert!(ranges.len() <= 9);
     assert!(ranges.iter().all(|range| !range.as_ref().is_empty()));
     let community_cards_count = community_cards.count();

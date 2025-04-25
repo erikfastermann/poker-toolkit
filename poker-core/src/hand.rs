@@ -32,7 +32,7 @@ impl FromStr for Hand {
 }
 
 impl Hand {
-    pub const UNDEFINED: Self = Self(Card::MIN, Card::MIN);
+    pub(crate) const UNDEFINED: Self = Self(Card::MIN, Card::MIN);
 
     pub fn of_two_cards(a: Card, b: Card) -> Option<Self> {
         match a.rank().cmp(&b.rank()) {
