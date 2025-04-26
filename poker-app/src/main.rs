@@ -14,20 +14,19 @@ fn main() -> Result<()> {
     unsafe { poker_core::init::init() };
 
     let args: Vec<_> = std::env::args().collect();
-    if args.get(1).is_some_and(|cmd| cmd == "enumerate") {
-        enumerate(&args[2..])
-    } else if args.get(1).is_some_and(|cmd| cmd == "simulate") {
-        simulate(&args[2..])
-    } else if args.get(1).is_some_and(|cmd| cmd == "simulate-table") {
-        simulate_table(&args[2..])
-    } else if args.get(1).is_some_and(|cmd| cmd == "gui") {
-        if args.len() != 2 {
-            return Err(INVALID_COMMAND_ERROR.into());
+    match args.get(1).map(|s| s.as_str()) {
+        Some("enumerate") => enumerate(&args[2..]),
+        Some("simulate") => simulate(&args[2..]),
+        Some("enumerate-table") => enumerate_table(&args[2..]),
+        Some("simulate-table") => simulate_table(&args[2..]),
+        Some("gui") => {
+            if args.len() != 2 {
+                return Err(INVALID_COMMAND_ERROR.into());
+            }
+            gui().map_err(|err| format!("{err}"))?;
+            Ok(())
         }
-        gui().map_err(|err| format!("{err}"))?;
-        Ok(())
-    } else {
-        Err(INVALID_COMMAND_ERROR.into())
+        _ => Err(INVALID_COMMAND_ERROR.into()),
     }
 }
 
@@ -73,6 +72,23 @@ fn print_equities(equities: &[Equity]) {
     }
 }
 
+fn enumerate_table(args: &[String]) -> Result<()> {
+    let [community_cards_raw, ..] = args else {
+        return Err(INVALID_COMMAND_ERROR.into());
+    };
+    let community_cards = Cards::from_str(community_cards_raw)?;
+    let ranges = args[1..]
+        .iter()
+        .map(|raw_range| RangeTable::parse(&raw_range))
+        .map(|r| r.map(Box::new))
+        .collect::<Result<Vec<_>>>()?;
+    let Some(equities) = EquityTable::enumerate(community_cards, &ranges) else {
+        return Err("enumerate-table failed: invalid input or expected sample to large".into());
+    };
+    print_equity_tables(&ranges, &equities);
+    Ok(())
+}
+
 fn simulate_table(args: &[String]) -> Result<()> {
     let [rounds_raw, community_cards_raw, ..] = args else {
         return Err(INVALID_COMMAND_ERROR.into());
@@ -101,11 +117,24 @@ fn print_equity_tables(ranges: &[impl AsRef<RangeTable>], equity_tables: &[Equit
         hands.sort_by(|a, b| {
             let a = equity_table.equity(*a);
             let b = equity_table.equity(*b);
-            a.partial_cmp(&b).unwrap_or(Ordering::Less).reverse()
+            a.equity_percent()
+                .partial_cmp(&b.equity_percent())
+                .unwrap_or(Ordering::Less)
+                .then_with(|| {
+                    a.win_percent()
+                        .partial_cmp(&b.win_percent())
+                        .unwrap_or(Ordering::Less)
+                })
+                .reverse()
         });
 
         for hand in hands {
-            println!("  - {}: {}", hand, equity_table.equity(hand));
+            let no_data = if equity_table.has_data(hand) {
+                ""
+            } else {
+                " (no data)"
+            };
+            println!("  - {}: {}{}", hand, equity_table.equity(hand), no_data);
         }
         println!()
     }

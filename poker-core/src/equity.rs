@@ -19,7 +19,7 @@ fn try_u64_to_f64(n: u64) -> Option<f64> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, Copy)]
 pub struct Equity {
     win_percent: f64,
     tie_percent: f64,
@@ -101,7 +101,13 @@ impl Equity {
         community_cards: Cards,
         ranges: &[impl AsRef<RangeTable>],
     ) -> Option<Vec<Equity>> {
-        EquityCalculator::new(community_cards, ranges)?.enumerate()
+        let mut wins = vec![0; ranges.len()];
+        let mut ties = vec![0.0; ranges.len()];
+        let equity_calculator = EquityCalculator::new(community_cards, ranges, |_, scores| {
+            showdown(scores, &mut wins, &mut ties)
+        })?;
+        let total = equity_calculator.enumerate()?;
+        Some(Self::from_total_wins_ties(total, &wins, &ties))
     }
 
     pub fn simulate(
@@ -139,7 +145,7 @@ pub struct EquityTable {
 }
 
 impl EquityTable {
-    fn from_totals_wins_ties_simulate(
+    fn from_totals_wins_ties(
         total: f64,
         totals: Vec<RangeTableWith<f64>>,
         wins: Vec<RangeTableWith<f64>>,
@@ -171,6 +177,21 @@ impl EquityTable {
         equity_tables
     }
 
+    pub fn enumerate(
+        community_cards: Cards,
+        ranges: &[impl AsRef<RangeTable>],
+    ) -> Option<Vec<EquityTable>> {
+        let mut totals = vec![RangeTableWith::default(); ranges.len()];
+        let mut wins = vec![RangeTableWith::default(); ranges.len()];
+        let mut ties = vec![RangeTableWith::default(); ranges.len()];
+        let equity_calculator = EquityCalculator::new(community_cards, ranges, |hands, scores| {
+            showdown_table(hands, scores, &mut totals, &mut wins, &mut ties, 1.0);
+        })?;
+        let total = equity_calculator.enumerate()?;
+        let total = try_u64_to_f64(total).unwrap();
+        Some(Self::from_totals_wins_ties(total, totals, wins, ties))
+    }
+
     pub fn simulate(
         start_community_cards: Cards,
         ranges: &[impl AsRef<RangeTable>],
@@ -184,12 +205,10 @@ impl EquityTable {
             ranges,
             rounds,
             |hands, scores, diff| {
-                showdown_table_simulate(hands, scores, &mut totals, &mut wins, &mut ties, diff);
+                showdown_table(hands, scores, &mut totals, &mut wins, &mut ties, diff);
             },
         )?;
-        Some(Self::from_totals_wins_ties_simulate(
-            total, totals, wins, ties,
-        ))
+        Some(Self::from_totals_wins_ties(total, totals, wins, ties))
     }
 
     pub fn total_equity(&self) -> Equity {
@@ -236,6 +255,10 @@ impl EquityTable {
         } else {
             self.ties[hand] / self.totals[hand]
         }
+    }
+
+    pub fn has_data(&self, hand: Hand) -> bool {
+        self.totals[hand] != 0.0
     }
 }
 
@@ -328,19 +351,19 @@ fn filter_hands<'a>(
     &output_range[..out_index]
 }
 
-struct EquityCalculator<'a, RT: AsRef<RangeTable>> {
+struct EquityCalculator<'a, RT: AsRef<RangeTable>, F: FnMut(&[Hand], &[Score])> {
     known_cards: Cards,
     visited_community_cards: Cards,
     community_cards: Cards,
     ranges: &'a [RT],
+    hands: Vec<Hand>,
     hand_ranking_scores: Vec<Score>,
     total: u64,
-    wins: Vec<u64>,
-    ties: Vec<f64>,
+    f: F,
 }
 
-impl<'a, RT: AsRef<RangeTable>> EquityCalculator<'a, RT> {
-    fn new(community_cards: Cards, ranges: &'a [RT]) -> Option<Self> {
+impl<'a, RT: AsRef<RangeTable>, F: FnMut(&[Hand], &[Score])> EquityCalculator<'a, RT, F> {
+    fn new(community_cards: Cards, ranges: &'a [RT], f: F) -> Option<Self> {
         if !valid_input(community_cards, ranges) {
             None
         } else {
@@ -349,25 +372,23 @@ impl<'a, RT: AsRef<RangeTable>> EquityCalculator<'a, RT> {
                 community_cards,
                 visited_community_cards: community_cards,
                 ranges,
+                hands: vec![Hand::UNDEFINED; ranges.len()],
                 hand_ranking_scores: vec![Score::ZERO; ranges.len()],
                 total: 0,
-                wins: vec![0; ranges.len()],
-                ties: vec![0.0; ranges.len()],
+                f,
             })
         }
     }
 
-    fn enumerate(mut self) -> Option<Vec<Equity>> {
+    fn enumerate(mut self) -> Option<u64> {
         let upper_bound = total_combos_upper_bound(self.community_cards, self.ranges);
-        if u64::try_from(upper_bound).is_err() {
-            return None;
-        }
+        let upper_bound = u64::try_from(upper_bound).ok()?;
+        try_u64_to_f64(upper_bound)?;
         let remaining_community_cards = 5 - self.community_cards.count();
         self.community_cards(remaining_community_cards.into());
+        assert!(self.total <= upper_bound);
         if self.total != 0 {
-            Some(Equity::from_total_wins_ties(
-                self.total, &self.wins, &self.ties,
-            ))
+            Some(self.total)
         } else {
             None
         }
@@ -398,6 +419,7 @@ impl<'a, RT: AsRef<RangeTable>> EquityCalculator<'a, RT> {
                 continue;
             }
 
+            self.hands[player_index] = hand;
             self.hand_ranking_scores[player_index] = self
                 .community_cards
                 .with(hand.high())
@@ -415,7 +437,7 @@ impl<'a, RT: AsRef<RangeTable>> EquityCalculator<'a, RT> {
 
     fn showdown(&mut self) {
         self.total += 1;
-        showdown(&self.hand_ranking_scores, &mut self.wins, &mut self.ties)
+        (self.f)(&self.hands, &self.hand_ranking_scores);
     }
 }
 
@@ -465,7 +487,7 @@ fn showdown_simulate(hand_ranking_scores: &[Score], wins: &mut [f64], ties: &mut
     }
 }
 
-fn showdown_table_simulate(
+fn showdown_table(
     hands: &[Hand],
     scores: &[Score],
     totals: &mut [RangeTableWith<f64>],
