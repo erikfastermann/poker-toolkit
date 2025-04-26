@@ -1,7 +1,9 @@
+use std::cmp::Ordering;
+
 use eframe::egui::{CentralPanel, Context, Rect, Style, UiBuilder, Vec2, ViewportBuilder, Visuals};
 use eframe::Frame;
 use poker_core::cards::Cards;
-use poker_core::equity::Equity;
+use poker_core::equity::{Equity, EquityTable};
 use poker_core::range::RangeTable;
 use poker_core::result::Result;
 use poker_gui::game_view::GameView;
@@ -16,6 +18,8 @@ fn main() -> Result<()> {
         enumerate(&args[2..])
     } else if args.get(1).is_some_and(|cmd| cmd == "simulate") {
         simulate(&args[2..])
+    } else if args.get(1).is_some_and(|cmd| cmd == "simulate-table") {
+        simulate_table(&args[2..])
     } else if args.get(1).is_some_and(|cmd| cmd == "gui") {
         if args.len() != 2 {
             return Err(INVALID_COMMAND_ERROR.into());
@@ -66,6 +70,44 @@ fn print_equities(equities: &[Equity]) {
     assert!(equities.len() >= 2);
     for (i, equity) in equities.iter().enumerate() {
         println!("player {}: {}", i + 1, equity);
+    }
+}
+
+fn simulate_table(args: &[String]) -> Result<()> {
+    let [rounds_raw, community_cards_raw, ..] = args else {
+        return Err(INVALID_COMMAND_ERROR.into());
+    };
+    let rounds: u64 = rounds_raw.parse()?;
+    let community_cards = Cards::from_str(community_cards_raw)?;
+    let ranges = args[2..]
+        .iter()
+        .map(|raw_range| RangeTable::parse(&raw_range))
+        .map(|r| r.map(Box::new))
+        .collect::<Result<Vec<_>>>()?;
+    let Some(equity_tables) = EquityTable::simulate(community_cards, &ranges, rounds) else {
+        return Err("simulate-table failed: invalid input".into());
+    };
+    print_equity_tables(&ranges, &equity_tables);
+    Ok(())
+}
+
+fn print_equity_tables(ranges: &[impl AsRef<RangeTable>], equity_tables: &[EquityTable]) {
+    assert!(equity_tables.len() >= 2);
+    for (i, equity_table) in equity_tables.iter().enumerate() {
+        println!("player {}: {}", i + 1, equity_table.total_equity());
+
+        let range = ranges[i].as_ref();
+        let mut hands: Vec<_> = range.into_iter().collect();
+        hands.sort_by(|a, b| {
+            let a = equity_table.equity(*a);
+            let b = equity_table.equity(*b);
+            a.partial_cmp(&b).unwrap_or(Ordering::Less).reverse()
+        });
+
+        for hand in hands {
+            println!("  - {}: {}", hand, equity_table.equity(hand));
+        }
+        println!()
     }
 }
 

@@ -31,8 +31,35 @@ impl FromStr for Hand {
     }
 }
 
+static mut HANDS: [Hand; Hand::COUNT] = [Hand::UNDEFINED; Hand::COUNT];
+
 impl Hand {
     pub(crate) const UNDEFINED: Self = Self(Card::MIN, Card::MIN);
+
+    pub const COUNT: usize = 52 * 51 / 2;
+
+    pub(crate) unsafe fn init() {
+        let mut index = 0;
+        Self::for_each_hand_slow(|hand| {
+            HANDS[index] = hand;
+            index += 1;
+        });
+        assert_eq!(index, Hand::COUNT);
+    }
+
+    fn for_each_hand_slow(mut f: impl FnMut(Hand)) {
+        for a in Card::all_by_rank() {
+            for b in Card::all_by_rank() {
+                if b.cmp_by_rank(a).is_gt() {
+                    f(Hand::of_two_cards(a, b).unwrap());
+                }
+            }
+        }
+    }
+
+    pub fn all() -> impl Iterator<Item = Self> {
+        unsafe { HANDS.into_iter() }
+    }
 
     pub fn of_two_cards(a: Card, b: Card) -> Option<Self> {
         match a.rank().cmp(&b.rank()) {
@@ -56,6 +83,21 @@ impl Hand {
 
     pub fn from_bytes(s: &[u8]) -> Result<Self> {
         Self::from_cards(Cards::from_bytes(s)?)
+    }
+
+    pub fn from_index(index: usize) -> Self {
+        unsafe { HANDS[index] }
+    }
+
+    pub fn to_index(self) -> usize {
+        let low = self.low().to_index_52_by_rank() as isize;
+        let high = self.high().to_index_52_by_rank() as isize;
+        let start = 52 - low;
+        let end = 51;
+        let n = end - start + 1;
+        let low_index = n * (start + end) / 2;
+        let high_index = high - low - 1;
+        (low_index + high_index) as usize
     }
 
     pub fn high(self) -> Card {
@@ -95,9 +137,5 @@ impl Hand {
 
     pub fn to_cards(self) -> Cards {
         Cards::EMPTY.with(self.high()).with(self.low())
-    }
-
-    pub fn to_index(self) -> usize {
-        self.high().to_usize() * self.low().to_usize()
     }
 }

@@ -1,7 +1,7 @@
 use std::cmp::{max, min};
 use std::collections::HashSet;
-use std::fmt;
-use std::ops::BitAndAssign;
+use std::ops::{BitAndAssign, Index, IndexMut};
+use std::{array, fmt};
 
 use crate::card::Card;
 use crate::cards::{Cards, CardsByRank};
@@ -304,27 +304,14 @@ pub struct RangeTable {
     table: [u64; 21],
 }
 
-static mut HANDS: [Hand; RangeTable::COUNT] = [Hand::UNDEFINED; RangeTable::COUNT];
-
 impl RangeTable {
     pub const EMPTY: Self = Self { table: [0; 21] };
 
     pub const FULL: Self = {
         let mut table = [u64::MAX; 21];
-        table[20] = u64::MAX >> 64 - (Self::COUNT - 20 * 64);
+        table[20] = u64::MAX >> 64 - (Hand::COUNT - 20 * 64);
         Self { table }
     };
-
-    pub const COUNT: usize = 52 * 51 / 2;
-
-    pub(crate) unsafe fn init() {
-        let mut index = 0;
-        Self::FULL.for_each_hand(|hand| {
-            HANDS[index] = hand;
-            index += 1;
-        });
-        assert_eq!(index, Self::COUNT);
-    }
 
     pub fn from_range_table(table: &PreFlopRangeTable) -> Self {
         let mut out = RangeTable::EMPTY;
@@ -427,7 +414,7 @@ impl RangeTable {
     }
 
     pub fn has_hand(&self, hand: Hand) -> bool {
-        let index = Self::hand_to_index(hand);
+        let index = hand.to_index();
         self.has_index(index)
     }
 
@@ -441,48 +428,23 @@ impl RangeTable {
     }
 
     pub fn add_hand(&mut self, hand: Hand) {
-        let index = Self::hand_to_index(hand);
+        let index = hand.to_index();
         assert!(!self.has_index(index));
         self.add_index_unchecked(index);
     }
 
     pub fn add_hand_unchecked(&mut self, hand: Hand) {
-        let index = Self::hand_to_index(hand);
+        let index = hand.to_index();
         self.add_index_unchecked(index);
     }
 
     pub fn try_add_hand(&mut self, hand: Hand) -> Result<()> {
-        let index = Self::hand_to_index(hand);
+        let index = hand.to_index();
         if self.has_index(index) {
             Err(format!("range table add failed: duplicate hand {}", hand).into())
         } else {
             self.add_index_unchecked(index);
             Ok(())
-        }
-    }
-
-    fn hand_to_index(hand: Hand) -> usize {
-        let low = hand.low().to_index_52_by_rank() as isize;
-        let high = hand.high().to_index_52_by_rank() as isize;
-        let start = 52 - low;
-        let end = 51;
-        let n = end - start + 1;
-        let low_index = n * (start + end) / 2;
-        let high_index = high - low - 1;
-        (low_index + high_index) as usize
-    }
-
-    fn index_to_hand(index: usize) -> Hand {
-        unsafe { HANDS[index] }
-    }
-
-    fn for_each_hand(&self, mut f: impl FnMut(Hand)) {
-        for a in Card::all_by_rank() {
-            for b in Card::all_by_rank() {
-                if b.cmp_by_rank(a).is_gt() {
-                    f(Hand::of_two_cards(a, b).unwrap());
-                }
-            }
         }
     }
 
@@ -517,9 +479,9 @@ impl<'a> Iterator for RangeTableIter<'a> {
     type Item = Hand;
 
     fn next(&mut self) -> Option<Self::Item> {
-        while self.index < RangeTable::COUNT {
+        while self.index < Hand::COUNT {
             let has_hand = self.table.has_index(self.index);
-            let hand = RangeTable::index_to_hand(self.index);
+            let hand = Hand::from_index(self.index);
             self.index += 1;
             if has_hand {
                 return Some(hand);
@@ -551,5 +513,50 @@ impl fmt::Debug for RangeTable {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let v: Vec<_> = self.into_iter().collect();
         fmt::Debug::fmt(&v, f)
+    }
+}
+
+#[derive(Clone)]
+pub struct RangeTableWith<T> {
+    table: [T; Hand::COUNT],
+}
+
+impl<T: Default> Default for RangeTableWith<T> {
+    fn default() -> Self {
+        Self {
+            table: array::from_fn(|_| Default::default()),
+        }
+    }
+}
+
+impl<T> RangeTableWith<T> {
+    pub fn iter(&self) -> impl Iterator<Item = (Hand, &T)> {
+        self.table
+            .iter()
+            .enumerate()
+            .map(|(index, value)| (Hand::from_index(index), value))
+    }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (Hand, &mut T)> {
+        self.table
+            .iter_mut()
+            .enumerate()
+            .map(|(index, value)| (Hand::from_index(index), value))
+    }
+}
+
+impl<T> Index<Hand> for RangeTableWith<T> {
+    type Output = T;
+
+    fn index(&self, hand: Hand) -> &Self::Output {
+        let index = hand.to_index();
+        &self.table[index]
+    }
+}
+
+impl<T> IndexMut<Hand> for RangeTableWith<T> {
+    fn index_mut(&mut self, hand: Hand) -> &mut Self::Output {
+        let index = hand.to_index();
+        &mut self.table[index]
     }
 }

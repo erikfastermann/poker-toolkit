@@ -7,7 +7,7 @@ use crate::{
     cards::{Cards, Score},
     deck::Deck,
     hand::Hand,
-    range::RangeTable,
+    range::{RangeTable, RangeTableWith},
 };
 
 fn try_u64_to_f64(n: u64) -> Option<f64> {
@@ -19,7 +19,7 @@ fn try_u64_to_f64(n: u64) -> Option<f64> {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub struct Equity {
     win_percent: f64,
     tie_percent: f64,
@@ -109,74 +109,12 @@ impl Equity {
         ranges: &[impl AsRef<RangeTable>],
         rounds: u64,
     ) -> Option<Vec<Equity>> {
-        if !valid_input(start_community_cards, ranges) {
-            return None;
-        }
-        if rounds == 0 {
-            return None;
-        }
-
-        let mut rng = SmallRng::from_entropy();
-        let remaining_community_cards = 5 - start_community_cards.count();
-        let player_count = ranges.len();
-        let full_ranges_original: Vec<_> = ranges
-            .iter()
-            .map(|r| r.as_ref().into_iter().collect::<Vec<_>>())
-            .collect();
-        let mut full_ranges = full_ranges_original.clone();
-
-        let mut scores = vec![Score::ZERO; player_count];
-        let mut wins = vec![0.0; player_count];
-        let mut ties = vec![0.0; player_count];
-        let mut deck = Deck::from_cards(&mut rng, start_community_cards);
-        let mut total = 0.0;
-
-        let community_card_factor: u64 = {
-            let x =
-                u64::try_from(Card::COUNT).unwrap() - u64::from((start_community_cards).count());
-            ((x - u64::from(remaining_community_cards)) + 1..=x).product()
-        };
-        // We accept that this might loose precision here.
-        let upper_bound = total_combos_upper_bound(start_community_cards, ranges) as f64;
-
-        'outer: for _ in 0..rounds {
-            deck.reset();
-
-            let community_cards = {
-                let mut community_cards = start_community_cards;
-                for _ in 0..remaining_community_cards {
-                    community_cards.add(deck.draw(&mut rng).unwrap());
-                }
-                community_cards
-            };
-
-            let mut seen_cards = community_cards;
-            let mut factor = u128::from(community_card_factor);
-            for (i, range) in full_ranges.iter_mut().enumerate() {
-                let range = filter_hands(&full_ranges_original[i], range, seen_cards);
-                factor *= u128::try_from(range.len()).unwrap();
-                let Some(hand) = range.choose(&mut rng).copied() else {
-                    continue 'outer;
-                };
-                scores[i] = community_cards
-                    .with_unchecked(hand.high())
-                    .with_unchecked(hand.low())
-                    .score_fast();
-                seen_cards.try_add(hand.high());
-                seen_cards.try_add(hand.low());
-            }
-
-            // We accept that this might loose precision here.
-            let diff = factor as f64 / upper_bound;
-            showdown_simulate(&scores, &mut wins, &mut ties, diff);
-            total += diff;
-        }
-
-        if total == 0.0 {
-            None
-        } else {
-            Some(Self::from_total_wins_ties_simulate(total, &wins, &ties))
-        }
+        let mut wins = vec![0.0; ranges.len()];
+        let mut ties = vec![0.0; ranges.len()];
+        let total = simulate(start_community_cards, ranges, rounds, |_, scores, diff| {
+            showdown_simulate(scores, &mut wins, &mut ties, diff);
+        })?;
+        Some(Self::from_total_wins_ties_simulate(total, &wins, &ties))
     }
 
     pub fn equity_percent(self) -> f64 {
@@ -189,6 +127,190 @@ impl Equity {
 
     pub fn tie_percent(self) -> f64 {
         self.tie_percent
+    }
+}
+
+pub struct EquityTable {
+    total_win_percent: f64,
+    total_tie_percent: f64,
+    totals: RangeTableWith<f64>,
+    wins: RangeTableWith<f64>,
+    ties: RangeTableWith<f64>,
+}
+
+impl EquityTable {
+    fn from_totals_wins_ties_simulate(
+        total: f64,
+        totals: Vec<RangeTableWith<f64>>,
+        wins: Vec<RangeTableWith<f64>>,
+        ties: Vec<RangeTableWith<f64>>,
+    ) -> Vec<Self> {
+        assert_ne!(total, 0.0);
+        assert_eq!(totals.len(), wins.len());
+        assert_eq!(wins.len(), ties.len());
+
+        let mut equity_tables = Vec::with_capacity(wins.len());
+        let iter = totals
+            .into_iter()
+            .zip(wins.into_iter())
+            .zip(ties.into_iter());
+
+        for ((totals, wins), ties) in iter {
+            let total_wins: f64 = wins.iter().map(|(_, wins)| *wins).sum();
+            let total_ties: f64 = ties.iter().map(|(_, ties)| *ties).sum();
+
+            equity_tables.push(EquityTable {
+                total_win_percent: total_wins / total,
+                total_tie_percent: total_ties / total,
+                totals,
+                wins,
+                ties,
+            });
+        }
+
+        equity_tables
+    }
+
+    pub fn simulate(
+        start_community_cards: Cards,
+        ranges: &[impl AsRef<RangeTable>],
+        rounds: u64,
+    ) -> Option<Vec<Self>> {
+        let mut totals = vec![RangeTableWith::default(); ranges.len()];
+        let mut wins = vec![RangeTableWith::default(); ranges.len()];
+        let mut ties = vec![RangeTableWith::default(); ranges.len()];
+        let total = simulate(
+            start_community_cards,
+            ranges,
+            rounds,
+            |hands, scores, diff| {
+                showdown_table_simulate(hands, scores, &mut totals, &mut wins, &mut ties, diff);
+            },
+        )?;
+        Some(Self::from_totals_wins_ties_simulate(
+            total, totals, wins, ties,
+        ))
+    }
+
+    pub fn total_equity(&self) -> Equity {
+        Equity {
+            win_percent: self.total_win_percent(),
+            tie_percent: self.total_tie_percent(),
+        }
+    }
+
+    pub fn total_equity_percent(&self) -> f64 {
+        self.total_win_percent() + self.total_tie_percent()
+    }
+
+    pub fn total_win_percent(&self) -> f64 {
+        self.total_win_percent
+    }
+
+    pub fn total_tie_percent(&self) -> f64 {
+        self.total_tie_percent
+    }
+
+    pub fn equity(&self, hand: Hand) -> Equity {
+        Equity {
+            win_percent: self.win_percent(hand),
+            tie_percent: self.tie_percent(hand),
+        }
+    }
+
+    pub fn equity_percent(&self, hand: Hand) -> f64 {
+        self.win_percent(hand) + self.tie_percent(hand)
+    }
+
+    pub fn win_percent(&self, hand: Hand) -> f64 {
+        if self.totals[hand] == 0.0 {
+            0.0
+        } else {
+            self.wins[hand] / self.totals[hand]
+        }
+    }
+
+    pub fn tie_percent(&self, hand: Hand) -> f64 {
+        if self.totals[hand] == 0.0 {
+            0.0
+        } else {
+            self.ties[hand] / self.totals[hand]
+        }
+    }
+}
+
+fn simulate(
+    start_community_cards: Cards,
+    ranges: &[impl AsRef<RangeTable>],
+    rounds: u64,
+    mut f: impl FnMut(&[Hand], &[Score], f64),
+) -> Option<f64> {
+    if !valid_input(start_community_cards, ranges) {
+        return None;
+    }
+    if rounds == 0 {
+        return None;
+    }
+
+    let mut rng = SmallRng::from_entropy();
+    let remaining_community_cards = 5 - start_community_cards.count();
+    let player_count = ranges.len();
+    let full_ranges_original: Vec<_> = ranges
+        .iter()
+        .map(|r| r.as_ref().into_iter().collect::<Vec<_>>())
+        .collect();
+    let mut full_ranges = full_ranges_original.clone();
+
+    let mut hands = vec![Hand::UNDEFINED; player_count];
+    let mut scores = vec![Score::ZERO; player_count];
+    let mut deck = Deck::from_cards(&mut rng, start_community_cards);
+    let mut total = 0.0;
+
+    let community_card_factor: u64 = {
+        let x = u64::try_from(Card::COUNT).unwrap() - u64::from((start_community_cards).count());
+        ((x - u64::from(remaining_community_cards)) + 1..=x).product()
+    };
+    // We accept that this might loose precision here.
+    let upper_bound = total_combos_upper_bound(start_community_cards, ranges) as f64;
+
+    'outer: for _ in 0..rounds {
+        deck.reset();
+
+        let community_cards = {
+            let mut community_cards = start_community_cards;
+            for _ in 0..remaining_community_cards {
+                community_cards.add(deck.draw(&mut rng).unwrap());
+            }
+            community_cards
+        };
+
+        let mut seen_cards = community_cards;
+        let mut factor = u128::from(community_card_factor);
+        for (i, range) in full_ranges.iter_mut().enumerate() {
+            let range = filter_hands(&full_ranges_original[i], range, seen_cards);
+            factor *= u128::try_from(range.len()).unwrap();
+            let Some(hand) = range.choose(&mut rng).copied() else {
+                continue 'outer;
+            };
+            hands[i] = hand;
+            scores[i] = community_cards
+                .with_unchecked(hand.high())
+                .with_unchecked(hand.low())
+                .score_fast();
+            seen_cards.try_add(hand.high());
+            seen_cards.try_add(hand.low());
+        }
+
+        // We accept that this might loose precision here.
+        let diff = factor as f64 / upper_bound;
+        f(&hands, &scores, diff);
+        total += diff;
+    }
+
+    if total == 0.0 {
+        None
+    } else {
+        Some(total)
     }
 }
 
@@ -338,6 +460,37 @@ fn showdown_simulate(hand_ranking_scores: &[Score], wins: &mut [f64], ties: &mut
         for (index, score) in hand_ranking_scores.iter().copied().enumerate() {
             if score == max_score {
                 ties[index] += ratio * diff;
+            }
+        }
+    }
+}
+
+fn showdown_table_simulate(
+    hands: &[Hand],
+    scores: &[Score],
+    totals: &mut [RangeTableWith<f64>],
+    wins: &mut [RangeTableWith<f64>],
+    ties: &mut [RangeTableWith<f64>],
+    diff: f64,
+) {
+    for (i, hand) in hands.iter().copied().enumerate() {
+        totals[i][hand] += diff;
+    }
+
+    let max_score = scores.iter().copied().max().unwrap();
+    let winners = scores
+        .iter()
+        .copied()
+        .filter(|score| *score == max_score)
+        .count();
+    if winners == 1 {
+        let winner_index = scores.iter().position(|score| *score == max_score).unwrap();
+        wins[winner_index][hands[winner_index]] += diff;
+    } else {
+        let ratio = 1.0 / try_u64_to_f64(u64::try_from(winners).unwrap()).unwrap();
+        for (index, score) in scores.iter().copied().enumerate() {
+            if score == max_score {
+                ties[index][hands[index]] += ratio * diff;
             }
         }
     }
