@@ -1529,8 +1529,7 @@ impl Game {
         true
     }
 
-    #[cfg(test)]
-    pub(crate) fn internal_asserts_full(&self) {
+    pub fn internal_asserts_full(&self) {
         self.internal_asserts_state();
         self.internal_asserts_parse_roundtrip();
         self.internal_asserts_history();
@@ -1591,14 +1590,12 @@ impl Game {
         }
     }
 
-    #[cfg(test)]
     fn internal_asserts_parse_roundtrip(&self) {
         let data = serde_json::to_string_pretty(&self.to_game_data()).unwrap();
         let parsed_game = Game::from_game_data(&serde_json::from_str(&data).unwrap()).unwrap();
         assert_eq!(self, &parsed_game);
     }
 
-    #[cfg(test)]
     fn internal_asserts_history(&self) {
         assert_eq!(self.state(), State::End);
         let mut games = Vec::new();
@@ -1640,7 +1637,6 @@ impl Game {
         assert!(!new_game.next());
     }
 
-    #[cfg(test)]
     fn internal_asserts_history_compare(&self, expected: &Game) {
         self.internal_asserts_state();
 

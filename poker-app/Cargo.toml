@@ -9,3 +9,5 @@ poker-gui = { path = "../poker-gui" }
 eframe = { workspace = true }
 egui_extras = { workspace = true }
 env_logger = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

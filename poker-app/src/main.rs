@@ -1,9 +1,12 @@
 use std::cmp::Ordering;
+use std::fs::read_to_string;
+use std::io;
 
 use eframe::egui::{CentralPanel, Context, Rect, Style, UiBuilder, Vec2, ViewportBuilder, Visuals};
 use eframe::Frame;
 use poker_core::cards::Cards;
 use poker_core::equity::{Equity, EquityTable};
+use poker_core::parser::GGHandHistoryParser;
 use poker_core::range::RangeTable;
 use poker_core::result::Result;
 use poker_gui::game_view::GameView;
@@ -19,6 +22,7 @@ fn main() -> Result<()> {
         Some("simulate") => simulate(&args[2..]),
         Some("enumerate-table") => enumerate_table(&args[2..]),
         Some("simulate-table") => simulate_table(&args[2..]),
+        Some("parse-gg") => parse_gg(&args[2..]),
         Some("gui") => {
             if args.len() != 2 {
                 return Err(INVALID_COMMAND_ERROR.into());
@@ -138,6 +142,21 @@ fn print_equity_tables(ranges: &[impl AsRef<RangeTable>], equity_tables: &[Equit
         }
         println!()
     }
+}
+
+fn parse_gg(args: &[String]) -> Result<()> {
+    let [path] = args else {
+        return Err(INVALID_COMMAND_ERROR.into());
+    };
+    let content = read_to_string(path)?;
+    let games = GGHandHistoryParser::new().parse_str(&content)?;
+    let mut game_data = Vec::new();
+    for game in games {
+        game_data.push(game.to_game_data());
+        game.internal_asserts_full();
+    }
+    serde_json::to_writer_pretty(io::stdout().lock(), &game_data)?;
+    Ok(())
 }
 
 fn gui() -> eframe::Result {

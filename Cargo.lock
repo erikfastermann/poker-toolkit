@@ -2500,6 +2500,8 @@ dependencies = [
  "env_logger",
  "poker-core",
  "poker-gui",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
