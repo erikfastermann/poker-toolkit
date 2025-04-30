@@ -221,6 +221,7 @@ pub struct Game {
     actions: Vec<Action>,
     board: Board,
     names: Vec<String>,
+    seats: Vec<u8>,
     starting_stacks: Vec<u32>,
     stacks_in_street: [Vec<u32>; Street::COUNT],
     showdown_stacks: Vec<u32>,
@@ -377,6 +378,26 @@ impl Game {
             return Err("empty player name".into());
         }
 
+        let seats = {
+            let seats: Vec<_> = players.iter().filter_map(|player| player.seat).collect();
+            if seats.len() == 0 {
+                (0..u8::try_from(player_count).unwrap()).collect()
+            } else if seats.len() != player_count {
+                return Err("all players need a seat config (or none)".into());
+            } else if seats
+                .iter()
+                .any(|seat| usize::from(*seat) >= Self::MAX_PLAYERS)
+            {
+                return Err(
+                    "all player seat configs must be smaller than the max amount of players".into(),
+                );
+            } else if seats.iter().collect::<HashSet<_>>().len() != player_count {
+                return Err("duplicate player seat config".into());
+            } else {
+                seats
+            }
+        };
+
         let hands: Vec<_> = players
             .iter()
             .map(|player| player.hand.unwrap_or(Hand::UNDEFINED))
@@ -385,6 +406,7 @@ impl Game {
         let game = Self {
             actions: Vec::new(),
             names,
+            seats,
             starting_stacks: stacks.clone(),
             stacks_in_street: array::from_fn(|_| stacks.clone()),
             showdown_stacks: vec![0; player_count],
@@ -414,16 +436,24 @@ impl Game {
         )?;
 
         if !data.actions.is_empty() {
-            if data.actions.len() < 2 {
-                return Err("apply action: missing one or more post action(s)".into());
-            }
             game.post_small_and_big_blind()?;
-            if &game.actions != &data.actions[..2] {
-                return Err("apply action: post actions don't match".into());
+
+            let mut current_action_index = 2;
+            while current_action_index < data.actions.len() {
+                let Action::Post { player, .. } = data.actions[current_action_index] else {
+                    break;
+                };
+                game.additional_post(usize::from(player))?;
+                current_action_index += 1;
             }
-            for action in data.actions[2..].iter().copied() {
+
+            for action in data.actions[current_action_index..].iter().copied() {
                 game.apply_action(action)?;
             }
+        }
+
+        if &game.actions != &data.actions {
+            return Err("from game data: actions don't match".into());
         }
 
         if let Some(showdown_stacks) = &data.showdown_stacks {
@@ -436,6 +466,7 @@ impl Game {
         let players = self
             .names
             .iter()
+            .zip(self.seats.iter().copied())
             .zip(self.hands.iter().copied().map(|hand| {
                 if hand == Hand::UNDEFINED {
                     None
@@ -444,8 +475,9 @@ impl Game {
                 }
             }))
             .zip(self.starting_stacks.iter().copied())
-            .map(|((name, hand), stack)| Player {
+            .map(|(((name, seat), hand), stack)| Player {
                 name: Some(name.clone()),
+                seat: Some(seat),
                 hand,
                 starting_stack: stack,
             })
@@ -510,6 +542,15 @@ impl Game {
     pub fn player_name(&self, player: usize) -> &str {
         assert!(player < self.player_count());
         &self.names[player]
+    }
+
+    pub fn player_by_name(&self, name: &str) -> Option<usize> {
+        self.player_names().iter().position(|n| n == name)
+    }
+
+    pub fn seat(&self, player: usize) -> usize {
+        assert!(player < self.player_count());
+        usize::from(self.seats[player])
     }
 
     pub fn is_heads_up_table(&self) -> bool {
@@ -923,6 +964,48 @@ impl Game {
         }
         self.action_post(self.small_blind)?;
         self.action_post(self.big_blind)?;
+        Ok(())
+    }
+
+    pub fn additional_post(&mut self, player: usize) -> Result<()> {
+        self.check_pre_update()?;
+        if player >= self.player_count() {
+            return Err("additional post: invalid player index".into());
+        }
+        if self.at_start() || self.board.street != Street::PreFlop {
+            return Err("additional post: only allowed pre flop after small/big blind post".into());
+        }
+
+        let mut poster = Bitset::<2>::EMPTY;
+        for action in self.actions_in_street().iter().copied() {
+            match action {
+                Action::Post { player, .. } => poster.set(usize::from(player)),
+                _ => return Err("additional post: only allowed before all other actions".into()),
+            }
+        }
+        if poster.has(usize::from(player)) {
+            return Err("additional post: duplicate post not allowed".into());
+        }
+
+        let players =
+            (self.small_blind_index()..self.player_count()).chain(0..self.small_blind_index());
+        for current_player in players.rev() {
+            if poster.has(current_player) {
+                return Err(
+                    "additional post: all players posted already or post not in order".into(),
+                );
+            }
+            if current_player == player {
+                break;
+            }
+        }
+
+        let amount = min(self.current_street_stacks()[player], self.big_blind);
+        self.current_street_stacks_mut()[player] -= amount;
+        self.add_action(Action::Post {
+            player: u8::try_from(player).unwrap(),
+            amount,
+        });
         Ok(())
     }
 
@@ -1512,7 +1595,7 @@ impl Game {
         let next_action = self.actions[self.current_action_index];
         self.in_next = true;
         let result = match next_action {
-            Action::Post { .. } => self.post_small_and_big_blind(),
+            Action::Post { .. } => self.next_posts(),
             Action::Fold(_) => self.fold(),
             Action::Check(_) => self.check(),
             Action::Call { .. } => self.call(),
@@ -1527,6 +1610,19 @@ impl Game {
         self.in_next = false;
         result.unwrap();
         true
+    }
+
+    fn next_posts(&mut self) -> Result<()> {
+        self.post_small_and_big_blind()?;
+
+        while self.current_action_index < self.actions.len() {
+            let Action::Post { player, .. } = self.actions[self.current_action_index] else {
+                break;
+            };
+            self.additional_post(usize::from(player))?;
+        }
+
+        Ok(())
     }
 
     pub fn internal_asserts_full(&self) {
@@ -1555,7 +1651,6 @@ impl Game {
             assert!(self.can_call().is_none());
 
             if self.board.street == Street::PreFlop {
-                assert!(player == self.small_blind_index() || player == self.big_blind_index());
                 assert_eq!(self.call_amount(player), 0);
                 assert!(!self
                     .actions_in_street()
@@ -1585,7 +1680,6 @@ impl Game {
                 assert!(call_amount < raise_investment);
             } else {
                 assert_eq!(self.board.street, Street::PreFlop);
-                assert!(player == self.small_blind_index() || player == self.big_blind_index());
             }
         }
     }
@@ -1606,12 +1700,24 @@ impl Game {
         assert!(!new_game.next());
 
         new_game.post_small_and_big_blind().unwrap();
+        for action in self.actions[2..].iter().copied() {
+            if let Action::Post { player, .. } = action {
+                new_game.additional_post(usize::from(player)).unwrap();
+            } else {
+                break;
+            }
+        }
         games.push(new_game.clone());
         assert!(new_game.previous());
         assert!(new_game.next());
         assert_eq!(&new_game, games.last().unwrap());
 
-        for action in self.actions[2..].iter().copied() {
+        for action in self
+            .actions
+            .iter()
+            .copied()
+            .skip_while(|action| matches!(action, Action::Post { .. }))
+        {
             new_game.apply_action(action).unwrap();
             games.push(new_game.clone());
             assert!(new_game.previous());
@@ -1667,6 +1773,7 @@ impl Game {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Player {
     pub name: Option<String>,
+    pub seat: Option<u8>,
     pub hand: Option<Hand>,
     pub starting_stack: u32,
 }
@@ -1675,6 +1782,7 @@ impl Player {
     pub fn with_starting_stack(starting_stack: u32) -> Self {
         Self {
             name: None,
+            seat: None,
             hand: None,
             starting_stack,
         }

@@ -56,7 +56,7 @@ impl GGHandHistoryParser {
             r"^\*\*\* RIVER \*\*\* \[{REGEX_CARD} {REGEX_CARD} {REGEX_CARD} {REGEX_CARD}\] \[{REGEX_CARD}\]$"
         );
         let re_uncalled_bet = format!(r"^Uncalled bet \({REGEX_PRICE}\) returned to {REGEX_NAME}$");
-        let re_shows = format!(r"^{REGEX_NAME}: shows \[{REGEX_CARD} {REGEX_CARD}\] .*$");
+        let re_shows = format!(r"^{REGEX_NAME}: shows \[{REGEX_CARD} {REGEX_CARD}\].*$");
         let re_showdown = format!(r"^{REGEX_NAME} collected {REGEX_PRICE} from pot$");
         let re_summary = format!(r"^Total pot {REGEX_PRICE} \| Rake {REGEX_PRICE}")
             + &format!(r"( \| Jackpot {REGEX_PRICE})?( \| Bingo {REGEX_PRICE})?")
@@ -107,11 +107,16 @@ impl GGHandHistoryParser {
         let entry = entry.trim();
         let mut lines = entry.lines().peekable();
         let (small_blind, big_blind) = self.parse_description(&mut lines)?;
-        let button_index = self.parse_table_info(&mut lines)?;
+        let button_seat = self.parse_table_info(&mut lines)?;
         let players = self.parse_stacks(&mut lines)?;
+        let Some(button_index) = players
+            .iter()
+            .position(|player| player.seat == Some(button_seat))
+        else {
+            return Err("parse: invalid button seat".into());
+        };
         let mut game = Game::new(&players, button_index, small_blind, big_blind)?;
-        self.validate_posts(&mut lines, &game)?;
-        game.post_small_and_big_blind()?;
+        self.parse_posts(&mut lines, &mut game)?;
         self.parse_hole_cards(&mut lines, &mut game)?;
         self.parse_and_apply_actions(&mut lines, &mut game)?;
         let winnings = self.parse_showdown(&mut lines, &mut game)?;
@@ -135,16 +140,19 @@ impl GGHandHistoryParser {
         Ok((small_blind, big_blind))
     }
 
-    fn parse_table_info<'a>(&self, lines: &mut impl Iterator<Item = &'a str>) -> Result<usize> {
+    fn parse_table_info<'a>(&self, lines: &mut impl Iterator<Item = &'a str>) -> Result<u8> {
         let table_info = option_to_result(lines.next(), "second line (table info) missing")?;
-        let [_, button_index_one_based] = option_to_result(
+        let [_, button_seat_one_based] = option_to_result(
             self.re_table_info.captures(table_info),
             "table info: invalid format",
         )?
         .extract()
         .1;
-        let index = button_index_one_based.parse::<usize>()? - 1;
-        Ok(index)
+        let button_seat_one_based = button_seat_one_based.parse::<u8>()?;
+        let Some(button_seat) = button_seat_one_based.checked_sub(1) else {
+            return Err("table info: invalid button seat".into());
+        };
+        Ok(button_seat)
     }
 
     fn parse_stacks<'a>(
@@ -158,11 +166,13 @@ impl GGHandHistoryParser {
                 break;
             };
             let [seat_one_based, name, stack] = seat_config.extract().1;
-            if players.len().checked_add(1) != Some(seat_one_based.parse::<usize>()?) {
-                return Err("seat config: bad seat index".into());
-            }
+            let seat_one_based = seat_one_based.parse::<u8>()?;
+            let Some(seat) = seat_one_based.checked_sub(1) else {
+                return Err("seat: invalid seat config".into());
+            };
             players.push(Player {
                 name: Some(name.to_string()),
+                seat: Some(seat),
                 hand: None,
                 starting_stack: Self::parse_price_as_cent(stack)?,
             });
@@ -172,24 +182,37 @@ impl GGHandHistoryParser {
         Ok(players)
     }
 
-    fn validate_posts<'a>(
+    fn parse_posts<'a>(
         &self,
-        lines: &mut impl Iterator<Item = &'a str>,
-        game: &Game,
+        lines: &mut Peekable<impl Iterator<Item = &'a str>>,
+        game: &mut Game,
     ) -> Result<()> {
         let small_blind_name = game.player_name(game.small_blind_index()).as_ref();
         let big_blind_name = game.player_name(game.big_blind_index()).as_ref();
-        self.validate_post(lines, small_blind_name, "small", game.small_blind())?;
-        self.validate_post(lines, big_blind_name, "big", game.big_blind())
+        self.validate_post(lines, Some(small_blind_name), "small", game.small_blind())?;
+        self.validate_post(lines, Some(big_blind_name), "big", game.big_blind())?;
+        game.post_small_and_big_blind()?;
+
+        while lines
+            .peek()
+            .is_some_and(|line| self.re_post_blind.is_match(line))
+        {
+            let name = self.validate_post(lines, None, "big", game.big_blind())?;
+            let Some(player) = game.player_by_name(name) else {
+                return Err(format!("post: invalid player name '{name}'").into());
+            };
+            game.additional_post(player)?;
+        }
+        Ok(())
     }
 
     fn validate_post<'a>(
         &self,
         lines: &mut impl Iterator<Item = &'a str>,
-        expected_name: &str,
+        expected_name: Option<&str>,
         expected_kind: &str,
         expected_price: u32,
-    ) -> Result<()> {
+    ) -> Result<&'a str> {
         let post_blind = option_to_result(lines.next(), "post blind line is missing")?;
         let [name, kind, price] = option_to_result(
             self.re_post_blind.captures(post_blind),
@@ -198,10 +221,13 @@ impl GGHandHistoryParser {
         .extract()
         .1;
         let price = Self::parse_price_as_cent(price)?;
-        if name != expected_name || kind != expected_kind || price != expected_price {
+        if expected_name.is_some_and(|n| name != n)
+            || kind != expected_kind
+            || price != expected_price
+        {
             Err("post blind: invalid format".into())
         } else {
-            Ok(())
+            Ok(name)
         }
     }
 
