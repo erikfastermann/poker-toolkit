@@ -26,6 +26,10 @@ pub enum Action {
         player: u8,
         amount: u32,
     },
+    Straddle {
+        player: u8,
+        amount: u32,
+    },
     Fold(u8),
     Check(u8),
     Call {
@@ -67,6 +71,7 @@ impl Action {
     fn player(self) -> Option<usize> {
         let player = match self {
             Action::Post { player, .. } => player,
+            Action::Straddle { player, .. } => player,
             Action::Fold(player) => player,
             Action::Check(player) => player,
             Action::Call { player, .. } => player,
@@ -645,6 +650,47 @@ impl Game {
         &self.actions[self.current_street_index..self.current_action_index]
     }
 
+    pub fn can_straddle(&self, player: usize) -> Result<u32> {
+        if player >= self.player_count() {
+            return Err("straddle: invalid player index".into());
+        }
+        if self.at_start() || self.board.street != Street::PreFlop {
+            return Err("straddle: only allowed pre flop after small/big blind post".into());
+        }
+        if self.is_all_in(player) {
+            return Err("straddle: player is already all-in".into());
+        }
+
+        // Arbitrary decision, so the straddle is at least two big blinds.
+        let mut last_full_straddle = self.big_blind;
+        for action in self.actions_in_street().iter().copied() {
+            let straddle = match action {
+                Action::Straddle { amount, .. } => amount,
+                Action::Post { .. } => continue,
+                _ => {
+                    return Err(
+                        "straddle: only allowed after posters and before other actions".into(),
+                    )
+                }
+            };
+
+            // Arbitrary decision to require the next straddle
+            // to be double the size of the last straddle.
+            let Some(required_straddle) = last_full_straddle.checked_mul(2) else {
+                return Err("straddle: overflow while computing next straddle".into());
+            };
+            if straddle >= required_straddle {
+                last_full_straddle = straddle;
+            }
+        }
+
+        let Some(required_straddle) = last_full_straddle.checked_mul(2) else {
+            return Err("straddle: overflow while computing next straddle".into());
+        };
+        let min_straddle = min(self.starting_stacks[player], required_straddle);
+        Ok(min_straddle)
+    }
+
     pub fn can_check(&self) -> bool {
         let Some(player) = self.current_player() else {
             return false;
@@ -708,6 +754,7 @@ impl Game {
                         .iter()
                         .copied()
                         .filter_map(|action| match action {
+                            Action::Straddle { amount, .. } => Some(amount),
                             Action::Post { amount, .. } => Some(amount),
                             _ => None,
                         })
@@ -879,7 +926,7 @@ impl Game {
 
         let players_with_action = actions
             .iter()
-            .filter(|action| !matches!(action, Action::Post { .. }))
+            .filter(|action| !matches!(action, Action::Post { .. } | Action::Straddle { .. }))
             .filter_map(|action| action.player())
             .fold(Bitset::<2>::EMPTY, |set, player| set.with(player));
 
@@ -1006,6 +1053,24 @@ impl Game {
             player: u8::try_from(player).unwrap(),
             amount,
         });
+        Ok(())
+    }
+
+    pub fn straddle(&mut self, player: usize, amount: u32) -> Result<()> {
+        self.check_pre_update()?;
+        let required_straddle = self.can_straddle(player)?;
+        if amount < required_straddle {
+            return Err("straddle: amount too small".into());
+        }
+        if amount > self.starting_stacks[player] {
+            return Err("straddle: player cannot afford amount".into());
+        }
+
+        self.current_street_stacks_mut()[player] = self.starting_stacks[player] - amount;
+        let player = u8::try_from(player).unwrap();
+        self.add_action(Action::Straddle { player, amount });
+        // Always start left of the last straddler.
+        self.current_player = (player + 1) % self.player_count_u8();
         Ok(())
     }
 
@@ -1436,11 +1501,12 @@ impl Game {
 
     pub fn apply_action(&mut self, action: Action) -> Result<()> {
         self.check_pre_update()?;
-        if action.player() != self.current_player() {
+        if !matches!(action, Action::Straddle { .. }) && action.player() != self.current_player() {
             return Err("apply action: current player and action don't match".into());
         }
         match action {
             Action::Post { .. } => Err("apply action: cannot apply post".into()),
+            Action::Straddle { player, amount } => self.straddle(usize::from(player), amount),
             Action::Fold(_) => self.fold(),
             Action::Check(_) => self.check(),
             Action::Call { amount, .. } => {
@@ -1503,7 +1569,7 @@ impl Game {
 
         let action = self.actions[self.current_action_index - 1];
         match action {
-            Action::Post { .. } => {
+            Action::Post { .. } | Action::Straddle { .. } => {
                 self.stacks_in_street[Street::PreFlop.to_usize()]
                     .copy_from_slice(&self.starting_stacks);
                 self.current_player = u8::MAX;
@@ -1548,7 +1614,7 @@ impl Game {
                 self.hand_shown.remove(usize::from(player));
             }
         }
-        if !matches!(action, Action::Post { .. }) {
+        if !matches!(action, Action::Post { .. } | Action::Straddle { .. }) {
             self.current_action_index -= 1;
         }
         true
@@ -1595,7 +1661,8 @@ impl Game {
         let next_action = self.actions[self.current_action_index];
         self.in_next = true;
         let result = match next_action {
-            Action::Post { .. } => self.next_posts(),
+            Action::Post { .. } => self.next_posts_straddles(),
+            Action::Straddle { .. } => unreachable!(),
             Action::Fold(_) => self.fold(),
             Action::Check(_) => self.check(),
             Action::Call { .. } => self.call(),
@@ -1612,14 +1679,17 @@ impl Game {
         true
     }
 
-    fn next_posts(&mut self) -> Result<()> {
+    fn next_posts_straddles(&mut self) -> Result<()> {
         self.post_small_and_big_blind()?;
 
         while self.current_action_index < self.actions.len() {
-            let Action::Post { player, .. } = self.actions[self.current_action_index] else {
-                break;
-            };
-            self.additional_post(usize::from(player))?;
+            match self.actions[self.current_action_index] {
+                Action::Post { player, .. } => self.additional_post(usize::from(player))?,
+                Action::Straddle { player, amount } => {
+                    self.straddle(usize::from(player), amount)?;
+                }
+                _ => break,
+            }
         }
 
         Ok(())
@@ -1701,10 +1771,14 @@ impl Game {
 
         new_game.post_small_and_big_blind().unwrap();
         for action in self.actions[2..].iter().copied() {
-            if let Action::Post { player, .. } = action {
-                new_game.additional_post(usize::from(player)).unwrap();
-            } else {
-                break;
+            match action {
+                Action::Post { player, .. } => {
+                    new_game.additional_post(usize::from(player)).unwrap();
+                }
+                Action::Straddle { player, amount } => {
+                    new_game.straddle(usize::from(player), amount).unwrap();
+                }
+                _ => break,
             }
         }
         games.push(new_game.clone());
@@ -1712,12 +1786,11 @@ impl Game {
         assert!(new_game.next());
         assert_eq!(&new_game, games.last().unwrap());
 
-        for action in self
-            .actions
-            .iter()
-            .copied()
-            .skip_while(|action| matches!(action, Action::Post { .. }))
-        {
+        let action_iter =
+            self.actions.iter().copied().skip_while(|action| {
+                matches!(action, Action::Post { .. } | Action::Straddle { .. })
+            });
+        for action in action_iter {
             new_game.apply_action(action).unwrap();
             games.push(new_game.clone());
             assert!(new_game.previous());

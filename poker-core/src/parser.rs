@@ -18,6 +18,7 @@ pub struct GGHandHistoryParser {
     re_table_info: Regex,
     re_seat_config: Regex,
     re_post_blind: Regex,
+    re_straddle: Regex,
     re_deal: Regex,
     re_action: Regex,
     re_flop: Regex,
@@ -43,6 +44,7 @@ impl GGHandHistoryParser {
             r"^Table '([a-zA-z0-9]+)' 6-max Seat #([1-6]) is the button$";
         let re_seat_config = format!(r"^Seat ([1-6]): {REGEX_NAME} \({REGEX_PRICE} in chips\)$");
         let re_post_blind = format!(r"^{REGEX_NAME}: posts ([a-z]+) blind {REGEX_PRICE}$");
+        let re_straddle = format!(r"^{REGEX_NAME}: straddle {REGEX_PRICE}$");
         let re_deal = format!(r"^Dealt to {REGEX_NAME} (?:\[{REGEX_CARD} {REGEX_CARD}\])?$");
         let re_action = format!(r"^{REGEX_NAME}: ((folds)|(checks)")
             + &format!(r"|(calls {REGEX_PRICE}( and is all-in)?)")
@@ -67,6 +69,7 @@ impl GGHandHistoryParser {
             re_table_info: Regex::new(RE_TABLE_INFO).unwrap(),
             re_seat_config: Regex::new(&re_seat_config).unwrap(),
             re_post_blind: Regex::new(&re_post_blind).unwrap(),
+            re_straddle: Regex::new(&re_straddle).unwrap(),
             re_deal: Regex::new(&re_deal).unwrap(),
             re_action: Regex::new(&re_action).unwrap(),
             re_flop: Regex::new(&re_flop).unwrap(),
@@ -117,6 +120,7 @@ impl GGHandHistoryParser {
         };
         let mut game = Game::new(&players, button_index, small_blind, big_blind)?;
         self.parse_posts(&mut lines, &mut game)?;
+        self.parse_straddles(&mut lines, &mut game)?;
         self.parse_hole_cards(&mut lines, &mut game)?;
         self.parse_and_apply_actions(&mut lines, &mut game)?;
         let winnings = self.parse_showdown(&mut lines, &mut game)?;
@@ -203,6 +207,31 @@ impl GGHandHistoryParser {
             };
             game.additional_post(player)?;
         }
+        Ok(())
+    }
+
+    fn parse_straddles<'a>(
+        &self,
+        lines: &mut Peekable<impl Iterator<Item = &'a str>>,
+        game: &mut Game,
+    ) -> Result<()> {
+        while lines
+            .peek()
+            .is_some_and(|line| self.re_straddle.is_match(line))
+        {
+            let [name, price] = self
+                .re_straddle
+                .captures(lines.next().unwrap())
+                .unwrap()
+                .extract()
+                .1;
+            let Some(player) = game.player_by_name(name) else {
+                return Err("straddle: invalid player name".into());
+            };
+            let amount = Self::parse_price_as_cent(price)?;
+            game.straddle(player, amount)?;
+        }
+
         Ok(())
     }
 
