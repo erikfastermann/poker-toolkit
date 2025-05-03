@@ -1,6 +1,7 @@
 use std::cmp::Ordering;
 use std::fs::read_to_string;
 use std::io;
+use std::time::Instant;
 
 use eframe::egui::{CentralPanel, Context, Rect, Style, UiBuilder, Vec2, ViewportBuilder, Visuals};
 use eframe::Frame;
@@ -148,15 +149,49 @@ fn parse_gg(args: &[String]) -> Result<()> {
     let [path] = args else {
         return Err(INVALID_COMMAND_ERROR.into());
     };
+
+    let read_parse_time = Instant::now();
     let content = read_to_string(path)?;
-    let games = GGHandHistoryParser::new().parse_str(&content)?;
+    let games = GGHandHistoryParser::new().parse_str_full(&content);
+    eprintln!(
+        "--- took {:?} to read and parse the hand history file ---",
+        read_parse_time.elapsed(),
+    );
+
+    let assert_print_errors_time = Instant::now();
     let mut game_data = Vec::new();
+    let mut error_count = 0usize;
     for game in games {
-        game_data.push(game.to_game_data());
-        game.internal_asserts_full();
+        match game {
+            Ok(game) => {
+                game.internal_asserts_full(); // TODO
+                game_data.push(game.to_game_data());
+            }
+            Err(err) => {
+                eprintln!("{err}\n");
+                error_count += 1;
+            }
+        }
     }
+    eprintln!(
+        "--- took {:?} to assert the internal game states and print errors ---",
+        assert_print_errors_time.elapsed(),
+    );
+
+    let write_json_time = Instant::now();
     serde_json::to_writer_pretty(io::stdout().lock(), &game_data)?;
-    Ok(())
+    eprintln!(
+        "--- took {:?} to write the json output ---",
+        write_json_time.elapsed(),
+    );
+
+    if error_count > 0 {
+        let message =
+            format!("parse-gg: {error_count} errors occurred while parsing the hand history");
+        Err(message.into())
+    } else {
+        Ok(())
+    }
 }
 
 fn gui() -> eframe::Result {

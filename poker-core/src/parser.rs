@@ -90,16 +90,43 @@ impl GGHandHistoryParser {
         }
     }
 
+    pub fn parse_str_full(&self, entries: &str) -> Vec<Result<Game>> {
+        // TODO: Rewrite as Iterator.
+
+        let mut lines_unix = entries.split('\n');
+        let mut last_empty_index = 0;
+        let mut index = 0;
+        let mut games = Vec::new();
+
+        while let Some(line) = lines_unix.next() {
+            let next_index = index + line.len() + 1;
+            if line.is_empty() {
+                let entry = entries[last_empty_index..index].trim();
+                if entry.len() != 0 {
+                    games.push(self.parse_str_single(entry));
+                }
+                last_empty_index = next_index;
+            }
+            index = next_index;
+        }
+
+        if last_empty_index != index {
+            games.push(Err("parser: does not end with empty line".into()));
+        }
+        games
+    }
+
     pub fn parse_str(&self, entries: &str) -> Result<Vec<Game>> {
         let mut lines_unix = entries.split('\n');
         let mut last_empty_index = 0;
         let mut index = 0;
         let mut games = Vec::new();
+
         while let Some(line) = lines_unix.next() {
             let next_index = index + line.len() + 1;
             if line.is_empty() {
-                let entry = &entries[last_empty_index..index];
-                if entry.trim().len() != 0 {
+                let entry = entries[last_empty_index..index].trim();
+                if entry.len() != 0 {
                     let game = self.parse_str_single(entry)?;
                     games.push(game);
                 }
@@ -107,6 +134,7 @@ impl GGHandHistoryParser {
             }
             index = next_index;
         }
+
         if last_empty_index != index {
             Err("parser: does not end with empty line".into())
         } else {
@@ -115,7 +143,15 @@ impl GGHandHistoryParser {
     }
 
     fn parse_str_single(&self, entry: &str) -> Result<Game> {
-        let entry = entry.trim();
+        self.parse_str_single_inner(entry).map_err(|err| {
+            let message =
+                format!("Error while parsing GGPoker hand history entry:\n\n{entry}\n\n{err}\n")
+                    + "This can be caused by an internal parser error or an invalid hand history.";
+            message.into()
+        })
+    }
+
+    fn parse_str_single_inner(&self, entry: &str) -> Result<Game> {
         let seats = self.parse_summary_seats(entry)?;
         let mut lines = entry.lines().peekable();
 
