@@ -18,6 +18,7 @@ use crate::result::Result;
 // - Mucking
 // - Poison game on error or ensure every error is recoverable
 // - Type alias or wrapper for player and amount, use u8 for player everywhere
+// - Nicer handling of state method with multiple runouts
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -61,7 +62,16 @@ pub enum Action {
 
 impl Action {
     fn is_street(self) -> bool {
-        matches!(self, Action::Flop(_) | Action::Turn(_) | Action::River(_))
+        self.street().is_some()
+    }
+
+    fn street(self) -> Option<Street> {
+        match self {
+            Action::Flop(_) => Some(Street::Flop),
+            Action::Turn(_) => Some(Street::Turn),
+            Action::River(_) => Some(Street::River),
+            _ => None,
+        }
     }
 
     fn is_player(self) -> bool {
@@ -96,7 +106,9 @@ pub enum Street {
 impl Street {
     pub const COUNT: usize = 4;
 
-    fn previous(self) -> Option<Self> {
+    pub const STREETS: [Street; Self::COUNT] = [Self::PreFlop, Self::Flop, Self::Turn, Self::River];
+
+    pub fn previous(self) -> Option<Self> {
         match self {
             Street::PreFlop => None,
             Street::Flop => Some(Street::PreFlop),
@@ -105,7 +117,7 @@ impl Street {
         }
     }
 
-    fn next(self) -> Option<Self> {
+    pub fn next(self) -> Option<Self> {
         match self {
             Street::PreFlop => Some(Street::Flop),
             Street::Flop => Some(Street::Turn),
@@ -114,8 +126,17 @@ impl Street {
         }
     }
 
-    fn to_usize(self) -> usize {
+    pub fn to_usize(self) -> usize {
         self as usize
+    }
+
+    pub fn community_card_count(self) -> usize {
+        match self {
+            Street::PreFlop => 0,
+            Street::Flop => 3,
+            Street::Turn => 4,
+            Street::River => 5,
+        }
     }
 }
 
@@ -138,12 +159,7 @@ impl Board {
     };
 
     pub fn cards(&self) -> &[Card] {
-        match self.street {
-            Street::PreFlop => &self.cards[..0],
-            Street::Flop => &self.cards[..3],
-            Street::Turn => &self.cards[..4],
-            Street::River => &self.cards[..5],
-        }
+        &self.cards[..self.street.community_card_count()]
     }
 
     pub fn street(&self) -> Street {
@@ -224,7 +240,8 @@ pub enum State {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Game {
     actions: Vec<Action>,
-    board: Board,
+    boards: [Board; Self::MAX_RUNOUTS],
+    current_board: u8,
     names: Vec<String>,
     seats: Vec<u8>,
     starting_stacks: Vec<u32>,
@@ -246,6 +263,8 @@ pub struct Game {
 }
 
 impl Game {
+    const MAX_RUNOUTS: usize = 4;
+
     pub const MIN_PLAYERS: usize = 2;
     pub const MAX_PLAYERS: usize = 9;
 
@@ -415,7 +434,8 @@ impl Game {
             starting_stacks: stacks.clone(),
             stacks_in_street: array::from_fn(|_| stacks.clone()),
             showdown_stacks: vec![0; player_count],
-            board: Board::EMPTY,
+            boards: [Board::EMPTY; Self::MAX_RUNOUTS],
+            current_board: 0,
             button_index: u8::try_from(button_index).unwrap(),
             current_street_index: 0,
             current_action_index: 0,
@@ -530,7 +550,8 @@ impl Game {
             street_stacks.copy_from_slice(&self.starting_stacks);
         }
         self.showdown_stacks.iter_mut().for_each(|stack| *stack = 0);
-        self.board = Board::EMPTY;
+        self.boards = [Board::EMPTY; Self::MAX_RUNOUTS];
+        self.current_board = 0;
         self.current_street_index = 0;
         self.current_action_index = 0;
         self.current_player = u8::MAX;
@@ -585,19 +606,23 @@ impl Game {
     }
 
     pub fn board(&self) -> Board {
-        self.board
+        self.boards[usize::from(self.current_board)]
+    }
+
+    fn board_mut(&mut self) -> &mut Board {
+        &mut self.boards[usize::from(self.current_board)]
     }
 
     fn current_street_stacks(&self) -> &[u32] {
-        &self.stacks_in_street[self.board.street.to_usize()]
+        &self.stacks_in_street[self.board().street().to_usize()]
     }
 
     fn current_street_stacks_mut(&mut self) -> &mut [u32] {
-        &mut self.stacks_in_street[self.board.street.to_usize()]
+        &mut self.stacks_in_street[self.board().street().to_usize()]
     }
 
     pub fn previous_street_stacks(&self) -> &[u32] {
-        match self.board.street.previous() {
+        match self.board().street().previous() {
             Some(street) => &self.stacks_in_street[street.to_usize()],
             None => &self.starting_stacks,
         }
@@ -654,7 +679,7 @@ impl Game {
         if player >= self.player_count() {
             return Err("straddle: invalid player index".into());
         }
-        if self.at_start() || self.board.street != Street::PreFlop {
+        if self.at_start() || self.board().street() != Street::PreFlop {
             return Err("straddle: only allowed pre flop after small/big blind post".into());
         }
         if self.is_all_in(player) {
@@ -748,7 +773,7 @@ impl Game {
         }
 
         if last_amount == 0 {
-            match self.board.street {
+            match self.board().street() {
                 Street::PreFlop => {
                     last_amount = actions
                         .iter()
@@ -795,7 +820,7 @@ impl Game {
 
     fn action_ended(&self) -> bool {
         self.players_in_hand.count() == 1
-            || (self.current_player().is_none() && self.board.street == Street::River)
+            || (self.current_player().is_none() && self.board().street() == Street::River)
             || (self.current_player().is_none() && self.all_in_terminated_hand())
     }
 
@@ -1019,7 +1044,7 @@ impl Game {
         if player >= self.player_count() {
             return Err("additional post: invalid player index".into());
         }
-        if self.at_start() || self.board.street != Street::PreFlop {
+        if self.at_start() || self.board().street() != Street::PreFlop {
             return Err("additional post: only allowed pre flop after small/big blind post".into());
         }
 
@@ -1174,20 +1199,82 @@ impl Game {
             && self.current_player().is_none()
             && (!self.actions_in_street().is_empty() || self.players_in_hand_not_all_in() <= 1)
             && self.players_in_hand.count() > 1
-            && self.board.street != Street::River;
+            && self.board().street() != Street::River;
         if allowed {
-            Some(self.board.street.next().unwrap())
+            Some(self.board().street().next().unwrap())
         } else {
             None
         }
     }
 
-    fn check_new_street(&self, street: Street) -> Result<()> {
-        if self.can_next_street() != Some(street) {
-            Err("cannot go to next street".into())
-        } else {
-            Ok(())
+    fn can_next_street_multiple_runouts(&self) -> Option<(Street, bool)> {
+        match self.state() {
+            State::Street(street) => Some((street, false)),
+            State::Showdown => {
+                if usize::from(self.current_board) >= Self::MAX_RUNOUTS - 1 {
+                    None
+                } else {
+                    self.all_in_street()
+                        .and_then(|street| street.next())
+                        .map(|street| (street, true))
+                }
+            }
+            _ => None,
         }
+    }
+
+    fn all_in_street(&self) -> Option<Street> {
+        assert_eq!(self.state(), State::Showdown);
+        if !self.all_in_terminated_hand() {
+            return None;
+        }
+
+        let street = Street::STREETS[1..]
+            .iter()
+            .copied()
+            .rev()
+            .filter(|street| {
+                let current_stacks = &self.stacks_in_street[street.to_usize()];
+                let previous_stacks = &self.stacks_in_street[street.previous().unwrap().to_usize()];
+                current_stacks != previous_stacks
+            })
+            .next()
+            .unwrap_or(Street::PreFlop);
+        Some(street)
+    }
+
+    fn prepare_new_street(&mut self, expected_street: Option<Street>) -> Result<Street> {
+        let Some((street, new_runout)) = self.can_next_street_multiple_runouts() else {
+            return Err("street: cannot go to next street".into());
+        };
+        if expected_street.is_some_and(|s| s != street) {
+            return Err("street: cannot go to requested street".into());
+        }
+
+        if new_runout {
+            self.current_board += 1;
+            assert!(usize::from(self.current_board) < Self::MAX_RUNOUTS);
+
+            let (previous_boards, next_boards) =
+                self.boards.split_at_mut(usize::from(self.current_board));
+            let previous_board = previous_boards.last().unwrap();
+            let next_board = next_boards.first_mut().unwrap();
+
+            let previous_street = street.previous().unwrap();
+            let card_copy_count = previous_street.community_card_count();
+            (&mut next_board.cards[..card_copy_count])
+                .copy_from_slice(&previous_board.cards[..card_copy_count]);
+            next_board.street = previous_street;
+
+            let (previous_stacks, current_stacks) =
+                self.stacks_in_street.split_at_mut(street.to_usize());
+            let previous_stack = previous_stacks.last().unwrap();
+            for stacks in current_stacks {
+                stacks.copy_from_slice(previous_stack);
+            }
+        }
+
+        Ok(street)
     }
 
     fn check_cards(&self) -> Result<Cards> {
@@ -1207,24 +1294,61 @@ impl Game {
             known_cards.add(hand.high());
             known_cards.add(hand.low());
         }
-        for card in self.board.cards().iter().copied() {
+
+        for card in self.boards[0].cards().iter().copied() {
             if known_cards.has(card) {
                 return Err(format!("duplicate card {} on board", card).into());
             }
             known_cards.add(card);
         }
+
+        if self.current_board > 0 {
+            // Figure out which streets were run more than once.
+            let mut street_counts = [0u8; Street::COUNT];
+            for action in self.actions.iter().copied() {
+                if let Some(street) = action.street() {
+                    street_counts[street.to_usize()] += 1;
+                }
+            }
+
+            let matching_community_cards = if street_counts[Street::Flop.to_usize()] > 1 {
+                Street::PreFlop.community_card_count()
+            } else if street_counts[Street::Turn.to_usize()] > 1 {
+                Street::Flop.community_card_count()
+            } else if street_counts[Street::River.to_usize()] > 1 {
+                Street::Turn.community_card_count()
+            } else {
+                unreachable!()
+            };
+
+            for board in &self.boards[1..usize::from(self.current_board + 1)] {
+                assert_eq!(
+                    &board.cards()[..matching_community_cards],
+                    &self.boards[0].cards()[..matching_community_cards]
+                );
+
+                for card in board.cards()[matching_community_cards..].iter().copied() {
+                    if known_cards.has(card) {
+                        return Err(format!("duplicate card {} on board", card).into());
+                    }
+                    known_cards.add(card);
+                }
+            }
+        }
+
         Ok(known_cards)
     }
 
     fn next_street_final(&mut self) -> Result<()> {
         self.check_cards()?;
 
+        let current_street = self.board().street();
         let (previous, next) = self
             .stacks_in_street
-            .split_at_mut(self.board.street.to_usize());
-        next.first_mut()
-            .unwrap()
-            .copy_from_slice(previous.last().unwrap().as_slice());
+            .split_at_mut(current_street.to_usize());
+        for stacks in next {
+            stacks.copy_from_slice(previous.last().unwrap().as_slice());
+        }
 
         if self.all_in_terminated_hand() {
             self.current_player = u8::MAX;
@@ -1238,49 +1362,47 @@ impl Game {
 
     pub fn flop(&mut self, flop: [Card; 3]) -> Result<()> {
         self.check_pre_update()?;
-        self.check_new_street(Street::Flop)?;
+        self.prepare_new_street(Some(Street::Flop))?;
         self.add_action(Action::Flop(flop));
-        self.board.street = Street::Flop;
-        self.board.cards[..3].copy_from_slice(flop.as_slice());
+        self.board_mut().street = Street::Flop;
+        self.board_mut().cards[..3].copy_from_slice(flop.as_slice());
         self.next_street_final()?;
         Ok(())
     }
 
     pub fn turn(&mut self, turn: Card) -> Result<()> {
         self.check_pre_update()?;
-        self.check_new_street(Street::Turn)?;
+        self.prepare_new_street(Some(Street::Turn))?;
         self.add_action(Action::Turn(turn));
-        self.board.street = Street::Turn;
-        self.board.cards[3] = turn;
+        self.board_mut().street = Street::Turn;
+        self.board_mut().cards[3] = turn;
         self.next_street_final()?;
         Ok(())
     }
 
     pub fn river(&mut self, river: Card) -> Result<()> {
         self.check_pre_update()?;
-        self.check_new_street(Street::River)?;
+        self.prepare_new_street(Some(Street::River))?;
         self.add_action(Action::River(river));
-        self.board.street = Street::River;
-        self.board.cards[4] = river;
+        self.board_mut().street = Street::River;
+        self.board_mut().cards[4] = river;
         self.next_street_final()?;
         Ok(())
     }
 
     pub fn draw_next_street(&mut self, rng: &mut impl Rng) -> Result<()> {
         self.check_pre_update()?;
-        let Some(street) = self.can_next_street() else {
-            return Err("cannot go to next street".into());
-        };
+        let street = self.prepare_new_street(None)?;
         let mut deck = Deck::from_cards(rng, self.known_cards());
         match street {
             Street::PreFlop => unreachable!(),
             Street::Flop => self.flop([
-                deck.draw_result(rng)?,
-                deck.draw_result(rng)?,
-                deck.draw_result(rng)?,
+                deck.draw(rng).unwrap(),
+                deck.draw(rng).unwrap(),
+                deck.draw(rng).unwrap(),
             ]),
-            Street::Turn => self.turn(deck.draw_result(rng)?),
-            Street::River => self.river(deck.draw_result(rng)?),
+            Street::Turn => self.turn(deck.draw(rng).unwrap()),
+            Street::River => self.river(deck.draw(rng).unwrap()),
         }
     }
 
@@ -1295,8 +1417,11 @@ impl Game {
         if self.state() != State::Showdown {
             return Err("showdown: not in showdown state".into());
         }
+
+        let street = self.board().street();
         self.showdown_stacks
-            .copy_from_slice(&self.stacks_in_street[self.board.street.to_usize()]);
+            .copy_from_slice(&self.stacks_in_street[street.to_usize()]);
+
         let mut total_pot = 0u32;
         for (player, pot_share) in player_pot_share {
             let Some(new_total_pot) = total_pot.checked_add(pot_share) else {
@@ -1308,6 +1433,7 @@ impl Game {
             total_pot = new_total_pot;
             self.showdown_stacks[player] = new_stack;
         }
+
         if total_pot.checked_add(total_rake) != Some(self.total_pot()) {
             return Err("showdown: total pot and supplied pot shares with rake don't match".into());
         }
@@ -1347,19 +1473,25 @@ impl Game {
         if self.state() != State::Showdown {
             return Err("showdown: not in showdown state".into());
         }
+
+        let street = self.board().street();
         self.showdown_stacks
-            .copy_from_slice(&self.stacks_in_street[self.board.street.to_usize()]);
+            .copy_from_slice(&self.stacks_in_street[street.to_usize()]);
+
         for (pot, winners) in self.showdown_winners_by_pot()? {
             let winner_count = u32::try_from(winners.len()).unwrap();
+
             let won_per_player = pot / winner_count;
             for player in winners.iter().copied() {
                 self.showdown_stacks[usize::from(player)] += won_per_player;
             }
+
             let n = usize::try_from(pot % winner_count).unwrap();
             for player in winners.iter().copied().take(n) {
                 self.showdown_stacks[usize::from(player)] += 1;
             }
         }
+
         self.at_end = true;
         Ok(())
     }
@@ -1376,7 +1508,8 @@ impl Game {
 
         let mut scores_array = [Score::ZERO; Self::MAX_PLAYERS];
         let scores = &mut scores_array[..self.player_count()];
-        let board = Cards::from_slice(self.board.cards()).unwrap();
+        // TODO: Showdown boards.
+        let board = Cards::from_slice(self.board().cards()).unwrap();
         for player in self.players_in_hand() {
             let Some(hand) = self.get_hand(player) else {
                 return Err(format!("showdown: missing hand for player {player}").into());
@@ -1590,23 +1723,9 @@ impl Game {
                 self.current_player = player;
                 self.current_street_stacks_mut()[usize::from(player)] = old_stack;
             }
-            Action::Flop(_) => {
-                self.previous_street();
-                self.board.street = Street::PreFlop;
-                self.board.cards[2] = Card::MIN;
-                self.board.cards[1] = Card::MIN;
-                self.board.cards[0] = Card::MIN;
-            }
-            Action::Turn(_) => {
-                self.previous_street();
-                self.board.street = Street::Flop;
-                self.board.cards[3] = Card::MIN;
-            }
-            Action::River(_) => {
-                self.previous_street();
-                self.board.street = Street::Turn;
-                self.board.cards[4] = Card::MIN;
-            }
+            Action::Flop(_) => self.previous_street(),
+            Action::Turn(_) => self.previous_street(),
+            Action::River(_) => self.previous_street(),
             Action::UncalledBet { player, amount } => {
                 self.current_street_stacks_mut()[usize::from(player)] -= amount;
             }
@@ -1621,7 +1740,23 @@ impl Game {
     }
 
     fn previous_street(&mut self) {
-        self.stacks_in_street[self.board.street.to_usize()].copy_from_slice(&self.starting_stacks);
+        let current_street = self.board().street();
+        let action_before = self.actions[self.current_action_index.checked_sub(2).unwrap()];
+        let previous_runout_street = action_before.street();
+
+        if previous_runout_street.is_some_and(|s| s == Street::River) {
+            // Start of new runout.
+            *self.board_mut() = Board::EMPTY;
+            assert!(self.current_board > 0);
+            self.current_board -= 1;
+        } else {
+            let previous_street = current_street.previous().unwrap();
+            self.board_mut().street = previous_street;
+            self.board_mut().cards[previous_street.community_card_count()..]
+                .iter_mut()
+                .for_each(|card| *card = Card::MIN);
+        }
+
         self.current_street_index = self.actions[..self.current_street_index - 1]
             .iter()
             .enumerate()
@@ -1638,6 +1773,7 @@ impl Game {
         let at_final_action = self.current_action_index == self.actions.len();
         match self.state() {
             State::Showdown if showdown_stacks_set => true,
+            State::Showdown if !at_final_action => true,
             State::Showdown => false,
             _ if at_final_action => false,
             _ => true,
@@ -1649,8 +1785,7 @@ impl Game {
             return false;
         }
         match self.state() {
-            State::Showdown => {
-                assert!(self.current_action_index == self.actions.len());
+            State::Showdown if self.current_action_index == self.actions.len() => {
                 self.at_end = true;
                 return true;
             }
@@ -1720,7 +1855,7 @@ impl Game {
             let player = self.current_player().unwrap();
             assert!(self.can_call().is_none());
 
-            if self.board.street == Street::PreFlop {
+            if self.board().street() == Street::PreFlop {
                 assert_eq!(self.call_amount(player), 0);
                 assert!(!self
                     .actions_in_street()
@@ -1737,7 +1872,7 @@ impl Game {
         }
 
         if self.can_bet().is_some() {
-            assert_ne!(self.board.street, Street::PreFlop);
+            assert_ne!(self.board().street(), Street::PreFlop);
             assert!(self.can_check());
             assert!(self.can_call().is_none());
             assert!(self.can_raise().is_none());
@@ -1749,7 +1884,7 @@ impl Game {
                 let raise_investment = to.checked_sub(self.invested_in_street(player)).unwrap();
                 assert!(call_amount < raise_investment);
             } else {
-                assert_eq!(self.board.street, Street::PreFlop);
+                assert_eq!(self.board().street(), Street::PreFlop);
             }
         }
     }
@@ -1819,10 +1954,15 @@ impl Game {
     fn internal_asserts_history_compare(&self, expected: &Game) {
         self.internal_asserts_state();
 
-        assert_eq!(expected.board, self.board);
+        assert_eq!(expected.boards, self.boards);
+        assert_eq!(expected.current_board, self.current_board);
         assert_eq!(expected.names, self.names);
         assert_eq!(expected.starting_stacks, self.starting_stacks);
-        assert_eq!(expected.stacks_in_street, self.stacks_in_street);
+        let current_street = expected.board().street();
+        assert_eq!(
+            &expected.stacks_in_street[..current_street.to_usize()],
+            &self.stacks_in_street[..current_street.to_usize()],
+        );
         assert_eq!(expected.button_index, self.button_index);
         assert_eq!(expected.current_street_index, self.current_street_index);
         assert_eq!(expected.current_action_index, self.current_action_index);

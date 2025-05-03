@@ -26,6 +26,7 @@ pub struct GGHandHistoryParser {
     re_river: Regex,
     re_uncalled_bet: Regex,
     re_shows: Regex,
+    re_showdown_title: Regex,
     re_showdown: Regex,
     re_summary: Regex,
 }
@@ -50,15 +51,16 @@ impl GGHandHistoryParser {
             + &format!(r"|(calls {REGEX_PRICE}( and is all-in)?)")
             + &format!(r"|(bets {REGEX_PRICE}( and is all-in)?)")
             + &format!(r"|(raises {REGEX_PRICE} to {REGEX_PRICE}( and is all-in)?))$");
-        let re_flop = format!(r"^\*\*\* FLOP \*\*\* \[{REGEX_CARD} {REGEX_CARD} {REGEX_CARD}\]$");
+        let re_flop = format!(r"^\*\*\* .*FLOP \*\*\* \[{REGEX_CARD} {REGEX_CARD} {REGEX_CARD}\]$");
         let re_turn = format!(
-            r"^\*\*\* TURN \*\*\* \[{REGEX_CARD} {REGEX_CARD} {REGEX_CARD}\] \[{REGEX_CARD}\]$"
+            r"^\*\*\* .*TURN \*\*\* \[{REGEX_CARD} {REGEX_CARD} {REGEX_CARD}\] \[{REGEX_CARD}\]$"
         );
         let re_river = format!(
-            r"^\*\*\* RIVER \*\*\* \[{REGEX_CARD} {REGEX_CARD} {REGEX_CARD} {REGEX_CARD}\] \[{REGEX_CARD}\]$"
+            r"^\*\*\* .*RIVER \*\*\* \[{REGEX_CARD} {REGEX_CARD} {REGEX_CARD} {REGEX_CARD}\] \[{REGEX_CARD}\]$"
         );
         let re_uncalled_bet = format!(r"^Uncalled bet \({REGEX_PRICE}\) returned to {REGEX_NAME}$");
         let re_shows = format!(r"^{REGEX_NAME}: shows \[{REGEX_CARD} {REGEX_CARD}\].*$");
+        let re_showdown_title = format!(r"^\*\*\* .*SHOWDOWN \*\*\*$");
         let re_showdown = format!(r"^{REGEX_NAME} collected {REGEX_PRICE} from pot$");
         let re_summary = format!(r"^Total pot {REGEX_PRICE} \| Rake {REGEX_PRICE}")
             + &format!(r"( \| Jackpot {REGEX_PRICE})?( \| Bingo {REGEX_PRICE})?")
@@ -77,6 +79,7 @@ impl GGHandHistoryParser {
             re_river: Regex::new(&re_river).unwrap(),
             re_uncalled_bet: Regex::new(&re_uncalled_bet).unwrap(),
             re_shows: Regex::new(&re_shows).unwrap(),
+            re_showdown_title: Regex::new(&re_showdown_title).unwrap(),
             re_showdown: Regex::new(&re_showdown).unwrap(),
             re_summary: Regex::new(&re_summary).unwrap(),
         }
@@ -302,17 +305,25 @@ impl GGHandHistoryParser {
 
     fn parse_and_apply_actions<'a>(
         &self,
-        lines: &mut impl Iterator<Item = &'a str>,
+        lines: &mut Peekable<impl Iterator<Item = &'a str>>,
         game: &mut Game,
     ) -> Result<()> {
         loop {
             match game.state() {
                 State::Post | State::End => unreachable!(),
                 State::Player(_) => self.parse_and_apply_player_action(lines, game)?,
-                State::Street(_) => self.parse_and_apply_street_action(lines, game)?,
+                State::Street(_) => {
+                    if !self.parse_and_apply_street_action(lines, game)? {
+                        return Err("street: line missing or invalid format".into());
+                    }
+                }
                 State::UncalledBet { .. } => self.parse_uncalled_bet(lines, game)?,
                 State::ShowOrMuck(_) => self.parse_shows(lines, game)?,
-                State::Showdown => break Ok(()),
+                State::Showdown => {
+                    if !self.parse_and_apply_street_action(lines, game)? {
+                        break Ok(());
+                    }
+                }
             }
         }
     }
@@ -391,42 +402,63 @@ impl GGHandHistoryParser {
 
     fn parse_and_apply_street_action<'a>(
         &self,
-        lines: &mut impl Iterator<Item = &'a str>,
+        lines: &mut Peekable<impl Iterator<Item = &'a str>>,
         game: &mut Game,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         game.internal_asserts_state();
-        let State::Street(street) = game.state() else {
-            unreachable!()
+
+        let Some(street_line) = lines.peek() else {
+            return Ok(false);
         };
-        let regex = match street {
-            Street::PreFlop => unreachable!(),
-            Street::Flop => &self.re_flop,
-            Street::Turn => &self.re_turn,
-            Street::River => &self.re_river,
+
+        let street_regex = [
+            (Street::Flop, &self.re_flop),
+            (Street::Turn, &self.re_turn),
+            (Street::River, &self.re_river),
+        ];
+        let street_captures = street_regex
+            .into_iter()
+            .filter_map(|(street, regex)| {
+                regex
+                    .captures(street_line)
+                    .map(|captures| (street, captures))
+            })
+            .next();
+
+        let Some((street, captures)) = street_captures else {
+            return Ok(false);
         };
-        let street_line = option_to_result(lines.next(), "street line is missing")?;
-        let Some(street_captures) = regex.captures(street_line) else {
-            return Err("street: invalid format".into());
-        };
-        let cards = street_captures
+        lines.next().unwrap();
+
+        let cards = captures
             .iter()
             .skip(1)
             .map(|m| Card::from_str(m.unwrap().as_str()))
             .collect::<Result<Vec<_>>>()?;
+
+        let previous_street = street.previous().unwrap();
         let known_cards_match = cards
             .iter()
-            .zip(game.board().cards())
+            .zip(
+                game.board()
+                    .cards()
+                    .iter()
+                    .take(previous_street.community_card_count()),
+            )
             .all(|(a, b)| *a == *b);
         if !known_cards_match {
             return Err("street: known cards don't match".into());
         }
+
         match street {
             Street::PreFlop => unreachable!(),
-            Street::Flop if cards.len() == 3 => game.flop([cards[0], cards[1], cards[2]]),
-            Street::Turn if cards.len() == 4 => game.turn(cards[3]),
-            Street::River if cards.len() == 5 => game.river(cards[4]),
-            _ => Err("street: bad number of cards".into()),
+            Street::Flop if cards.len() == 3 => game.flop([cards[0], cards[1], cards[2]])?,
+            Street::Turn if cards.len() == 4 => game.turn(cards[3])?,
+            Street::River if cards.len() == 5 => game.river(cards[4])?,
+            _ => return Err("street: bad number of cards".into()),
         }
+
+        Ok(true)
     }
 
     fn parse_uncalled_bet<'a>(
@@ -501,22 +533,44 @@ impl GGHandHistoryParser {
     fn parse_showdown<'a>(
         &self,
         lines: &mut Peekable<impl Iterator<Item = &'a str>>,
-        game: &mut Game,
+        game: &Game,
     ) -> Result<Vec<u32>> {
-        let has_header_line = lines.next().is_some_and(|line| line == "*** SHOWDOWN ***");
+        let mut winnings = vec![0u32; game.player_count()];
+
+        while lines
+            .peek()
+            .is_some_and(|line| self.re_showdown_title.is_match(line))
+        {
+            self.parse_showdown_single(lines, game, &mut winnings)?;
+        }
+
+        Ok(winnings)
+    }
+
+    fn parse_showdown_single<'a>(
+        &self,
+        lines: &mut Peekable<impl Iterator<Item = &'a str>>,
+        game: &Game,
+        winnings: &mut [u32],
+    ) -> Result<()> {
+        let has_header_line = lines
+            .next()
+            .is_some_and(|line| self.re_showdown_title.is_match(line));
         if !has_header_line {
             return Err("showdown: missing header line".into());
         }
-        let mut winnings = vec![0u32; game.player_count()];
+
         loop {
             if lines.peek().is_some_and(|line| line.starts_with("***")) {
-                break Ok(winnings);
+                break Ok(());
             }
+
             let showdown = option_to_result(lines.next(), "showdown line is missing")?;
             let Some(showdown) = self.re_showdown.captures(showdown) else {
                 return Err("showdown: invalid format".into());
             };
             let [name, amount_won] = showdown.extract().1;
+
             let player = game
                 .player_names()
                 .iter()
@@ -524,8 +578,12 @@ impl GGHandHistoryParser {
             let Some(player) = player else {
                 return Err(format!("showdown: unknown player name {name}").into());
             };
+
             let amount_won = Self::parse_price_as_cent(amount_won)?;
-            winnings[player] = amount_won;
+            let Some(new_winnings) = winnings[player].checked_add(amount_won) else {
+                return Err("showdown: overflow calculating winnings".into());
+            };
+            winnings[player] = new_winnings;
         }
     }
 
