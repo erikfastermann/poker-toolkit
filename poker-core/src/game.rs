@@ -1,12 +1,12 @@
 use std::cmp::min;
 use std::collections::HashSet;
-use std::ops::BitAnd;
 use std::{array, fmt, usize};
 
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
 
+use crate::bitset::Bitset;
 use crate::card::Card;
 use crate::cards::{Cards, Score};
 use crate::deck::Deck;
@@ -158,70 +158,31 @@ impl Board {
         street: Street::PreFlop,
     };
 
+    pub fn from_cards(given_cards: &[Card]) -> Result<Self> {
+        let street = match given_cards.len() {
+            0 => Street::PreFlop,
+            3 => Street::Flop,
+            4 => Street::Turn,
+            5 => Street::River,
+            _ => return Err("board: bad cards length".into()),
+        };
+
+        if Cards::from_slice(given_cards).is_none() {
+            return Err("board: duplicate card".into());
+        }
+
+        let mut cards = [Card::MIN; 5];
+        (&mut cards[..given_cards.len()]).copy_from_slice(&given_cards);
+
+        Ok(Self { cards, street })
+    }
+
     pub fn cards(&self) -> &[Card] {
         &self.cards[..self.street.community_card_count()]
     }
 
     pub fn street(&self) -> Street {
         self.street
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)] // TODO: Custom Debug
-struct Bitset<const SIZE: usize>([u8; SIZE]);
-
-impl<const SIZE: usize> Bitset<SIZE> {
-    const EMPTY: Self = Self([0; SIZE]);
-
-    fn ones(n: usize) -> Self {
-        let mut s = Self::EMPTY;
-        for i in 0..n {
-            s.set(i);
-        }
-        s
-    }
-
-    fn set(&mut self, index: usize) {
-        self.0[index / 8] |= 1 << (index % 8);
-    }
-
-    fn with(mut self, index: usize) -> Self {
-        self.set(index);
-        self
-    }
-
-    fn remove(&mut self, index: usize) {
-        self.0[index / 8] &= !(1 << (index % 8));
-    }
-
-    fn has(&self, index: usize) -> bool {
-        let i = index / 8;
-        if i >= self.0.len() {
-            false
-        } else {
-            (self.0[i] & (1 << (index % 8))) != 0
-        }
-    }
-
-    fn iter(&self, max_exclusive: usize) -> impl Iterator<Item = usize> + '_ {
-        (0..max_exclusive)
-            .into_iter()
-            .filter(|index| self.has(*index))
-    }
-
-    fn count(&self) -> u32 {
-        self.0.iter().map(|n| n.count_ones()).sum::<u32>()
-    }
-}
-
-impl<const SIZE: usize> BitAnd for Bitset<SIZE> {
-    type Output = Self;
-
-    fn bitand(mut self, rhs: Self) -> Self::Output {
-        for (a, b) in self.0.iter_mut().zip(rhs.0) {
-            *a &= b;
-        }
-        self
     }
 }
 

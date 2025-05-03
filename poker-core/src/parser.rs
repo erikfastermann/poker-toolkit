@@ -3,8 +3,9 @@ use std::{iter::Peekable, str::FromStr};
 use regex::Regex;
 
 use crate::{
+    bitset::Bitset,
     card::Card,
-    game::{Game, Player, State, Street},
+    game::{Board, Game, Player, State, Street},
     hand::Hand,
     result::Result,
 };
@@ -29,14 +30,16 @@ pub struct GGHandHistoryParser {
     re_showdown_title: Regex,
     re_showdown: Regex,
     re_summary: Regex,
+    re_summary_seat: Regex,
 }
 
 impl GGHandHistoryParser {
     pub fn new() -> Self {
         const REGEX_PRICE: &'static str = r"\$(\d+(?:\.\d{1, 2})?)";
         const REGEX_CARD: &'static str = r"([2-9TJQKA][dshc])";
-        // TODO: Check allowed letters in names.
-        const REGEX_NAME: &'static str = "([a-zA-Z0-9_]+)";
+        // Greedily match all characters. Should work,
+        // because the other regexes are specific enough.
+        const REGEX_NAME: &'static str = r"(.+)";
 
         let re_description = r"^Poker Hand #[^:]+: Hold'em No Limit *".to_string()
             + &format!(r"\({REGEX_PRICE}/{REGEX_PRICE}\) - ")
@@ -65,6 +68,7 @@ impl GGHandHistoryParser {
         let re_summary = format!(r"^Total pot {REGEX_PRICE} \| Rake {REGEX_PRICE}")
             + &format!(r"( \| Jackpot {REGEX_PRICE})?( \| Bingo {REGEX_PRICE})?")
             + &format!(r"( \| Fortune {REGEX_PRICE})?( \| Tax {REGEX_PRICE})?$");
+        const RE_SUMMARY_SEAT: &'static str = r"^Seat ([1-6]): .*$";
 
         Self {
             re_description: Regex::new(&re_description).unwrap(),
@@ -82,6 +86,7 @@ impl GGHandHistoryParser {
             re_showdown_title: Regex::new(&re_showdown_title).unwrap(),
             re_showdown: Regex::new(&re_showdown).unwrap(),
             re_summary: Regex::new(&re_summary).unwrap(),
+            re_summary_seat: Regex::new(RE_SUMMARY_SEAT).unwrap(),
         }
     }
 
@@ -111,16 +116,19 @@ impl GGHandHistoryParser {
 
     fn parse_str_single(&self, entry: &str) -> Result<Game> {
         let entry = entry.trim();
+        let seats = self.parse_summary_seats(entry)?;
         let mut lines = entry.lines().peekable();
+
         let (small_blind, big_blind) = self.parse_description(&mut lines)?;
         let button_seat = self.parse_table_info(&mut lines)?;
-        let players = self.parse_stacks(&mut lines)?;
+        let players = self.parse_stacks(&mut lines, seats)?;
         let Some(button_index) = players
             .iter()
             .position(|player| player.seat == Some(button_seat))
         else {
             return Err("parse: invalid button seat".into());
         };
+
         let mut game = Game::new(&players, button_index, small_blind, big_blind)?;
         self.parse_posts(&mut lines, &mut game)?;
         self.parse_straddles(&mut lines, &mut game)?;
@@ -128,7 +136,31 @@ impl GGHandHistoryParser {
         self.parse_and_apply_actions(&mut lines, &mut game)?;
         let winnings = self.parse_showdown(&mut lines, &mut game)?;
         self.parse_summary(&mut lines, &mut game, &winnings)?;
+
         Ok(game)
+    }
+
+    fn parse_summary_seats(&self, entry: &str) -> Result<Bitset<2>> {
+        let mut seats = Bitset::<2>::EMPTY;
+
+        for line in entry.lines().rev() {
+            let Some(captures) = self.re_summary_seat.captures(line) else {
+                break;
+            };
+            let [seat_one_based] = captures.extract().1;
+
+            let seat = seat_one_based
+                .parse::<u8>()
+                .unwrap()
+                .checked_sub(1)
+                .unwrap();
+            seats.set(usize::from(seat));
+        }
+
+        if seats.count() < 2 {
+            return Err("parse seat summary: less than two seats configured".into());
+        }
+        Ok(seats)
     }
 
     fn parse_description<'a>(
@@ -165,6 +197,7 @@ impl GGHandHistoryParser {
     fn parse_stacks<'a>(
         &self,
         lines: &mut Peekable<impl Iterator<Item = &'a str>>,
+        seats: Bitset<2>,
     ) -> Result<Vec<Player>> {
         let mut players = Vec::new();
         loop {
@@ -172,18 +205,25 @@ impl GGHandHistoryParser {
             let Some(seat_config) = self.re_seat_config.captures(seat_config) else {
                 break;
             };
+            lines.next().unwrap();
+
             let [seat_one_based, name, stack] = seat_config.extract().1;
-            let seat_one_based = seat_one_based.parse::<u8>()?;
-            let Some(seat) = seat_one_based.checked_sub(1) else {
-                return Err("seat: invalid seat config".into());
-            };
+            let seat = seat_one_based
+                .parse::<u8>()
+                .unwrap()
+                .checked_sub(1)
+                .unwrap();
+
+            if !seats.has(usize::from(seat)) {
+                continue;
+            }
+
             players.push(Player {
                 name: Some(name.to_string()),
                 seat: Some(seat),
                 hand: None,
                 starting_stack: Self::parse_price_as_cent(stack)?,
             });
-            lines.next().unwrap();
         }
 
         Ok(players)
@@ -309,6 +349,8 @@ impl GGHandHistoryParser {
         game: &mut Game,
     ) -> Result<()> {
         loop {
+            game.internal_asserts_state();
+
             match game.state() {
                 State::Post | State::End => unreachable!(),
                 State::Player(_) => self.parse_and_apply_player_action(lines, game)?,
@@ -400,33 +442,22 @@ impl GGHandHistoryParser {
         Ok(())
     }
 
-    fn parse_and_apply_street_action<'a>(
+    fn parse_street_action<'a>(
         &self,
         lines: &mut Peekable<impl Iterator<Item = &'a str>>,
-        game: &mut Game,
-    ) -> Result<bool> {
-        game.internal_asserts_state();
-
+    ) -> Result<Option<Board>> {
         let Some(street_line) = lines.peek() else {
-            return Ok(false);
+            return Ok(None);
         };
 
-        let street_regex = [
-            (Street::Flop, &self.re_flop),
-            (Street::Turn, &self.re_turn),
-            (Street::River, &self.re_river),
-        ];
-        let street_captures = street_regex
+        let street_regex = [&self.re_flop, &self.re_turn, &self.re_river];
+        let captures = street_regex
             .into_iter()
-            .filter_map(|(street, regex)| {
-                regex
-                    .captures(street_line)
-                    .map(|captures| (street, captures))
-            })
+            .filter_map(|regex| regex.captures(street_line))
             .next();
 
-        let Some((street, captures)) = street_captures else {
-            return Ok(false);
+        let Some(captures) = captures else {
+            return Ok(None);
         };
         lines.next().unwrap();
 
@@ -436,8 +467,14 @@ impl GGHandHistoryParser {
             .map(|m| Card::from_str(m.unwrap().as_str()))
             .collect::<Result<Vec<_>>>()?;
 
-        let previous_street = street.previous().unwrap();
-        let known_cards_match = cards
+        let board = Board::from_cards(&cards)?;
+        Ok(Some(board))
+    }
+
+    fn apply_street_action<'a>(&self, game: &mut Game, board: Board) -> Result<()> {
+        let previous_street = board.street().previous().unwrap();
+        let known_cards_match = board
+            .cards()
             .iter()
             .zip(
                 game.board()
@@ -450,7 +487,8 @@ impl GGHandHistoryParser {
             return Err("street: known cards don't match".into());
         }
 
-        match street {
+        let cards = board.cards();
+        match board.street() {
             Street::PreFlop => unreachable!(),
             Street::Flop if cards.len() == 3 => game.flop([cards[0], cards[1], cards[2]])?,
             Street::Turn if cards.len() == 4 => game.turn(cards[3])?,
@@ -458,6 +496,18 @@ impl GGHandHistoryParser {
             _ => return Err("street: bad number of cards".into()),
         }
 
+        Ok(())
+    }
+
+    fn parse_and_apply_street_action<'a>(
+        &self,
+        lines: &mut Peekable<impl Iterator<Item = &'a str>>,
+        game: &mut Game,
+    ) -> Result<bool> {
+        let Some(board) = self.parse_street_action(lines)? else {
+            return Ok(false);
+        };
+        self.apply_street_action(game, board)?;
         Ok(true)
     }
 
@@ -497,19 +547,33 @@ impl GGHandHistoryParser {
 
     fn parse_shows<'a>(
         &self,
-        lines: &mut impl Iterator<Item = &'a str>,
+        lines: &mut Peekable<impl Iterator<Item = &'a str>>,
         game: &mut Game,
     ) -> Result<()> {
         let players_in_hand = game.players_in_hand().count();
         if players_in_hand == 1 {
             return Ok(());
         }
+
+        let mut extra_streets = Vec::new();
+        while let Some(board) = self.parse_street_action(lines)? {
+            extra_streets.push(board);
+        }
+
+        if lines
+            .peek()
+            .is_some_and(|line| self.re_showdown_title.is_match(line))
+        {
+            lines.next().unwrap();
+        }
+
         for _ in 0..players_in_hand {
             let shows = option_to_result(lines.next(), "shows line is missing")?;
             let Some(shows) = self.re_shows.captures(shows) else {
                 return Err("shows: invalid format".into());
             };
             let [name, card_a, card_b] = shows.extract().1;
+
             let player = game
                 .player_names()
                 .iter()
@@ -517,16 +581,24 @@ impl GGHandHistoryParser {
             let Some(player) = player else {
                 return Err(format!("shows: unknown name {name}").into());
             };
+
             let Some(hand) = Hand::of_two_cards(Card::from_str(card_a)?, Card::from_str(card_b)?)
             else {
                 return Err("shows: invalid hand".into());
             };
+
             if game.state() != State::ShowOrMuck(player) {
                 return Err("shows: bad state".into());
             }
+
             game.set_hand(player, hand)?;
             game.show_hand()?;
         }
+
+        for board in extra_streets {
+            self.apply_street_action(game, board)?;
+        }
+
         Ok(())
     }
 
@@ -537,11 +609,22 @@ impl GGHandHistoryParser {
     ) -> Result<Vec<u32>> {
         let mut winnings = vec![0u32; game.player_count()];
 
-        while lines
-            .peek()
-            .is_some_and(|line| self.re_showdown_title.is_match(line))
-        {
+        loop {
+            if lines
+                .peek()
+                .is_some_and(|line| self.re_showdown_title.is_match(line))
+            {
+                lines.next().unwrap();
+            }
+
             self.parse_showdown_single(lines, game, &mut winnings)?;
+
+            let Some(next_line) = lines.peek() else {
+                return Err("showdown: unexpected end of input".into());
+            };
+            if *next_line == "*** SUMMARY ***" {
+                break;
+            }
         }
 
         Ok(winnings)
@@ -553,11 +636,11 @@ impl GGHandHistoryParser {
         game: &Game,
         winnings: &mut [u32],
     ) -> Result<()> {
-        let has_header_line = lines
-            .next()
-            .is_some_and(|line| self.re_showdown_title.is_match(line));
-        if !has_header_line {
-            return Err("showdown: missing header line".into());
+        while lines
+            .peek()
+            .is_some_and(|line| self.re_shows.is_match(line))
+        {
+            lines.next().unwrap();
         }
 
         loop {

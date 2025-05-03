@@ -6,6 +6,7 @@
 //   - ...
 
 pub mod ai;
+mod bitset;
 pub mod card;
 pub mod cards;
 pub mod deck;
