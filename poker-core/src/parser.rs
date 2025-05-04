@@ -603,6 +603,7 @@ impl GGHandHistoryParser {
             lines.next().unwrap();
         }
 
+        let mut show_players = Bitset::<2>::EMPTY;
         for _ in 0..players_in_hand {
             let shows = option_to_result(lines.next(), "shows line is missing")?;
             let Some(shows) = self.re_shows.captures(shows) else {
@@ -623,12 +624,23 @@ impl GGHandHistoryParser {
                 return Err("shows: invalid hand".into());
             };
 
-            if game.state() != State::ShowOrMuck(player) {
-                return Err("shows: bad state".into());
+            if show_players.has(player) {
+                return Err("shows: duplicate player show".into());
             }
-
+            show_players.set(player);
             game.set_hand(player, hand)?;
+        }
+
+        while let State::ShowOrMuck(player) = game.state() {
+            if !show_players.has(player) {
+                return Err("shows: show not allowed for player".into());
+            }
             game.show_hand()?;
+            show_players.remove(player);
+        }
+
+        if !show_players.is_empty() {
+            return Err("shows: additional show(s) for player(s)".into());
         }
 
         for board in extra_streets {

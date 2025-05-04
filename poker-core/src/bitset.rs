@@ -14,6 +14,10 @@ impl<const SIZE: usize> Bitset<SIZE> {
         s
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.0.iter().copied().all(|n| n == 0)
+    }
+
     pub fn set(&mut self, index: usize) {
         self.0[index / 8] |= 1 << (index % 8);
     }
