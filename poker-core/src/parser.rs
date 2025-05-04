@@ -32,12 +32,13 @@ pub struct GGHandHistoryParser {
     re_showdown: Regex,
     re_summary: Regex,
     re_summary_seat: Regex,
+    re_all_in_insurance: Regex,
 
-    sloppy_rake_check: bool,
+    sloppy_winnings_check: bool,
 }
 
 impl GGHandHistoryParser {
-    pub fn new(sloppy_rake_check: bool) -> Self {
+    pub fn new(sloppy_winnings_check: bool) -> Self {
         const REGEX_PRICE: &'static str = r"\$(\d+(?:\.\d{1, 2})?)";
         const REGEX_CARD: &'static str = r"([2-9TJQKA][dshc])";
         // Greedily match all characters. Should work,
@@ -72,6 +73,13 @@ impl GGHandHistoryParser {
             + &format!(r"( \| Jackpot {REGEX_PRICE})?( \| Bingo {REGEX_PRICE})?")
             + &format!(r"( \| Fortune {REGEX_PRICE})?( \| Tax {REGEX_PRICE})?$");
         const RE_SUMMARY_SEAT: &'static str = r"^Seat ([1-6]): .*$";
+        let re_all_in_insurance = format!("^{REGEX_NAME}: ((get an all-in insurance ")
+            + &format!(r"\(premium \({REGEX_PRICE}/{REGEX_PRICE}/{REGEX_PRICE}\) for ")
+            + &format!(
+                r"\({REGEX_PRICE}/{REGEX_PRICE}/{REGEX_PRICE}\) - \(Mandatory/Main/Sub\)\))"
+            )
+            + &format!(r"|(pay premium of all-in insurance \({REGEX_PRICE}\))")
+            + &format!(r"|(get main compensation of all-in insurance \({REGEX_PRICE}\)))$");
 
         Self {
             re_description: Regex::new(&re_description).unwrap(),
@@ -90,7 +98,8 @@ impl GGHandHistoryParser {
             re_showdown: Regex::new(&re_showdown).unwrap(),
             re_summary: Regex::new(&re_summary).unwrap(),
             re_summary_seat: Regex::new(RE_SUMMARY_SEAT).unwrap(),
-            sloppy_rake_check,
+            re_all_in_insurance: Regex::new(&re_all_in_insurance).unwrap(),
+            sloppy_winnings_check,
         }
     }
 
@@ -165,7 +174,12 @@ impl GGHandHistoryParser {
 
     fn parse_str_single_inner(&self, entry: &str) -> Result<Game> {
         let seats = self.parse_summary_seats(entry)?;
-        let mut lines = entry.lines().peekable();
+
+        // Currently the all-in insurance info is ignored.
+        let mut lines = entry
+            .lines()
+            .filter(|line| !self.re_all_in_insurance.is_match(line))
+            .peekable();
 
         let (hand_name, small_blind, big_blind, date) = self.parse_description(&mut lines)?;
         let (table_name, button_seat) = self.parse_table_info(&mut lines)?;
@@ -824,7 +838,7 @@ impl GGHandHistoryParser {
             return Err("summary: total winnings are larger than total pot".into());
         }
 
-        if self.sloppy_rake_check && total_winnings < pot_without_total_rake {
+        if self.sloppy_winnings_check && total_winnings < pot_without_total_rake {
             total_rake = total.checked_sub(total_winnings).unwrap();
         }
 
