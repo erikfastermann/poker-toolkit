@@ -115,8 +115,12 @@ impl GGHandHistoryParser {
         }
 
         if last_empty_index != index {
-            games.push(Err("parser: does not end with empty line".into()));
+            let entry = entries[last_empty_index..].trim();
+            if entry.len() != 0 {
+                games.push(self.parse_str_single(entry));
+            }
         }
+
         games
     }
 
@@ -140,10 +144,14 @@ impl GGHandHistoryParser {
         }
 
         if last_empty_index != index {
-            Err("parser: does not end with empty line".into())
-        } else {
-            Ok(games)
+            let entry = entries[last_empty_index..].trim();
+            if entry.len() != 0 {
+                let game = self.parse_str_single(entry)?;
+                games.push(game);
+            }
         }
+
+        Ok(games)
     }
 
     fn parse_str_single(&self, entry: &str) -> Result<Game> {
