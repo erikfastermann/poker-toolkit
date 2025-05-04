@@ -32,10 +32,12 @@ pub struct GGHandHistoryParser {
     re_showdown: Regex,
     re_summary: Regex,
     re_summary_seat: Regex,
+
+    sloppy_rake_check: bool,
 }
 
 impl GGHandHistoryParser {
-    pub fn new() -> Self {
+    pub fn new(sloppy_rake_check: bool) -> Self {
         const REGEX_PRICE: &'static str = r"\$(\d+(?:\.\d{1, 2})?)";
         const REGEX_CARD: &'static str = r"([2-9TJQKA][dshc])";
         // Greedily match all characters. Should work,
@@ -88,6 +90,7 @@ impl GGHandHistoryParser {
             re_showdown: Regex::new(&re_showdown).unwrap(),
             re_summary: Regex::new(&re_summary).unwrap(),
             re_summary_seat: Regex::new(RE_SUMMARY_SEAT).unwrap(),
+            sloppy_rake_check,
         }
     }
 
@@ -796,9 +799,26 @@ impl GGHandHistoryParser {
         if game.total_pot() != total {
             return Err("summary: bad total pot".into());
         }
-        let Some(total_rake) = rake.checked_add(jackpot) else {
+        let Some(mut total_rake) = rake.checked_add(jackpot) else {
             return Err("summary: overflow calculating total rake".into());
         };
+        let Some(pot_without_total_rake) = total.checked_sub(total_rake) else {
+            return Err("summary: total rake is larger than the total pot".into());
+        };
+
+        let total_winnings = winnings
+            .iter()
+            .fold(Some(0u32), |acc, n| acc.and_then(|acc| acc.checked_add(*n)));
+        let Some(total_winnings) = total_winnings else {
+            return Err("summary: overflow calculating total winnings".into());
+        };
+        if total_winnings > total {
+            return Err("summary: total winnings are larger than total pot".into());
+        }
+
+        if self.sloppy_rake_check && total_winnings < pot_without_total_rake {
+            total_rake = total.checked_sub(total_winnings).unwrap();
+        }
 
         let player_pot_share = winnings
             .iter()
@@ -806,6 +826,7 @@ impl GGHandHistoryParser {
             .enumerate()
             .filter(|(_, winning)| *winning != 0);
         game.showdown_custom(total_rake, player_pot_share)?;
+
         // The rest of the summary is currently ignored.
         // Could be used for more correctness checks.
         Ok(())
@@ -853,7 +874,7 @@ mod tests {
             .join("test_data")
             .join("gg_hands_example.txt");
         let history = fs::read_to_string(path).unwrap();
-        let games = GGHandHistoryParser::new().parse_str(&history).unwrap();
+        let games = GGHandHistoryParser::new(false).parse_str(&history).unwrap();
         for game in games {
             game.internal_asserts_full();
         }

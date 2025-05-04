@@ -152,7 +152,7 @@ fn parse_gg(args: &[String]) -> Result<()> {
 
     let read_parse_time = Instant::now();
     let content = read_to_string(path)?;
-    let games = GGHandHistoryParser::new().parse_str_full(&content);
+    let games = GGHandHistoryParser::new(true).parse_str_full(&content);
     eprintln!(
         "--- took {:?} to read and parse the hand history file ---",
         read_parse_time.elapsed(),
