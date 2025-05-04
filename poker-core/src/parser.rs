@@ -276,6 +276,7 @@ impl GGHandHistoryParser {
         self.validate_post(lines, Some(big_blind_name), "big", game.big_blind())?;
         game.post_small_and_big_blind()?;
 
+        let mut additional_posters = Bitset::<2>::EMPTY;
         while lines
             .peek()
             .is_some_and(|line| self.re_post_blind.is_match(line))
@@ -284,8 +285,21 @@ impl GGHandHistoryParser {
             let Some(player) = game.player_by_name(name) else {
                 return Err(format!("post: invalid player name '{name}'").into());
             };
-            game.additional_post(player)?;
+
+            if additional_posters.has(player) {
+                return Err(format!("post: additional post for '{name}' already made").into());
+            }
+            additional_posters.set(player);
         }
+
+        let players =
+            (game.small_blind_index()..game.player_count()).chain(0..game.small_blind_index());
+        for player in players {
+            if additional_posters.has(player) {
+                game.additional_post(player)?;
+            }
+        }
+
         Ok(())
     }
 
