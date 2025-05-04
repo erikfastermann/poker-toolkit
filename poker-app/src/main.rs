@@ -1,6 +1,6 @@
 use std::cmp::Ordering;
 use std::fs::read_to_string;
-use std::io;
+use std::io::{self, BufWriter};
 use std::time::Instant;
 
 use eframe::egui::{CentralPanel, Context, Rect, Style, UiBuilder, Vec2, ViewportBuilder, Visuals};
@@ -179,7 +179,8 @@ fn parse_gg(args: &[String]) -> Result<()> {
     );
 
     let write_json_time = Instant::now();
-    serde_json::to_writer_pretty(io::stdout().lock(), &game_data)?;
+    serde_json::to_writer_pretty(BufWriter::new(io::stdout().lock()), &game_data)?;
+    println!();
     eprintln!(
         "--- took {:?} to write the json output ---",
         write_json_time.elapsed(),
