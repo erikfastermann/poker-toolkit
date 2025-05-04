@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use eframe::egui::{self, Align, ComboBox, Context, DragValue, Layout, Ui, Window};
 use egui_extras::{Column, TableBody, TableBuilder, TableRow};
 
@@ -221,7 +223,8 @@ impl GameBuilder {
 
         let mut name = player
             .name
-            .clone()
+            .as_ref()
+            .map(|s| Arc::unwrap_or_clone(s.clone()))
             .unwrap_or_else(|| position_name.to_string());
 
         ui.text_edit_singleline(&mut name);
@@ -229,7 +232,7 @@ impl GameBuilder {
         if name.is_empty() || name == position_name {
             player.name = None;
         } else {
-            player.name = Some(name);
+            player.name = Some(Arc::new(name));
         }
     }
 

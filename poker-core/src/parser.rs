@@ -15,6 +15,8 @@ fn option_to_result<T>(v: Option<T>, message: &str) -> Result<T> {
     v.ok_or_else(|| message.into())
 }
 
+// TODO: Deduplicate String's.
+
 pub struct GGHandHistoryParser {
     re_description: Regex,
     re_table_info: Regex,
@@ -293,7 +295,7 @@ impl GGHandHistoryParser {
             }
 
             players.push(Player {
-                name: Some(name.to_owned()),
+                name: Some(Arc::new(name.to_owned())),
                 seat: Some(seat),
                 hand: None,
                 starting_stack: Self::parse_price_as_cent(stack)?,
@@ -468,10 +470,7 @@ impl GGHandHistoryParser {
             return Err("action: invalid format".into());
         };
         let name = &action[1];
-        let player_index = game
-            .player_names()
-            .iter()
-            .position(|current_name| current_name == name);
+        let player_index = game.player_by_name(name);
         if player_index.is_none() || player_index != game.current_player() {
             return Err(format!(
                 "action: player {name} is not expected index {:?}",
@@ -628,10 +627,7 @@ impl GGHandHistoryParser {
         };
         let [amount, name] = uncalled.extract().1;
         let amount = Self::parse_price_as_cent(amount)?;
-        let player = game
-            .player_names()
-            .iter()
-            .position(|current_name| current_name == name);
+        let player = game.player_by_name(name);
         let Some(player) = player else {
             return Err(format!("uncalled bet: unknown name {name}").into());
         };
@@ -673,10 +669,7 @@ impl GGHandHistoryParser {
             };
             let [name, card_a, card_b] = shows.extract().1;
 
-            let player = game
-                .player_names()
-                .iter()
-                .position(|current_name| current_name == name);
+            let player = game.player_by_name(name);
             let Some(player) = player else {
                 return Err(format!("shows: unknown name {name}").into());
             };
@@ -764,10 +757,7 @@ impl GGHandHistoryParser {
             };
             let [name, amount_won] = showdown.extract().1;
 
-            let player = game
-                .player_names()
-                .iter()
-                .position(|current_name| current_name == name);
+            let player = game.player_by_name(name);
             let Some(player) = player else {
                 return Err(format!("showdown: unknown player name {name}").into());
             };
