@@ -394,7 +394,7 @@
                 "raise": {
                     "player": 4,
                     "old_stack": 23,
-                    "amount": 23,
+                    "amount": 3,
                     "to": 23
                 }
             },
@@ -402,8 +402,8 @@
                 "raise": {
                     "player": 5,
                     "old_stack": 2000,
-                    "amount": 23,
-                    "to": 46
+                    "amount": 20,
+                    "to": 43
                 }
             },
             {
@@ -418,7 +418,7 @@
             {
                 "uncalled_bet": {
                     "player": 5,
-                    "amount": 23
+                    "amount": 20
                 }
             },
             {
@@ -480,7 +480,7 @@
                 "check": false,
                 "call": 20,
                 "raise": [
-                    23,
+                    3,
                     23
                 ]
             },
@@ -491,8 +491,8 @@
                 "check": false,
                 "call": 23,
                 "raise": [
-                    23,
-                    46
+                    20,
+                    43
                 ]
             },
             {
@@ -500,10 +500,10 @@
                     "player": 0
                 },
                 "check": false,
-                "call": 46,
+                "call": 43,
                 "raise": [
-                    23,
-                    69
+                    20,
+                    63
                 ]
             },
             {
@@ -511,10 +511,10 @@
                     "player": 1
                 },
                 "check": false,
-                "call": 36,
+                "call": 33,
                 "raise": [
-                    23,
-                    69
+                    20,
+                    63
                 ]
             },
             {
@@ -522,17 +522,17 @@
                     "player": 2
                 },
                 "check": false,
-                "call": 26,
+                "call": 23,
                 "raise": [
-                    23,
-                    69
+                    20,
+                    63
                 ]
             },
             {
                 "state": {
                     "uncalled_bet": {
                         "player": 5,
-                        "amount": 23
+                        "amount": 20
                     }
                 },
                 "check": false
@@ -673,7 +673,7 @@
                 "raise": {
                     "player": 4,
                     "old_stack": 23,
-                    "amount": 23,
+                    "amount": 14,
                     "to": 23
                 }
             },
@@ -681,14 +681,14 @@
                 "raise": {
                     "player": 2,
                     "old_stack": 1980,
-                    "amount": 23,
-                    "to": 46
+                    "amount": 20,
+                    "to": 43
                 }
             },
             {
                 "uncalled_bet": {
                     "player": 2,
-                    "amount": 23
+                    "amount": 20
                 }
             },
             {
@@ -736,7 +736,7 @@
                 "check": false,
                 "call": 20,
                 "raise": [
-                    29,
+                    9,
                     29
                 ]
             },
@@ -821,7 +821,7 @@
                 "check": false,
                 "call": 9,
                 "raise": [
-                    23,
+                    14,
                     23
                 ]
             },
@@ -832,15 +832,15 @@
                 "check": false,
                 "call": 23,
                 "raise": [
-                    23,
-                    46
+                    20,
+                    43
                 ]
             },
             {
                 "state": {
                     "uncalled_bet": {
                         "player": 2,
-                        "amount": 23
+                        "amount": 20
                     }
                 },
                 "check": false
@@ -1853,7 +1853,7 @@
                 "raise": {
                     "player": 2,
                     "old_stack": 1000,
-                    "amount": 1000,
+                    "amount": 10,
                     "to": 1010
                 }
             },
@@ -1963,7 +1963,7 @@
                 "check": false,
                 "call": 990,
                 "raise": [
-                    1000,
+                    10,
                     1010
                 ]
             },

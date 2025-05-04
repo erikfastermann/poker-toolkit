@@ -465,7 +465,18 @@ impl GGHandHistoryParser {
                 return Err("action: invalid bet all-in".into());
             }
         } else if action.get(RAISE_INDEX).is_some() {
+            let raise_amount = Self::parse_price_as_cent(&action[RAISE_INDEX + 1])?;
             let raise_to = Self::parse_price_as_cent(&action[RAISE_INDEX + 2])?;
+            let Some((expected_raise_amount, _)) = game.can_raise() else {
+                return Err("action: player not allowed to raise".into());
+            };
+            if raise_amount > raise_to {
+                return Err("action: raise amount > to".into());
+            }
+            if raise_amount < expected_raise_amount {
+                return Err("action: raise amount too small".into());
+            }
+
             game.raise(raise_to)?;
             if action.get(RAISE_ALL_IN_INDEX).is_some() && game.current_stacks()[player_index] != 0
             {

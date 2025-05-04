@@ -439,7 +439,14 @@ impl Game {
         }
 
         if &game.actions != &data.actions {
-            return Err("from game data: actions don't match".into());
+            let bad_actions = game
+                .actions
+                .iter()
+                .zip(&data.actions)
+                .filter(|(a, b)| a != b)
+                .map(|(a, b)| format!("game: {a:?}\ndata: {b:?}\n"))
+                .collect::<String>();
+            return Err(format!("from game data: actions don't match\n\n{bad_actions}").into());
         }
 
         if let Some(showdown_stacks) = &data.showdown_stacks {
@@ -763,7 +770,8 @@ impl Game {
         if call_amount >= current_stack {
             None
         } else if to > old_stack {
-            Some((current_stack, old_stack))
+            let amount = old_stack.checked_sub(last_to).unwrap();
+            Some((amount, old_stack))
         } else {
             Some((last_amount, to))
         }
