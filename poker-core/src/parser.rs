@@ -537,10 +537,9 @@ impl GGHandHistoryParser {
         let cards = board.cards();
         match board.street() {
             Street::PreFlop => unreachable!(),
-            Street::Flop if cards.len() == 3 => game.flop([cards[0], cards[1], cards[2]])?,
-            Street::Turn if cards.len() == 4 => game.turn(cards[3])?,
-            Street::River if cards.len() == 5 => game.river(cards[4])?,
-            _ => return Err("street: bad number of cards".into()),
+            Street::Flop => game.flop([cards[0], cards[1], cards[2]])?,
+            Street::Turn => game.turn(cards[3])?,
+            Street::River => game.river(cards[4])?,
         }
 
         Ok(())

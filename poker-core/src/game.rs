@@ -1183,8 +1183,7 @@ impl Game {
                 if usize::from(self.current_board) >= Self::MAX_RUNOUTS - 1 {
                     None
                 } else {
-                    self.all_in_street()
-                        .and_then(|street| street.next())
+                    self.multiple_runouts_starting_street()
                         .map(|street| (street, true))
                 }
             }
@@ -1192,24 +1191,29 @@ impl Game {
         }
     }
 
-    fn all_in_street(&self) -> Option<Street> {
+    fn multiple_runouts_starting_street(&self) -> Option<Street> {
         assert_eq!(self.state(), State::Showdown);
         if !self.all_in_terminated_hand() {
             return None;
         }
 
-        let street = Street::STREETS[1..]
-            .iter()
-            .copied()
-            .rev()
-            .filter(|street| {
-                let current_stacks = &self.stacks_in_street[street.to_usize()];
-                let previous_stacks = &self.stacks_in_street[street.previous().unwrap().to_usize()];
-                current_stacks != previous_stacks
-            })
-            .next()
-            .unwrap_or(Street::PreFlop);
-        Some(street)
+        for (index, action) in self.actions.iter().copied().enumerate() {
+            let Some(street) = action.street() else {
+                continue;
+            };
+
+            let next_action = self.actions.get(index.checked_add(1).unwrap()).copied();
+            match next_action {
+                Some(next_action) if next_action.is_street() => return Some(street),
+                None => {
+                    assert_eq!(street, Street::River);
+                    return Some(street);
+                }
+                _ => (),
+            }
+        }
+
+        None
     }
 
     fn prepare_new_street(&mut self, expected_street: Option<Street>) -> Result<Street> {

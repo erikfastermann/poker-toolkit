@@ -2674,13 +2674,11 @@
             {
                 "name": "BTN",
                 "seat": 0,
-                "hand": "9d4d",
                 "starting_stack": 1000
             },
             {
                 "name": "SB",
                 "seat": 1,
-                "hand": "Qh7d",
                 "starting_stack": 1000
             },
             {
@@ -2698,13 +2696,11 @@
             {
                 "name": "HJ",
                 "seat": 4,
-                "hand": "KdJs",
                 "starting_stack": 1000
             },
             {
                 "name": "CO",
                 "seat": 5,
-                "hand": "Ts8h",
                 "starting_stack": 1000
             }
         ],
@@ -2749,7 +2745,7 @@
                 "flop": [
                     "Tc",
                     "Qd",
-                    "8d"
+                    "8h"
                 ]
             },
             {
@@ -2783,13 +2779,19 @@
                 "turn": "Kh"
             },
             {
-                "river": "As"
+                "river": "Ah"
             },
             {
                 "turn": "Kc"
             },
             {
                 "river": "Ac"
+            },
+            {
+                "turn": "Ks"
+            },
+            {
+                "river": "As"
             }
         ],
         "showdown_stacks": [
@@ -2913,6 +2915,16 @@
                 "state": {
                     "street": "turn"
                 },
+                "check": false
+            },
+            {
+                "state": {
+                    "street": "river"
+                },
+                "check": false
+            },
+            {
+                "state": "showdown",
                 "check": false
             },
             {
