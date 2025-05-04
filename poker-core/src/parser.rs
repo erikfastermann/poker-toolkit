@@ -1,5 +1,6 @@
-use std::{iter::Peekable, str::FromStr};
+use std::{iter::Peekable, str::FromStr, sync::Arc};
 
+use chrono::NaiveDateTime;
 use regex::Regex;
 
 use crate::{
@@ -41,7 +42,7 @@ impl GGHandHistoryParser {
         // because the other regexes are specific enough.
         const REGEX_NAME: &'static str = r"(.+)";
 
-        let re_description = r"^Poker Hand #[^:]+: Hold'em No Limit *".to_string()
+        let re_description = r"^Poker Hand (#[^:]+): Hold'em No Limit *".to_owned()
             + &format!(r"\({REGEX_PRICE}/{REGEX_PRICE}\) - ")
             + r"(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})$";
         const RE_TABLE_INFO: &'static str =
@@ -155,8 +156,8 @@ impl GGHandHistoryParser {
         let seats = self.parse_summary_seats(entry)?;
         let mut lines = entry.lines().peekable();
 
-        let (small_blind, big_blind) = self.parse_description(&mut lines)?;
-        let button_seat = self.parse_table_info(&mut lines)?;
+        let (hand_name, small_blind, big_blind, date) = self.parse_description(&mut lines)?;
+        let (table_name, button_seat) = self.parse_table_info(&mut lines)?;
         let players = self.parse_stacks(&mut lines, seats)?;
         let Some(button_index) = players
             .iter()
@@ -166,6 +167,10 @@ impl GGHandHistoryParser {
         };
 
         let mut game = Game::new(&players, button_index, small_blind, big_blind)?;
+        game.set_table_name(table_name);
+        game.set_hand_name(hand_name);
+        game.set_date(date);
+
         self.parse_posts(&mut lines, &mut game)?;
         self.parse_straddles(&mut lines, &mut game)?;
         self.parse_hole_cards(&mut lines, &mut game)?;
@@ -202,32 +207,40 @@ impl GGHandHistoryParser {
     fn parse_description<'a>(
         &self,
         lines: &mut impl Iterator<Item = &'a str>,
-    ) -> Result<(u32, u32)> {
+    ) -> Result<(Arc<String>, u32, u32, NaiveDateTime)> {
         let description = option_to_result(lines.next(), "first line (description) missing")?;
-        let [small_blind, big_blind, _] = option_to_result(
+        let [hand_name, small_blind, big_blind, date] = option_to_result(
             self.re_description.captures(description),
             "description: invalid format",
         )?
         .extract()
         .1;
+
+        let hand_name = Arc::new(hand_name.to_owned());
         let small_blind = Self::parse_price_as_cent(small_blind)?;
         let big_blind = Self::parse_price_as_cent(big_blind)?;
-        Ok((small_blind, big_blind))
+        let date = NaiveDateTime::parse_from_str(date, "%Y/%m/%d %H:%M:%S")?;
+        Ok((hand_name, small_blind, big_blind, date))
     }
 
-    fn parse_table_info<'a>(&self, lines: &mut impl Iterator<Item = &'a str>) -> Result<u8> {
+    fn parse_table_info<'a>(
+        &self,
+        lines: &mut impl Iterator<Item = &'a str>,
+    ) -> Result<(Arc<String>, u8)> {
         let table_info = option_to_result(lines.next(), "second line (table info) missing")?;
-        let [_, button_seat_one_based] = option_to_result(
+        let [table_name, button_seat_one_based] = option_to_result(
             self.re_table_info.captures(table_info),
             "table info: invalid format",
         )?
         .extract()
         .1;
+
+        let table_name = Arc::new(table_name.to_owned());
         let button_seat_one_based = button_seat_one_based.parse::<u8>()?;
         let Some(button_seat) = button_seat_one_based.checked_sub(1) else {
             return Err("table info: invalid button seat".into());
         };
-        Ok(button_seat)
+        Ok((table_name, button_seat))
     }
 
     fn parse_stacks<'a>(
@@ -255,7 +268,7 @@ impl GGHandHistoryParser {
             }
 
             players.push(Player {
-                name: Some(name.to_string()),
+                name: Some(name.to_owned()),
                 seat: Some(seat),
                 hand: None,
                 starting_stack: Self::parse_price_as_cent(stack)?,

@@ -1,7 +1,9 @@
 use std::cmp::min;
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::{array, fmt, usize};
 
+use chrono::NaiveDateTime;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
@@ -203,6 +205,9 @@ pub struct Game {
     actions: Vec<Action>,
     boards: [Board; Self::MAX_RUNOUTS],
     current_board: u8,
+    table_name: Option<Arc<String>>,
+    hand_name: Option<Arc<String>>,
+    date: Option<NaiveDateTime>,
     names: Vec<String>,
     seats: Vec<u8>,
     starting_stacks: Vec<u32>,
@@ -390,6 +395,9 @@ impl Game {
 
         let game = Self {
             actions: Vec::new(),
+            table_name: None,
+            hand_name: None,
+            date: None,
             names,
             seats,
             starting_stacks: stacks.clone(),
@@ -420,6 +428,16 @@ impl Game {
             data.small_blind,
             data.big_blind,
         )?;
+
+        if let Some(table_name) = data.table_name.clone() {
+            game.set_table_name(table_name);
+        }
+        if let Some(hand_name) = data.hand_name.clone() {
+            game.set_hand_name(hand_name);
+        }
+        if let Some(date) = data.date {
+            game.set_date(date);
+        }
 
         if !data.actions.is_empty() {
             game.post_small_and_big_blind()?;
@@ -477,6 +495,9 @@ impl Game {
             .collect();
 
         GameData {
+            table_name: self.get_table_name(),
+            hand_name: self.get_hand_name(),
+            date: self.get_date(),
             players,
             button_index: self.button_index,
             small_blind: self.small_blind,
@@ -527,6 +548,42 @@ impl Game {
         self.hand_shown = Bitset::EMPTY;
         self.at_end = false;
         self.in_next = false;
+    }
+
+    pub fn get_table_name(&self) -> Option<Arc<String>> {
+        self.table_name.clone()
+    }
+
+    pub fn set_table_name(&mut self, table_name: Arc<String>) {
+        self.table_name = Some(table_name);
+    }
+
+    pub fn clear_table_name(&mut self) {
+        self.table_name = None;
+    }
+
+    pub fn get_hand_name(&self) -> Option<Arc<String>> {
+        self.hand_name.clone()
+    }
+
+    pub fn set_hand_name(&mut self, hand_name: Arc<String>) {
+        self.hand_name = Some(hand_name);
+    }
+
+    pub fn clear_hand_name(&mut self) {
+        self.hand_name = None;
+    }
+
+    pub fn get_date(&self) -> Option<NaiveDateTime> {
+        self.date.clone()
+    }
+
+    pub fn set_date(&mut self, date: NaiveDateTime) {
+        self.date = Some(date);
+    }
+
+    pub fn clear_date(&mut self) {
+        self.date = None;
     }
 
     pub fn player_names(&self) -> &[String] {
@@ -1978,6 +2035,9 @@ impl Player {
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GameData {
+    pub table_name: Option<Arc<String>>,
+    pub hand_name: Option<Arc<String>>,
+    pub date: Option<NaiveDateTime>,
     pub players: Vec<Player>,
     pub button_index: u8,
     pub small_blind: u32,
@@ -1989,6 +2049,9 @@ pub struct GameData {
 impl Default for GameData {
     fn default() -> Self {
         Self {
+            table_name: None,
+            hand_name: None,
+            date: None,
             players: vec![Player::with_starting_stack(1_000); 6],
             button_index: 0,
             small_blind: 5,

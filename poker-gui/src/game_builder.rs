@@ -343,6 +343,9 @@ impl GameBuilder {
                         .map(|player| player.player.clone())
                         .collect();
                     let game_data = GameData {
+                        table_name: None,
+                        hand_name: None,
+                        date: None,
                         players,
                         button_index: self.button_index,
                         small_blind: self.small_blind,
