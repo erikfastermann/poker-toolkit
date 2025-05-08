@@ -1693,11 +1693,7 @@ impl Game {
         let mut investments_array = [0u32; Self::MAX_PLAYERS];
         let investments = &mut investments_array[..self.player_count()];
         for player in 0..self.player_count() {
-            investments[player] = if !self.folded(player) && !self.hand_mucked(player) {
-                self.invested(player)
-            } else {
-                0
-            };
+            investments[player] = self.invested(player);
         }
         let pots = self.showdown_pots(investments);
 
@@ -1722,6 +1718,10 @@ impl Game {
             }
 
             for (pot_per_investment, eligible_players) in pots {
+                if pot_per_investment == 0 {
+                    break;
+                }
+
                 let winners = self.showdown_winners(eligible_players, scores);
                 let pot_per_runout = pot_per_investment / runout_count;
                 let pot = if index == 0 {
@@ -1752,6 +1752,8 @@ impl Game {
         let mut out = [(0, Bitset::EMPTY); Self::MAX_PLAYERS];
         for index in 0..Self::MAX_PLAYERS {
             let eligible_players = (0..self.player_count())
+                .filter(|player| !self.folded(*player))
+                .filter(|player| !self.hand_mucked(*player))
                 .filter(|player| investments[*player] > 0)
                 .fold(Bitset::<2>::EMPTY, |s, p| s.with(p));
 
@@ -1763,12 +1765,14 @@ impl Game {
                 return out;
             };
 
+            let mut pot = 0;
             for investment in investments.iter_mut() {
+                pot += min_investment - min_investment.saturating_sub(*investment);
                 *investment = investment.saturating_sub(min_investment);
             }
 
             // Add the dead money to the main pot.
-            let pot = min_investment * eligible_players.count() + dead_money;
+            pot += dead_money;
             dead_money = 0;
 
             out[index] = (pot, eligible_players);
@@ -2012,6 +2016,25 @@ impl Game {
             .next()
             .unwrap_or(0);
         self.current_player = u8::MAX;
+    }
+
+    pub fn undo(&mut self) -> Result<()> {
+        self.check_pre_update()?;
+        if !self.can_previous() {
+            return Err("undo: cannot go to previous action".into());
+        }
+
+        match self.state() {
+            State::Post => unreachable!(),
+            State::End => {
+                self.showdown_stacks.iter_mut().for_each(|stack| *stack = 0);
+            }
+            _ => (),
+        }
+
+        assert!(self.previous());
+        self.actions.truncate(self.current_action_index);
+        Ok(())
     }
 
     pub fn can_next(&self) -> bool {
@@ -2337,6 +2360,7 @@ mod tests {
 
         for game_entry in validation_data {
             let mut game = Game::from_game_data(&game_entry.game).unwrap();
+            let start_game = game.clone();
             game.internal_asserts_full();
 
             game.rewind();
@@ -2349,6 +2373,11 @@ mod tests {
                 game.next();
             }
             assert!(!game.next());
+
+            game.undo().unwrap();
+            game.showdown_simple().unwrap();
+            assert_eq!(game.showdown_stacks, start_game.showdown_stacks);
+            assert_eq!(game, start_game);
         }
     }
 }

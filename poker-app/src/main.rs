@@ -188,7 +188,7 @@ fn parse_gg(args: &[String]) -> Result<()> {
 
     if error_count > 0 {
         let message =
-            format!("parse-gg: {error_count} errors occurred while parsing the hand history");
+            format!("parse-gg: {error_count} error(s) occurred while parsing the hand history");
         Err(message.into())
     } else {
         Ok(())
