@@ -68,7 +68,7 @@ impl GGHandHistoryParser {
             r"^\*\*\* .*RIVER \*\*\* \[{REGEX_CARD} {REGEX_CARD} {REGEX_CARD} {REGEX_CARD}\] \[{REGEX_CARD}\]$"
         );
         let re_uncalled_bet = format!(r"^Uncalled bet \({REGEX_PRICE}\) returned to {REGEX_NAME}$");
-        let re_shows = format!(r"^{REGEX_NAME}: shows \[{REGEX_CARD} {REGEX_CARD}\].*$");
+        let re_shows = format!(r"^{REGEX_NAME}: shows \[({REGEX_CARD} {REGEX_CARD})?\].*$");
         let re_showdown_title = format!(r"^\*\*\* .*SHOWDOWN \*\*\*$");
         let re_showdown = format!(r"^{REGEX_NAME} collected {REGEX_PRICE} from pot$");
         let re_summary = format!(r"^Total pot {REGEX_PRICE} \| Rake {REGEX_PRICE}")
@@ -289,7 +289,9 @@ impl GGHandHistoryParser {
                 .unwrap()
                 .checked_sub(1)
                 .unwrap();
+            let starting_stack = Self::parse_price_as_cent(stack)?;
 
+            // TODO: Option to add player even if not listed in showdown?
             if !seats.has(usize::from(seat)) {
                 continue;
             }
@@ -298,7 +300,7 @@ impl GGHandHistoryParser {
                 name: Some(Arc::new(name.to_owned())),
                 seat: Some(seat),
                 hand: None,
-                starting_stack: Self::parse_price_as_cent(stack)?,
+                starting_stack,
             });
         }
 
@@ -644,8 +646,8 @@ impl GGHandHistoryParser {
         lines: &mut Peekable<impl Iterator<Item = &'a str>>,
         game: &mut Game,
     ) -> Result<()> {
-        let players_in_hand = game.players_in_hand().count();
-        if players_in_hand == 1 {
+        let players_not_folded = game.players_not_folded().count();
+        if players_not_folded == 1 {
             return Ok(());
         }
 
@@ -662,17 +664,29 @@ impl GGHandHistoryParser {
         }
 
         let mut show_players = Bitset::<2>::EMPTY;
-        for _ in 0..players_in_hand {
+        for _ in 0..players_not_folded {
             let shows = option_to_result(lines.next(), "shows line is missing")?;
             let Some(shows) = self.re_shows.captures(shows) else {
                 return Err("shows: invalid format".into());
             };
-            let [name, card_a, card_b] = shows.extract().1;
 
+            const NAME_INDEX: usize = 1;
+            const HAND_INDEX: usize = 2;
+            const CARD_A_INDEX: usize = 3;
+            const CARD_B_INDEX: usize = 4;
+
+            if shows.get(HAND_INDEX).is_none() {
+                continue;
+            }
+
+            let name = shows.get(NAME_INDEX).unwrap().as_str();
             let player = game.player_by_name(name);
             let Some(player) = player else {
                 return Err(format!("shows: unknown name {name}").into());
             };
+
+            let card_a = shows.get(CARD_A_INDEX).unwrap().as_str();
+            let card_b = shows.get(CARD_B_INDEX).unwrap().as_str();
 
             let Some(hand) = Hand::of_two_cards(Card::from_str(card_a)?, Card::from_str(card_b)?)
             else {
@@ -682,20 +696,18 @@ impl GGHandHistoryParser {
             if show_players.has(player) {
                 return Err("shows: duplicate player show".into());
             }
+
             show_players.set(player);
             game.set_hand(player, hand)?;
         }
 
         while let State::ShowOrMuck(player) = game.state() {
-            if !show_players.has(player) {
-                return Err("shows: show not allowed for player".into());
+            if show_players.has(player) {
+                game.show_hand()?;
+                show_players.remove(player);
+            } else {
+                game.muck_hand()?;
             }
-            game.show_hand()?;
-            show_players.remove(player);
-        }
-
-        if !show_players.is_empty() {
-            return Err("shows: additional show(s) for player(s)".into());
         }
 
         for board in extra_streets {

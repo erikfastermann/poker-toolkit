@@ -21,6 +21,7 @@ use crate::result::Result;
 // - Poison game on error or ensure every error is recoverable
 // - Type alias or wrapper for player and amount, use u8 for player everywhere
 // - Nicer handling of state method with multiple runouts
+// - Check shows / mucks at showdown
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -60,6 +61,7 @@ pub enum Action {
         player: u8,
         hand: Hand,
     },
+    MucksOrUnknown(u8),
 }
 
 impl Action {
@@ -219,12 +221,13 @@ pub struct Game {
     current_action_index: usize,
     /// Set to u8::MAX if no current player is set.
     current_player: u8,
-    players_in_hand: Bitset<2>,
+    not_folded: Bitset<2>,
     small_blind: u32,
     big_blind: u32,
     /// Using Hand::UNDEFINED if a hand is not known.
     hands: [Hand; Self::MAX_PLAYERS],
     hand_shown: Bitset<2>,
+    hand_mucked: Bitset<2>,
     at_end: bool,
     in_next: bool,
 }
@@ -438,11 +441,12 @@ impl Game {
             current_street_index: 0,
             current_action_index: 0,
             current_player: u8::MAX,
-            players_in_hand: Bitset::ones(player_count),
+            not_folded: Bitset::ones(player_count),
             small_blind,
             big_blind,
             hands,
             hand_shown: Bitset::EMPTY,
+            hand_mucked: Bitset::EMPTY,
             at_end: false,
             in_next: false,
         };
@@ -603,8 +607,9 @@ impl Game {
         self.current_street_index = 0;
         self.current_action_index = 0;
         self.current_player = u8::MAX;
-        self.players_in_hand = Bitset::ones(self.player_count());
+        self.not_folded = Bitset::ones(self.player_count());
         self.hand_shown = Bitset::EMPTY;
+        self.hand_mucked = Bitset::EMPTY;
         self.at_end = false;
         self.in_next = false;
     }
@@ -738,18 +743,18 @@ impl Game {
         self.previous_street_stacks()[player] - self.current_street_stacks()[player]
     }
 
-    pub fn has_cards(&self, index: usize) -> bool {
+    pub fn folded(&self, index: usize) -> bool {
         assert!(index < self.player_count());
-        self.players_in_hand.has(index)
+        !self.not_folded.has(index)
     }
 
-    pub fn players_in_hand(&self) -> impl Iterator<Item = usize> + '_ {
-        self.players_in_hand.iter(self.player_count())
+    pub fn players_not_folded(&self) -> impl Iterator<Item = usize> + '_ {
+        self.not_folded.iter(self.player_count())
     }
 
     fn in_hand_not_all_in(&self, index: usize) -> bool {
         assert!(index < self.player_count());
-        self.players_in_hand.has(index) && !self.is_all_in(index)
+        self.not_folded.has(index) && !self.is_all_in(index)
     }
 
     pub fn actions_in_street(&self) -> &[Action] {
@@ -904,19 +909,19 @@ impl Game {
     }
 
     fn all_in_count(&self) -> usize {
-        self.players_in_hand()
+        self.players_not_folded()
             .filter(|player| self.is_all_in(*player))
             .count()
     }
 
     fn action_ended(&self) -> bool {
-        self.players_in_hand.count() == 1
+        self.not_folded.count() == 1
             || (self.current_player().is_none() && self.board().street() == Street::River)
             || (self.current_player().is_none() && self.all_in_terminated_hand())
     }
 
     fn all_in_terminated_hand(&self) -> bool {
-        self.players_in_hand.count() - 1 <= u32::try_from(self.all_in_count()).unwrap()
+        self.not_folded.count() - 1 <= u32::try_from(self.all_in_count()).unwrap()
     }
 
     pub fn current_stack(&self) -> Option<u32> {
@@ -962,9 +967,10 @@ impl Game {
     }
 
     fn next_show_or_muck(&self) -> Option<usize> {
+        let hands_shown_or_mucked = self.hand_shown.count() + self.hand_mucked.count();
         let not_allowed = !self.action_ended()
-            || self.players_in_hand.count() == 1
-            || self.hand_shown.count() == self.players_in_hand.count();
+            || self.not_folded.count() == 1
+            || hands_shown_or_mucked == self.not_folded.count();
         if not_allowed {
             return None;
         }
@@ -978,8 +984,9 @@ impl Game {
             .unwrap_or_else(|| self.first_to_act_post_flop());
         (start_index..self.player_count())
             .chain(0..start_index)
-            .filter(|player| self.has_cards(*player))
+            .filter(|player| !self.folded(*player))
             .filter(|player| !self.hand_shown.has(*player))
+            .filter(|player| !self.hand_mucked.has(*player))
             .next()
     }
 
@@ -1031,8 +1038,8 @@ impl Game {
         assert!(self.current_player().is_some());
         let actions = self.actions_in_street();
 
-        let players_in_hand_not_all_in = self
-            .players_in_hand()
+        let not_folded_not_all_in = self
+            .players_not_folded()
             .filter(|player| !self.is_all_in(*player))
             .fold(Bitset::<2>::EMPTY, |set, player| set.with(player));
 
@@ -1043,13 +1050,13 @@ impl Game {
             .fold(Bitset::<2>::EMPTY, |set, player| set.with(player));
 
         let invested = self.invested_per_player().max().unwrap();
-        let all_equal_investments = players_in_hand_not_all_in
+        let all_equal_investments = not_folded_not_all_in
             .iter(self.player_count())
             .map(|player| self.invested(player))
             .all(|n| n == invested);
 
-        let can_skip = (players_in_hand_not_all_in.count() == 1
-            || players_in_hand_not_all_in & players_with_action == players_in_hand_not_all_in)
+        let can_skip = (not_folded_not_all_in.count() == 1
+            || not_folded_not_all_in & players_with_action == not_folded_not_all_in)
             && all_equal_investments;
         if can_skip {
             self.current_player = u8::MAX;
@@ -1074,7 +1081,7 @@ impl Game {
         }
     }
 
-    fn players_in_hand_not_all_in(&self) -> usize {
+    fn players_not_folded_not_all_in(&self) -> usize {
         (0..self.player_count())
             .filter(|player| self.in_hand_not_all_in(*player))
             .count()
@@ -1189,8 +1196,8 @@ impl Game {
     pub fn fold(&mut self) -> Result<()> {
         self.check_pre_update()?;
         let player = self.current_player_result()?;
-        assert!(self.players_in_hand.has(player));
-        self.players_in_hand.remove(player);
+        assert!(self.not_folded.has(player));
+        self.not_folded.remove(player);
         self.add_action(Action::Fold(self.current_player));
         self.next_player();
         Ok(())
@@ -1284,8 +1291,8 @@ impl Game {
     fn can_next_street(&self) -> Option<Street> {
         let allowed = self.next_show_or_muck().is_none()
             && self.current_player().is_none()
-            && (!self.actions_in_street().is_empty() || self.players_in_hand_not_all_in() <= 1)
-            && self.players_in_hand.count() > 1
+            && (!self.actions_in_street().is_empty() || self.players_not_folded_not_all_in() <= 1)
+            && self.not_folded.count() > 1
             && self.board().street() != Street::River;
         if allowed {
             Some(self.board().street().next().unwrap())
@@ -1596,9 +1603,9 @@ impl Game {
     }
 
     fn showdown_winners_by_pot(&self) -> Result<Vec<(u32, Vec<u8>)>> {
-        if self.players_in_hand.count() == 1 {
+        if self.not_folded.count() == 1 {
             let winner = self
-                .players_in_hand()
+                .players_not_folded()
                 .map(|player| u8::try_from(player).unwrap())
                 .next()
                 .unwrap();
@@ -1609,7 +1616,7 @@ impl Game {
         let scores = &mut scores_array[..self.player_count()];
         // TODO: Showdown boards.
         let board = Cards::from_slice(self.board().cards()).unwrap();
-        for player in self.players_in_hand() {
+        for player in self.players_not_folded() {
             let Some(hand) = self.get_hand(player) else {
                 return Err(format!("showdown: missing hand for player {player}").into());
             };
@@ -1641,7 +1648,7 @@ impl Game {
                 .iter()
                 .copied()
                 .enumerate()
-                .filter(|(player, investment)| self.players_in_hand.has(*player) && *investment > 0)
+                .filter(|(player, investment)| self.not_folded.has(*player) && *investment > 0)
                 .map(|(_, investment)| investment)
                 .min();
             let Some(min_investment) = min_investment else {
@@ -1659,13 +1666,13 @@ impl Game {
 
     fn showdown_winners(&self, scores: &[Score], investments: &[u32]) -> Vec<u8> {
         let max_score = (0..self.player_count())
-            .filter(|player| self.players_in_hand.has(*player) && investments[*player] > 0)
+            .filter(|player| self.not_folded.has(*player) && investments[*player] > 0)
             .map(|player| scores[usize::from(player)])
             .max()
             .unwrap();
         let mut players: Vec<_> = (0..self.player_count)
             .filter(|player| {
-                self.players_in_hand.has(usize::from(*player))
+                self.not_folded.has(usize::from(*player))
                     && investments[usize::from(*player)] > 0
                     && scores[usize::from(*player)] == max_score
             })
@@ -1713,6 +1720,8 @@ impl Game {
             return Err("show: cannot show hand in current state".into());
         };
         assert!(player < self.player_count());
+        assert!(!self.hand_shown.has(player));
+        assert!(!self.hand_mucked.has(player));
         if self.hands[player] == Hand::UNDEFINED {
             return Err(format!("show: hand for player index {player} not set").into());
         }
@@ -1721,6 +1730,24 @@ impl Game {
             player: u8::try_from(player).unwrap(),
             hand: self.hands[player],
         });
+        Ok(())
+    }
+
+    pub fn hand_mucked(&self, player: usize) -> bool {
+        assert!(player < self.player_count());
+        self.hand_mucked.has(player)
+    }
+
+    pub fn muck_hand(&mut self) -> Result<()> {
+        self.check_pre_update()?;
+        let State::ShowOrMuck(player) = self.state() else {
+            return Err("muck: cannot muck hand in current state".into());
+        };
+        assert!(player < self.player_count());
+        assert!(!self.hand_shown.has(player));
+        assert!(!self.hand_mucked.has(player));
+        self.hand_mucked.set(player);
+        self.add_action(Action::MucksOrUnknown(u8::try_from(player).unwrap()));
         Ok(())
     }
 
@@ -1772,6 +1799,12 @@ impl Game {
                 }
                 self.show_hand()
             }
+            Action::MucksOrUnknown(player) => {
+                if self.state() != State::ShowOrMuck(usize::from(player)) {
+                    return Err("apply action: muck or unknown hand not allowed or invalid".into());
+                }
+                self.muck_hand()
+            }
         }
     }
 
@@ -1810,7 +1843,7 @@ impl Game {
             }
             Action::Fold(player) => {
                 self.current_player = player;
-                self.players_in_hand.set(usize::from(player));
+                self.not_folded.set(usize::from(player));
             }
             Action::Check(player) => self.current_player = player,
             Action::Call { player, amount } | Action::Bet { player, amount } => {
@@ -1830,7 +1863,12 @@ impl Game {
                 self.current_street_stacks_mut()[usize::from(player)] -= amount;
             }
             Action::Shows { player, .. } => {
+                assert!(self.hand_shown.has(usize::from(player)));
                 self.hand_shown.remove(usize::from(player));
+            }
+            Action::MucksOrUnknown(player) => {
+                assert!(self.hand_mucked.has(usize::from(player)));
+                self.hand_mucked.remove(usize::from(player));
             }
         }
         if !matches!(action, Action::Post { .. } | Action::Straddle { .. }) {
@@ -1913,6 +1951,7 @@ impl Game {
             Action::River(river) => self.river(river),
             Action::UncalledBet { .. } => self.uncalled_bet(),
             Action::Shows { .. } => self.show_hand(),
+            Action::MucksOrUnknown(_) => self.muck_hand(),
         };
         self.in_next = false;
         result.unwrap();
@@ -1944,7 +1983,7 @@ impl Game {
     pub(crate) fn internal_asserts_state(&self) {
         if let Some(player) = self.current_player() {
             assert_eq!(self.state(), State::Player(player));
-            assert!(self.has_cards(player));
+            assert!(!self.folded(player));
             assert!(!self.is_all_in(player));
             assert!(self.can_next_street().is_none());
             assert!(self.next_show_or_muck().is_none());
@@ -2075,11 +2114,12 @@ impl Game {
         assert_eq!(expected.current_street_index, self.current_street_index);
         assert_eq!(expected.current_action_index, self.current_action_index);
         assert_eq!(expected.current_player, self.current_player);
-        assert_eq!(expected.players_in_hand, self.players_in_hand);
+        assert_eq!(expected.not_folded, self.not_folded);
         assert_eq!(expected.small_blind, self.small_blind);
         assert_eq!(expected.big_blind, self.big_blind);
         assert_eq!(expected.hands, self.hands);
         assert_eq!(expected.hand_shown, self.hand_shown);
+        assert_eq!(expected.hand_mucked, self.hand_mucked);
 
         assert_eq!(expected.actions_in_street(), self.actions_in_street());
         assert_eq!(expected.state(), self.state());

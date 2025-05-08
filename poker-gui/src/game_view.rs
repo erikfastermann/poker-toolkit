@@ -464,7 +464,7 @@ impl GameView {
             y: 0.0,
         });
 
-        if !self.game.has_cards(player) {
+        if self.game.folded(player) || self.game.hand_mucked(player) {
             return card_a_rect.size();
         }
         match self.visible_hand(player) {
