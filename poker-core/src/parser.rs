@@ -453,7 +453,7 @@ impl GGHandHistoryParser {
                 }
                 State::UncalledBet { .. } => self.parse_uncalled_bet(lines, game)?,
                 State::ShowOrMuck(_) => self.parse_shows(lines, game)?,
-                State::Showdown => {
+                State::ShowdownOrNextRunout => {
                     if !self.parse_and_apply_street_action(lines, game)? {
                         break Ok(());
                     }

@@ -198,7 +198,7 @@ pub enum State {
     Street(Street),
     UncalledBet { player: usize, amount: u32 },
     ShowOrMuck(usize),
-    Showdown,
+    ShowdownOrNextRunout,
     End,
 }
 
@@ -1004,7 +1004,7 @@ impl Game {
         } else if self.at_end {
             State::End
         } else {
-            State::Showdown
+            State::ShowdownOrNextRunout
         }
     }
 
@@ -1304,7 +1304,7 @@ impl Game {
     fn can_next_street_multiple_runouts(&self) -> Option<(Street, bool)> {
         match self.state() {
             State::Street(street) => Some((street, false)),
-            State::Showdown => {
+            State::ShowdownOrNextRunout => {
                 if usize::from(self.current_board) >= Self::MAX_RUNOUTS - 1 {
                     None
                 } else {
@@ -1317,7 +1317,7 @@ impl Game {
     }
 
     fn multiple_runouts_starting_street(&self) -> Option<Street> {
-        assert_eq!(self.state(), State::Showdown);
+        assert_eq!(self.state(), State::ShowdownOrNextRunout);
         if !self.all_in_terminated_hand() {
             return None;
         }
@@ -1513,7 +1513,7 @@ impl Game {
         // TODO: Check winners are correct.
 
         self.check_pre_update()?;
-        if self.state() != State::Showdown {
+        if self.state() != State::ShowdownOrNextRunout {
             return Err("showdown: not in showdown state".into());
         }
 
@@ -1561,7 +1561,7 @@ impl Game {
         }
 
         self.check_pre_update()?;
-        if self.state() != State::Showdown {
+        if self.state() != State::ShowdownOrNextRunout {
             return Err("showdown stacks: not in showdown state".into());
         }
         let player_count = self.player_count();
@@ -1574,7 +1574,7 @@ impl Game {
         // TODO: Custom rake.
 
         self.check_pre_update()?;
-        if self.state() != State::Showdown {
+        if self.state() != State::ShowdownOrNextRunout {
             return Err("showdown: not in showdown state".into());
         }
 
@@ -1915,9 +1915,9 @@ impl Game {
             .any(|stack| stack != 0);
         let at_final_action = self.current_action_index == self.actions.len();
         match self.state() {
-            State::Showdown if showdown_stacks_set => true,
-            State::Showdown if !at_final_action => true,
-            State::Showdown => false,
+            State::ShowdownOrNextRunout if showdown_stacks_set => true,
+            State::ShowdownOrNextRunout if !at_final_action => true,
+            State::ShowdownOrNextRunout => false,
             _ if at_final_action => false,
             _ => true,
         }
@@ -1928,7 +1928,7 @@ impl Game {
             return false;
         }
         match self.state() {
-            State::Showdown if self.current_action_index == self.actions.len() => {
+            State::ShowdownOrNextRunout if self.current_action_index == self.actions.len() => {
                 self.at_end = true;
                 return true;
             }

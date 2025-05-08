@@ -113,7 +113,7 @@ impl GameView {
                 State::ShowOrMuck(_) => {
                     self.game.show_hand()?;
                 }
-                State::Showdown => self.game.showdown_simple()?,
+                State::ShowdownOrNextRunout => self.game.showdown_simple()?,
                 _ => return Ok(()),
             }
         }

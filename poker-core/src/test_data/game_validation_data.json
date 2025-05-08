@@ -329,7 +329,7 @@
                 "bet": 10
             },
             {
-                "state": "showdown",
+                "state": "showdown_or_next_runout",
                 "check": false
             },
             {
@@ -574,7 +574,7 @@
                 "check": false
             },
             {
-                "state": "showdown",
+                "state": "showdown_or_next_runout",
                 "check": false
             },
             {
@@ -876,7 +876,7 @@
                 "check": false
             },
             {
-                "state": "showdown",
+                "state": "showdown_or_next_runout",
                 "check": false
             },
             {
@@ -1087,7 +1087,7 @@
                 "check": false
             },
             {
-                "state": "showdown",
+                "state": "showdown_or_next_runout",
                 "check": false
             },
             {
@@ -1335,7 +1335,7 @@
                 "check": false
             },
             {
-                "state": "showdown",
+                "state": "showdown_or_next_runout",
                 "check": false
             },
             {
@@ -1546,7 +1546,7 @@
                 "bet": 10
             },
             {
-                "state": "showdown",
+                "state": "showdown_or_next_runout",
                 "check": false
             },
             {
@@ -1775,7 +1775,7 @@
                 "bet": 10
             },
             {
-                "state": "showdown",
+                "state": "showdown_or_next_runout",
                 "check": false
             },
             {
@@ -2007,7 +2007,7 @@
                 "check": false
             },
             {
-                "state": "showdown",
+                "state": "showdown_or_next_runout",
                 "check": false
             },
             {
@@ -2233,7 +2233,7 @@
                 "check": false
             },
             {
-                "state": "showdown",
+                "state": "showdown_or_next_runout",
                 "check": false
             },
             {
@@ -2429,7 +2429,7 @@
                 "check": false
             },
             {
-                "state": "showdown",
+                "state": "showdown_or_next_runout",
                 "check": false
             },
             {
@@ -2644,7 +2644,7 @@
                 "check": false
             },
             {
-                "state": "showdown",
+                "state": "showdown_or_next_runout",
                 "check": false
             },
             {
@@ -2660,7 +2660,7 @@
                 "check": false
             },
             {
-                "state": "showdown",
+                "state": "showdown_or_next_runout",
                 "check": false
             },
             {
@@ -2924,7 +2924,7 @@
                 "check": false
             },
             {
-                "state": "showdown",
+                "state": "showdown_or_next_runout",
                 "check": false
             },
             {
@@ -2934,7 +2934,7 @@
                 "check": false
             },
             {
-                "state": "showdown",
+                "state": "showdown_or_next_runout",
                 "check": false
             },
             {
@@ -2944,7 +2944,7 @@
                 "check": false
             },
             {
-                "state": "showdown",
+                "state": "showdown_or_next_runout",
                 "check": false
             },
             {
