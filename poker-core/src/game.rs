@@ -1669,9 +1669,12 @@ impl Game {
                 self.showdown_stacks[player] += won_per_player;
             }
 
-            // TODO: Order of applying extra chips.
             let n = usize::try_from(pot % winner_count).unwrap();
-            for player in winners.iter(self.player_count()).take(n) {
+            let extra_chip_players = (self.small_blind_index()..self.player_count())
+                .chain(0..self.small_blind_index())
+                .filter(|player| winners.has(*player))
+                .take(n);
+            for player in extra_chip_players {
                 assert!(player < self.player_count());
                 self.showdown_stacks[player] += 1;
             }
@@ -1690,48 +1693,28 @@ impl Game {
             return Err("showdown: all players mucked in multi-way showdown".into());
         }
 
+        for player in self.players_not_folded() {
+            if self.hand_mucked(player) {
+                continue;
+            }
+            if self.get_hand(player).is_none() {
+                return Err(format!("showdown: missing hand for player {player}").into());
+            }
+        }
+
         let mut investments_array = [0u32; Self::MAX_PLAYERS];
         let investments = &mut investments_array[..self.player_count()];
         for player in 0..self.player_count() {
             investments[player] = self.invested(player);
         }
         let pots = self.showdown_pots(investments);
+        // We can only have max players minus one pots, so it's ok to unwrap.
+        let pots_count = pots.iter().copied().position(|(pot, _)| pot == 0).unwrap();
+        assert_ne!(pots_count, 0);
 
         let mut scores_array = [Score::ZERO; Self::MAX_PLAYERS];
         let scores = &mut scores_array[..self.player_count()];
-        let runouts = self.runouts();
-        let runout_count = u32::try_from(runouts.len()).unwrap();
-        let mut winners_by_pot = Vec::new();
-
-        for (index, board) in runouts.iter().enumerate() {
-            let board = Cards::from_slice(board.cards()).unwrap();
-
-            for player in self.players_not_folded() {
-                if self.hand_mucked(player) {
-                    continue;
-                }
-
-                let Some(hand) = self.get_hand(player) else {
-                    return Err(format!("showdown: missing hand for player {player}").into());
-                };
-                scores[player] = board.with(hand.high()).with(hand.low()).score_fast();
-            }
-
-            for (pot_per_investment, eligible_players) in pots {
-                if pot_per_investment == 0 {
-                    break;
-                }
-
-                let winners = self.showdown_winners(eligible_players, scores);
-                let pot_per_runout = pot_per_investment / runout_count;
-                let pot = if index == 0 {
-                    pot_per_runout + pot_per_investment % runout_count
-                } else {
-                    pot_per_runout
-                };
-                winners_by_pot.push((pot, winners));
-            }
-        }
+        let winners_by_pot = self.showdown_winners(&pots[..pots_count], scores);
 
         assert_eq!(
             winners_by_pot.iter().map(|(pot, _)| *pot).sum::<u32>(),
@@ -1781,7 +1764,42 @@ impl Game {
         unreachable!()
     }
 
-    fn showdown_winners(&self, eligible_players: Bitset<2>, scores: &[Score]) -> Bitset<2> {
+    fn showdown_winners(
+        &self,
+        pots: &[(u32, Bitset<2>)],
+        scores: &mut [Score],
+    ) -> Vec<(u32, Bitset<2>)> {
+        let runouts = self.runouts();
+        let runout_count = u32::try_from(runouts.len()).unwrap();
+        let mut winners_by_pot = Vec::new();
+
+        for (runout_index, board) in runouts.iter().enumerate() {
+            let board = Cards::from_slice(board.cards()).unwrap();
+
+            for player in self.players_not_folded() {
+                if self.hand_mucked(player) {
+                    continue;
+                }
+                let hand = self.get_hand(player).unwrap();
+                scores[player] = board.with(hand.high()).with(hand.low()).score_fast();
+            }
+
+            for (pot_per_investment, eligible_players) in pots.iter().copied() {
+                let winners = self.showdown_winners_single(eligible_players, scores);
+                let pot_per_runout = pot_per_investment / runout_count;
+                let pot = if runout_index == 0 {
+                    pot_per_runout + pot_per_investment % runout_count
+                } else {
+                    pot_per_runout
+                };
+                winners_by_pot.push((pot, winners));
+            }
+        }
+
+        winners_by_pot
+    }
+
+    fn showdown_winners_single(&self, eligible_players: Bitset<2>, scores: &[Score]) -> Bitset<2> {
         let max_score = eligible_players
             .iter(self.player_count())
             .map(|player| scores[usize::from(player)])
@@ -1791,7 +1809,7 @@ impl Game {
         eligible_players
             .iter(self.player_count())
             .filter(|player| scores[usize::from(*player)] == max_score)
-            .fold(Bitset::<2>::EMPTY, |s, p| s.with(p))
+            .fold(Bitset::<2>::EMPTY, |set, player| set.with(player))
     }
 
     pub fn draw_unset_hands(&mut self, rng: &mut impl Rng) {
