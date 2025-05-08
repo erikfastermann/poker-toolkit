@@ -1706,7 +1706,6 @@ impl Game {
             investments[player] = self.invested(player);
         }
 
-        // TODO: Split up dead money.
         let winners = self.showdown_winners_by_pot_inner(scores, investments);
         assert_eq!(
             winners.iter().map(|(pot, _)| *pot).sum::<u32>(),
@@ -1720,6 +1719,14 @@ impl Game {
         scores: &[Score],
         investments: &mut [u32],
     ) -> Vec<(u32, Vec<u8>)> {
+        let mut dead_money: u32 = self
+            .starting_stacks
+            .iter()
+            .copied()
+            .zip(self.reference_stacks.iter().copied())
+            .map(|(start, reference)| start.checked_sub(reference).unwrap())
+            .sum();
+
         let mut out = Vec::new();
         loop {
             let min_investment = investments
@@ -1735,11 +1742,17 @@ impl Game {
                 return out;
             };
             let winners = self.showdown_winners(scores, investments);
+
             let mut pot = 0;
             for investment in investments.iter_mut() {
                 pot += min_investment - min_investment.saturating_sub(*investment);
                 *investment = investment.saturating_sub(min_investment);
             }
+
+            // Add the dead money to the main pot.
+            pot += dead_money;
+            dead_money = 0;
+
             out.push((pot, winners));
         }
     }
@@ -1754,6 +1767,7 @@ impl Game {
             .map(|player| scores[usize::from(player)])
             .max()
             .unwrap();
+
         let mut players: Vec<_> = (0..self.player_count)
             .filter(|player| {
                 self.not_folded.has(usize::from(*player))
@@ -1762,6 +1776,7 @@ impl Game {
                     && scores[usize::from(*player)] == max_score
             })
             .collect();
+
         players.sort_by_key(|player| {
             (self.player_count - (self.button_index + 1) + *player) % self.player_count
         });
