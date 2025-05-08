@@ -312,37 +312,64 @@ impl GGHandHistoryParser {
         lines: &mut Peekable<impl Iterator<Item = &'a str>>,
         game: &mut Game,
     ) -> Result<()> {
-        let small_blind_name = game.player_name(game.small_blind_index()).as_ref();
-        let big_blind_name = game.player_name(game.big_blind_index()).as_ref();
-        self.validate_post(lines, Some(small_blind_name), "small", game.small_blind())?;
-        self.validate_post(lines, Some(big_blind_name), "big", game.big_blind())?;
+        let small_blind_name = game.player_name(game.small_blind_index());
+        let (name, kind, _) = self.parse_post_inner(lines)?;
+        if name != small_blind_name || kind != "small" {
+            return Err("post: invalid small blind format".into());
+        }
+
+        let big_blind_name = game.player_name(game.big_blind_index());
+        let (name, kind, _) = self.parse_post_inner(lines)?;
+        if name != big_blind_name || kind != "big" {
+            return Err("post: invalid big blind format".into());
+        }
+
         game.post_small_and_big_blind()?;
 
-        let mut additional_posters = Bitset::<2>::EMPTY;
+        let mut additional_posters = [const { Vec::new() }; Game::MAX_PLAYERS];
         while lines
             .peek()
             .is_some_and(|line| self.re_post_blind.is_match(line))
         {
-            let name = self.validate_post(lines, None, "big", game.big_blind())?;
+            let (name, kind, price) = self.parse_post_inner(lines)?;
             let Some(player) = game.player_by_name(name) else {
                 return Err(format!("post: invalid player name '{name}'").into());
             };
 
-            if additional_posters.has(player) {
-                return Err(format!("post: additional post for '{name}' already made").into());
+            let post_actions = &mut additional_posters[player];
+            match kind {
+                "big" => post_actions.push((true, price)),
+                "small" | "missed" => post_actions.push((false, price)),
+                _ => return Err(format!("post: unknown post kind {kind}").into()),
             }
-            additional_posters.set(player);
         }
 
         let players =
             (game.small_blind_index()..game.player_count()).chain(0..game.small_blind_index());
         for player in players {
-            if additional_posters.has(player) {
-                game.additional_post(player)?;
+            let post_actions = &mut additional_posters[player];
+            post_actions.sort();
+            for (not_dead, amount) in post_actions.iter().copied() {
+                game.additional_post(player, amount, !not_dead)?;
             }
         }
 
         Ok(())
+    }
+
+    fn parse_post_inner<'a>(
+        &self,
+        lines: &mut impl Iterator<Item = &'a str>,
+    ) -> Result<(&'a str, &'a str, u32)> {
+        let post_blind = option_to_result(lines.next(), "post blind line is missing")?;
+        let [name, kind, price] = option_to_result(
+            self.re_post_blind.captures(post_blind),
+            "post blind: invalid format",
+        )?
+        .extract()
+        .1;
+        let price = Self::parse_price_as_cent(price)?;
+        Ok((name, kind, price))
     }
 
     fn parse_straddles<'a>(
@@ -368,31 +395,6 @@ impl GGHandHistoryParser {
         }
 
         Ok(())
-    }
-
-    fn validate_post<'a>(
-        &self,
-        lines: &mut impl Iterator<Item = &'a str>,
-        expected_name: Option<&str>,
-        expected_kind: &str,
-        expected_price: u32,
-    ) -> Result<&'a str> {
-        let post_blind = option_to_result(lines.next(), "post blind line is missing")?;
-        let [name, kind, price] = option_to_result(
-            self.re_post_blind.captures(post_blind),
-            "post blind: invalid format",
-        )?
-        .extract()
-        .1;
-        let price = Self::parse_price_as_cent(price)?;
-        if expected_name.is_some_and(|n| name != n)
-            || kind != expected_kind
-            || price != expected_price
-        {
-            Err("post blind: invalid format".into())
-        } else {
-            Ok(name)
-        }
     }
 
     fn parse_hole_cards<'a>(

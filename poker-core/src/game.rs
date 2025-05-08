@@ -16,8 +16,7 @@ use crate::hand::Hand;
 use crate::result::Result;
 
 // TODO:
-// - Bet/raise steps.
-// - Mucking
+// - Bet/raise steps
 // - Poison game on error or ensure every error is recoverable
 // - Type alias or wrapper for player and amount, use u8 for player everywhere
 // - Nicer handling of state method with multiple runouts
@@ -29,6 +28,7 @@ pub enum Action {
     Post {
         player: u8,
         amount: u32,
+        dead: bool,
     },
     Straddle {
         player: u8,
@@ -214,6 +214,7 @@ pub struct Game {
     names: [Option<Arc<String>>; Self::MAX_PLAYERS],
     seats: [u8; Self::MAX_PLAYERS],
     starting_stacks: [u32; Self::MAX_PLAYERS],
+    reference_stacks: [u32; Self::MAX_PLAYERS],
     stacks_in_street: [[u32; Self::MAX_PLAYERS]; Street::COUNT],
     showdown_stacks: [u32; Self::MAX_PLAYERS],
     button_index: u8,
@@ -433,6 +434,7 @@ impl Game {
             names,
             seats,
             starting_stacks: stacks.clone(),
+            reference_stacks: stacks.clone(),
             stacks_in_street: array::from_fn(|_| stacks.clone()),
             showdown_stacks: [0; Self::MAX_PLAYERS],
             boards: [Board::EMPTY; Self::MAX_RUNOUTS],
@@ -477,10 +479,15 @@ impl Game {
 
             let mut current_action_index = 2;
             while current_action_index < data.actions.len() {
-                let Action::Post { player, .. } = data.actions[current_action_index] else {
+                let Action::Post {
+                    player,
+                    amount,
+                    dead,
+                } = data.actions[current_action_index]
+                else {
                     break;
                 };
-                game.additional_post(usize::from(player))?;
+                game.additional_post(usize::from(player), amount, dead)?;
                 current_action_index += 1;
             }
 
@@ -598,6 +605,7 @@ impl Game {
 
     pub fn reset(&mut self) {
         self.actions.clear();
+        self.reference_stacks.copy_from_slice(&self.starting_stacks);
         for street_stacks in self.stacks_in_street.iter_mut() {
             street_stacks.copy_from_slice(&self.starting_stacks);
         }
@@ -719,23 +727,34 @@ impl Game {
     pub fn previous_street_stacks(&self) -> &[u32] {
         match self.board().street().previous() {
             Some(street) => &self.stacks_in_street[street.to_usize()][..self.player_count()],
-            None => &self.starting_stacks[..self.player_count()],
+            None => &self.reference_stacks[..self.player_count()],
         }
     }
 
     pub fn total_pot(&self) -> u32 {
-        self.invested_per_player().sum::<u32>()
+        self.total_invested_per_player().sum::<u32>()
     }
 
-    pub fn invested_per_player(&self) -> impl Iterator<Item = u32> + '_ {
+    fn total_invested_per_player(&self) -> impl Iterator<Item = u32> + '_ {
+        (0..self.player_count())
+            .into_iter()
+            .map(|player| self.total_invested(player))
+    }
+
+    fn invested_per_player(&self) -> impl Iterator<Item = u32> + '_ {
         (0..self.player_count())
             .into_iter()
             .map(|player| self.invested(player))
     }
 
-    fn invested(&self, player: usize) -> u32 {
+    pub fn total_invested(&self, player: usize) -> u32 {
         assert!(player < self.player_count());
         self.starting_stacks[player] - self.current_street_stacks()[player]
+    }
+
+    pub fn invested(&self, player: usize) -> u32 {
+        assert!(player < self.player_count());
+        self.reference_stacks[player] - self.current_street_stacks()[player]
     }
 
     pub fn invested_in_street(&self, player: usize) -> u32 {
@@ -807,7 +826,7 @@ impl Game {
         let Some(required_straddle) = last_full_straddle.checked_mul(2) else {
             return Err("straddle: overflow while computing next straddle".into());
         };
-        let min_straddle = min(self.starting_stacks[player], required_straddle);
+        let min_straddle = min(self.reference_stacks[player], required_straddle);
         Ok(min_straddle)
     }
 
@@ -875,7 +894,7 @@ impl Game {
                         .copied()
                         .filter_map(|action| match action {
                             Action::Straddle { amount, .. } => Some(amount),
-                            Action::Post { amount, .. } => Some(amount),
+                            Action::Post { amount, dead, .. } if !dead => Some(amount),
                             _ => None,
                         })
                         .max()
@@ -1107,13 +1126,14 @@ impl Game {
         Ok(())
     }
 
-    fn action_post(&mut self, amount: u32) -> Result<()> {
+    fn action_post_simple(&mut self, amount: u32) -> Result<()> {
         let player = self.current_player_result()?;
         let amount = min(self.current_street_stacks()[player], amount);
         self.update_stack(amount)?;
         self.add_action(Action::Post {
             player: self.current_player,
             amount,
+            dead: false,
         });
         self.next_player();
         Ok(())
@@ -1128,12 +1148,12 @@ impl Game {
         if !self.is_heads_up_table() {
             self.current_player = (self.current_player + 1) % self.player_count;
         }
-        self.action_post(self.small_blind)?;
-        self.action_post(self.big_blind)?;
+        self.action_post_simple(self.small_blind)?;
+        self.action_post_simple(self.big_blind)?;
         Ok(())
     }
 
-    pub fn additional_post(&mut self, player: usize) -> Result<()> {
+    pub fn additional_post(&mut self, player: usize, amount: u32, dead: bool) -> Result<()> {
         self.check_pre_update()?;
         if player >= self.player_count() {
             return Err("additional post: invalid player index".into());
@@ -1149,29 +1169,57 @@ impl Game {
                 _ => return Err("additional post: only allowed before all other actions".into()),
             }
         }
-        if poster.has(usize::from(player)) {
-            return Err("additional post: duplicate post not allowed".into());
-        }
 
         let players =
             (self.small_blind_index()..self.player_count()).chain(0..self.small_blind_index());
         for current_player in players.rev() {
+            if current_player == player {
+                break;
+            }
             if poster.has(current_player) {
                 return Err(
                     "additional post: all players posted already or post not in order".into(),
                 );
             }
-            if current_player == player {
-                break;
+        }
+
+        let last_action = self.actions[self.current_action_index.checked_sub(1).unwrap()];
+        let Action::Post {
+            player: last_player,
+            amount: last_amount,
+            dead: last_dead,
+        } = last_action
+        else {
+            unreachable!();
+        };
+
+        if usize::from(last_player) == player {
+            if dead && !last_dead {
+                return Err(
+                    "additional post: dead posts must appear before all other posts".into(),
+                );
+            }
+            if last_dead == dead && last_amount > amount {
+                return Err("additional post: amounts for single player must be ordered".into());
             }
         }
 
-        let amount = min(self.current_street_stacks()[player], self.big_blind);
-        self.current_street_stacks_mut()[player] -= amount;
+        let current_stack = self.stacks_in_street[Street::PreFlop.to_usize()][player];
+        if amount > current_stack {
+            return Err("additional post: player cannot afford post".into());
+        }
+
+        self.stacks_in_street[Street::PreFlop.to_usize()][player] -= amount;
+        if dead {
+            self.reference_stacks[player] -= amount;
+        }
+
         self.add_action(Action::Post {
             player: u8::try_from(player).unwrap(),
             amount,
+            dead,
         });
+
         Ok(())
     }
 
@@ -1181,11 +1229,11 @@ impl Game {
         if amount < required_straddle {
             return Err("straddle: amount too small".into());
         }
-        if amount > self.starting_stacks[player] {
+        if amount > self.reference_stacks[player] {
             return Err("straddle: player cannot afford amount".into());
         }
 
-        self.current_street_stacks_mut()[player] = self.starting_stacks[player] - amount;
+        self.current_street_stacks_mut()[player] = self.reference_stacks[player] - amount;
         let player = u8::try_from(player).unwrap();
         self.add_action(Action::Straddle { player, amount });
         // Always start left of the last straddler.
@@ -1629,6 +1677,7 @@ impl Game {
             investments[player] = self.invested(player);
         }
 
+        // TODO: Split up dead money.
         let winners = self.showdown_winners_by_pot_inner(scores, investments);
         assert_eq!(
             winners.iter().map(|(pot, _)| *pot).sum::<u32>(),
@@ -1836,6 +1885,7 @@ impl Game {
         let action = self.actions[self.current_action_index - 1];
         match action {
             Action::Post { .. } | Action::Straddle { .. } => {
+                self.reference_stacks.copy_from_slice(&self.starting_stacks);
                 self.stacks_in_street[Street::PreFlop.to_usize()]
                     .copy_from_slice(&self.starting_stacks);
                 self.current_player = u8::MAX;
@@ -1963,7 +2013,11 @@ impl Game {
 
         while self.current_action_index < self.actions.len() {
             match self.actions[self.current_action_index] {
-                Action::Post { player, .. } => self.additional_post(usize::from(player))?,
+                Action::Post {
+                    player,
+                    amount,
+                    dead,
+                } => self.additional_post(usize::from(player), amount, dead)?,
                 Action::Straddle { player, amount } => {
                     self.straddle(usize::from(player), amount)?;
                 }
@@ -2051,8 +2105,14 @@ impl Game {
         new_game.post_small_and_big_blind().unwrap();
         for action in self.actions[2..].iter().copied() {
             match action {
-                Action::Post { player, .. } => {
-                    new_game.additional_post(usize::from(player)).unwrap();
+                Action::Post {
+                    player,
+                    amount,
+                    dead,
+                } => {
+                    new_game
+                        .additional_post(usize::from(player), amount, dead)
+                        .unwrap();
                 }
                 Action::Straddle { player, amount } => {
                     new_game.straddle(usize::from(player), amount).unwrap();
@@ -2105,6 +2165,7 @@ impl Game {
         assert_eq!(expected.player_count, self.player_count);
         assert_eq!(expected.names, self.names);
         assert_eq!(expected.starting_stacks, self.starting_stacks);
+        assert_eq!(expected.reference_stacks, self.reference_stacks);
         let current_street = expected.board().street();
         assert_eq!(
             &expected.stacks_in_street[..current_street.to_usize()],

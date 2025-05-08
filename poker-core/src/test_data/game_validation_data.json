@@ -33,13 +33,15 @@
             {
                 "post": {
                     "player": 1,
-                    "amount": 5
+                    "amount": 5,
+                    "dead": false
                 }
             },
             {
                 "post": {
                     "player": 2,
-                    "amount": 10
+                    "amount": 10,
+                    "dead": false
                 }
             },
             {
@@ -375,13 +377,15 @@
             {
                 "post": {
                     "player": 1,
-                    "amount": 10
+                    "amount": 10,
+                    "dead": false
                 }
             },
             {
                 "post": {
                     "player": 2,
-                    "amount": 20
+                    "amount": 20,
+                    "dead": false
                 }
             },
             {
@@ -620,13 +624,15 @@
             {
                 "post": {
                     "player": 1,
-                    "amount": 10
+                    "amount": 10,
+                    "dead": false
                 }
             },
             {
                 "post": {
                     "player": 2,
-                    "amount": 20
+                    "amount": 20,
+                    "dead": false
                 }
             },
             {
@@ -922,13 +928,15 @@
             {
                 "post": {
                     "player": 1,
-                    "amount": 9
+                    "amount": 9,
+                    "dead": false
                 }
             },
             {
                 "post": {
                     "player": 2,
-                    "amount": 19
+                    "amount": 19,
+                    "dead": false
                 }
             },
             {
@@ -1133,13 +1141,15 @@
             {
                 "post": {
                     "player": 1,
-                    "amount": 9
+                    "amount": 9,
+                    "dead": false
                 }
             },
             {
                 "post": {
                     "player": 2,
-                    "amount": 10
+                    "amount": 10,
+                    "dead": false
                 }
             },
             {
@@ -1378,13 +1388,15 @@
             {
                 "post": {
                     "player": 1,
-                    "amount": 10
+                    "amount": 10,
+                    "dead": false
                 }
             },
             {
                 "post": {
                     "player": 2,
-                    "amount": 10
+                    "amount": 10,
+                    "dead": false
                 }
             },
             {
@@ -1589,13 +1601,15 @@
             {
                 "post": {
                     "player": 1,
-                    "amount": 10
+                    "amount": 10,
+                    "dead": false
                 }
             },
             {
                 "post": {
                     "player": 2,
-                    "amount": 10
+                    "amount": 10,
+                    "dead": false
                 }
             },
             {
@@ -1820,13 +1834,15 @@
             {
                 "post": {
                     "player": 1,
-                    "amount": 10
+                    "amount": 10,
+                    "dead": false
                 }
             },
             {
                 "post": {
                     "player": 2,
-                    "amount": 10
+                    "amount": 10,
+                    "dead": false
                 }
             },
             {
@@ -2052,13 +2068,15 @@
             {
                 "post": {
                     "player": 1,
-                    "amount": 10
+                    "amount": 10,
+                    "dead": false
                 }
             },
             {
                 "post": {
                     "player": 2,
-                    "amount": 10
+                    "amount": 10,
+                    "dead": false
                 }
             },
             {
@@ -2260,13 +2278,15 @@
             {
                 "post": {
                     "player": 1,
-                    "amount": 5
+                    "amount": 5,
+                    "dead": false
                 }
             },
             {
                 "post": {
                     "player": 0,
-                    "amount": 10
+                    "amount": 10,
+                    "dead": false
                 }
             },
             {
@@ -2480,13 +2500,15 @@
             {
                 "post": {
                     "player": 1,
-                    "amount": 5
+                    "amount": 5,
+                    "dead": false
                 }
             },
             {
                 "post": {
                     "player": 2,
-                    "amount": 10
+                    "amount": 10,
+                    "dead": false
                 }
             },
             {
@@ -2711,13 +2733,15 @@
             {
                 "post": {
                     "player": 1,
-                    "amount": 5
+                    "amount": 5,
+                    "dead": false
                 }
             },
             {
                 "post": {
                     "player": 2,
-                    "amount": 10
+                    "amount": 10,
+                    "dead": false
                 }
             },
             {
