@@ -20,7 +20,7 @@ use crate::result::Result;
 // - Poison game on error or ensure every error is recoverable
 // - Type alias or wrapper for player and amount, use u8 for player everywhere
 // - Nicer handling of state method with multiple runouts
-// - Check shows / mucks at showdown
+// - Add single mucks action if there is only one winner
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1558,8 +1558,6 @@ impl Game {
         total_rake: u32,
         player_pot_share: impl Iterator<Item = (usize, u32)>,
     ) -> Result<()> {
-        // TODO: Check winners are correct.
-
         self.check_pre_update()?;
         if self.state() != State::ShowdownOrNextRunout {
             return Err("showdown: not in showdown state".into());
@@ -1574,6 +1572,13 @@ impl Game {
             if player >= self.player_count() {
                 return Err("showdown: invalid player index".into());
             }
+
+            // We cannot really check if the winners are correct,
+            // only if they have folded or not.
+            if pot_share > 0 && self.folded(player) {
+                return Err("showdown: player who folded won part of the pot".into());
+            }
+
             let Some(new_total_pot) = total_pot.checked_add(pot_share) else {
                 return Err("showdown: amount won too large".into());
             };
@@ -1593,8 +1598,6 @@ impl Game {
     }
 
     pub fn showdown_stacks(&mut self, stacks: &[u32]) -> Result<()> {
-        // TODO: Check winners are correct.
-
         if stacks.len() != self.player_count() {
             return Err("showdown stacks: given stack count does not match player count".into());
         }
@@ -1606,6 +1609,24 @@ impl Game {
         };
         if total > self.starting_stacks.iter().take(self.player_count()).sum() {
             return Err("showdown stacks: showdown stacks are larger than starting stacks".into());
+        }
+
+        let stacks_iter = stacks
+            .iter()
+            .copied()
+            .zip(
+                self.starting_stacks
+                    .iter()
+                    .copied()
+                    .take(self.player_count()),
+            )
+            .enumerate();
+        for (player, (new_stack, starting_stack)) in stacks_iter {
+            // We cannot really check if the winners are correct,
+            // only if they have folded or not.
+            if new_stack > starting_stack && self.folded(player) {
+                return Err("showdown: player who folded won part of the pot".into());
+            }
         }
 
         self.check_pre_update()?;
@@ -1660,11 +1681,19 @@ impl Game {
             return Ok(vec![(self.total_pot(), vec![winner])]);
         }
 
+        if self.not_folded & self.hand_mucked == self.not_folded {
+            return Err("showdown: all players mucked in multi-way showdown".into());
+        }
+
         let mut scores_array = [Score::ZERO; Self::MAX_PLAYERS];
         let scores = &mut scores_array[..self.player_count()];
         // TODO: Showdown boards.
         let board = Cards::from_slice(self.board().cards()).unwrap();
         for player in self.players_not_folded() {
+            if self.hand_mucked(player) {
+                continue;
+            }
+
             let Some(hand) = self.get_hand(player) else {
                 return Err(format!("showdown: missing hand for player {player}").into());
             };
@@ -1697,7 +1726,9 @@ impl Game {
                 .iter()
                 .copied()
                 .enumerate()
-                .filter(|(player, investment)| self.not_folded.has(*player) && *investment > 0)
+                .filter(|(player, investment)| {
+                    self.not_folded.has(*player) && !self.hand_mucked(*player) && *investment > 0
+                })
                 .map(|(_, investment)| investment)
                 .min();
             let Some(min_investment) = min_investment else {
@@ -1715,13 +1746,18 @@ impl Game {
 
     fn showdown_winners(&self, scores: &[Score], investments: &[u32]) -> Vec<u8> {
         let max_score = (0..self.player_count())
-            .filter(|player| self.not_folded.has(*player) && investments[*player] > 0)
+            .filter(|player| {
+                self.not_folded.has(*player)
+                    && !self.hand_mucked(*player)
+                    && investments[*player] > 0
+            })
             .map(|player| scores[usize::from(player)])
             .max()
             .unwrap();
         let mut players: Vec<_> = (0..self.player_count)
             .filter(|player| {
                 self.not_folded.has(usize::from(*player))
+                    && !self.hand_mucked(usize::from(*player))
                     && investments[usize::from(*player)] > 0
                     && scores[usize::from(*player)] == max_score
             })
