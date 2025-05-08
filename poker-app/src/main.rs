@@ -150,12 +150,18 @@ fn parse_gg(args: &[String]) -> Result<()> {
         return Err(INVALID_COMMAND_ERROR.into());
     };
 
-    let read_parse_time = Instant::now();
+    let read_time = Instant::now();
     let content = read_to_string(path)?;
+    eprintln!(
+        "--- took {:?} to read the hand history file ---",
+        read_time.elapsed(),
+    );
+
+    let parse_time = Instant::now();
     let games = GGHandHistoryParser::new(true).parse_str_full(&content);
     eprintln!(
-        "--- took {:?} to read and parse the hand history file ---",
-        read_parse_time.elapsed(),
+        "--- took {:?} to parse the hand history file ---",
+        parse_time.elapsed(),
     );
 
     let assert_print_errors_time = Instant::now();
@@ -177,6 +183,7 @@ fn parse_gg(args: &[String]) -> Result<()> {
         "--- took {:?} to assert the internal game states and print errors ---",
         assert_print_errors_time.elapsed(),
     );
+    eprintln!("--- found {} hands ---", game_data.len());
 
     let write_json_time = Instant::now();
     serde_json::to_writer_pretty(BufWriter::new(io::stdout().lock()), &game_data)?;
