@@ -346,9 +346,13 @@ impl GameBuilder {
                         .map(|player| player.player.clone())
                         .collect();
                     let game_data = GameData {
+                        unit: None,
+                        max_players: None,
+                        location: None,
+                        date: None,
                         table_name: None,
                         hand_name: None,
-                        date: None,
+                        hero_index: None,
                         players,
                         button_index: self.button_index,
                         small_blind: self.small_blind,

@@ -1,5 +1,6 @@
 use std::cmp::min;
 use std::collections::HashSet;
+use std::num::NonZeroU8;
 use std::sync::Arc;
 use std::{array, fmt, usize};
 
@@ -204,29 +205,36 @@ pub enum State {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Game {
+    player_count: u8,
+    button_index: u8,
+    small_blind: u32,
+    big_blind: u32,
+    starting_stacks: [u32; Self::MAX_PLAYERS],
+    names: [Option<Arc<String>>; Self::MAX_PLAYERS],
+    seats: [u8; Self::MAX_PLAYERS],
+
+    unit: Option<Arc<String>>,
+    max_players: Option<NonZeroU8>,
+    location: Option<Arc<String>>,
+    date: Option<NaiveDateTime>,
+    table_name: Option<Arc<String>>,
+    hand_name: Option<Arc<String>>,
+    /// Set to u8::MAX if no hero is set.
+    hero_index: u8,
+    hands: [Hand; Self::MAX_PLAYERS],
+
     actions: Vec<Action>,
     boards: [Board; Self::MAX_RUNOUTS],
     current_board: u8,
-    table_name: Option<Arc<String>>,
-    hand_name: Option<Arc<String>>,
-    date: Option<NaiveDateTime>,
-    player_count: u8,
-    names: [Option<Arc<String>>; Self::MAX_PLAYERS],
-    seats: [u8; Self::MAX_PLAYERS],
-    starting_stacks: [u32; Self::MAX_PLAYERS],
     reference_stacks: [u32; Self::MAX_PLAYERS],
     stacks_in_street: [[u32; Self::MAX_PLAYERS]; Street::COUNT],
     showdown_stacks: [u32; Self::MAX_PLAYERS],
-    button_index: u8,
     current_street_index: usize,
     current_action_index: usize,
     /// Set to u8::MAX if no current player is set.
     current_player: u8,
     not_folded: Bitset<2>,
-    small_blind: u32,
-    big_blind: u32,
     /// Using Hand::UNDEFINED if a hand is not known.
-    hands: [Hand; Self::MAX_PLAYERS],
     hand_shown: Bitset<2>,
     hand_mucked: Bitset<2>,
     at_end: bool,
@@ -426,13 +434,17 @@ impl Game {
         };
 
         let game = Self {
-            actions: Vec::new(),
+            location: None,
+            date: None,
             table_name: None,
             hand_name: None,
-            date: None,
-            player_count: u8::try_from(player_count).unwrap(),
+            max_players: None,
+            unit: None,
+            hero_index: u8::MAX,
             names,
             seats,
+            actions: Vec::new(),
+            player_count: u8::try_from(player_count).unwrap(),
             starting_stacks: stacks.clone(),
             reference_stacks: stacks.clone(),
             stacks_in_street: array::from_fn(|_| stacks.clone()),
@@ -464,14 +476,27 @@ impl Game {
             data.big_blind,
         )?;
 
+        if let Some(unit) = data.unit.clone() {
+            game.set_unit(unit);
+        }
+        if let Some(max_players) = data.max_players {
+            game.set_max_players(usize::from(max_players))?;
+        }
+
+        if let Some(location) = data.location.clone() {
+            game.set_location(location);
+        }
+        if let Some(date) = data.date {
+            game.set_date(date);
+        }
         if let Some(table_name) = data.table_name.clone() {
             game.set_table_name(table_name);
         }
         if let Some(hand_name) = data.hand_name.clone() {
             game.set_hand_name(hand_name);
         }
-        if let Some(date) = data.date {
-            game.set_date(date);
+        if let Some(hero_index) = data.hero_index {
+            game.set_hero(usize::from(hero_index))?;
         }
 
         if !data.actions.is_empty() {
@@ -569,9 +594,13 @@ impl Game {
         };
 
         GameData {
-            table_name: self.get_table_name(),
-            hand_name: self.get_hand_name(),
-            date: self.get_date(),
+            unit: self.unit(),
+            max_players: self.max_players().map(|n| u8::try_from(n).unwrap()),
+            location: self.location(),
+            table_name: self.table_name(),
+            hand_name: self.hand_name(),
+            hero_index: self.hero().map(|n| u8::try_from(n).unwrap()),
+            date: self.date(),
             players,
             button_index: self.button_index,
             small_blind: self.small_blind,
@@ -622,7 +651,64 @@ impl Game {
         self.in_next = false;
     }
 
-    pub fn get_table_name(&self) -> Option<Arc<String>> {
+    pub fn unit(&self) -> Option<Arc<String>> {
+        self.unit.clone()
+    }
+
+    pub fn set_unit(&mut self, unit: Arc<String>) {
+        self.unit = Some(unit);
+    }
+
+    pub fn clear_unit(&mut self) {
+        self.unit = None;
+    }
+
+    pub fn max_players(&self) -> Option<usize> {
+        self.max_players.map(|n| usize::from(n.get()))
+    }
+
+    pub fn set_max_players(&mut self, max_players: usize) -> Result<()> {
+        if max_players < Self::MIN_PLAYERS
+            || max_players > Self::MAX_PLAYERS
+            || max_players < self.player_count()
+        {
+            Err("invalid max players".into())
+        } else {
+            let max_players = NonZeroU8::try_from(u8::try_from(max_players).unwrap()).unwrap();
+            self.max_players = Some(max_players);
+            Ok(())
+        }
+    }
+
+    pub fn clear_max_players(&mut self) {
+        self.max_players = None;
+    }
+
+    pub fn location(&self) -> Option<Arc<String>> {
+        self.location.clone()
+    }
+
+    pub fn set_location(&mut self, location: Arc<String>) {
+        self.location = Some(location);
+    }
+
+    pub fn clear_location(&mut self) {
+        self.location = None;
+    }
+
+    pub fn date(&self) -> Option<NaiveDateTime> {
+        self.date.clone()
+    }
+
+    pub fn set_date(&mut self, date: NaiveDateTime) {
+        self.date = Some(date);
+    }
+
+    pub fn clear_date(&mut self) {
+        self.date = None;
+    }
+
+    pub fn table_name(&self) -> Option<Arc<String>> {
         self.table_name.clone()
     }
 
@@ -634,7 +720,7 @@ impl Game {
         self.table_name = None;
     }
 
-    pub fn get_hand_name(&self) -> Option<Arc<String>> {
+    pub fn hand_name(&self) -> Option<Arc<String>> {
         self.hand_name.clone()
     }
 
@@ -646,16 +732,25 @@ impl Game {
         self.hand_name = None;
     }
 
-    pub fn get_date(&self) -> Option<NaiveDateTime> {
-        self.date.clone()
+    pub fn hero(&self) -> Option<usize> {
+        if self.hero_index == u8::MAX {
+            None
+        } else {
+            Some(usize::from(self.hero_index))
+        }
     }
 
-    pub fn set_date(&mut self, date: NaiveDateTime) {
-        self.date = Some(date);
+    pub fn set_hero(&mut self, hero: usize) -> Result<()> {
+        if hero >= self.player_count() {
+            Err("hero index greater than player count".into())
+        } else {
+            self.hero_index = u8::try_from(hero).unwrap();
+            Ok(())
+        }
     }
 
-    pub fn clear_date(&mut self) {
-        self.date = None;
+    pub fn clear_hero(&mut self) {
+        self.hero_index = u8::MAX;
     }
 
     pub fn player_name(&self, player: usize) -> &str {
@@ -2313,9 +2408,14 @@ impl Player {
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GameData {
+    pub unit: Option<Arc<String>>,
+    pub max_players: Option<u8>,
+    pub location: Option<Arc<String>>,
+    pub date: Option<NaiveDateTime>,
     pub table_name: Option<Arc<String>>,
     pub hand_name: Option<Arc<String>>,
-    pub date: Option<NaiveDateTime>,
+    pub hero_index: Option<u8>,
+
     pub players: Vec<Player>,
     pub button_index: u8,
     pub small_blind: u32,
@@ -2327,9 +2427,13 @@ pub struct GameData {
 impl Default for GameData {
     fn default() -> Self {
         Self {
+            unit: None,
+            max_players: None,
+            location: None,
             table_name: None,
             hand_name: None,
             date: None,
+            hero_index: None,
             players: vec![Player::with_starting_stack(1_000); 6],
             button_index: 0,
             small_blind: 5,

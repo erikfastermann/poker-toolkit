@@ -37,6 +37,9 @@ pub struct GGHandHistoryParser {
     re_all_in_insurance: Regex,
 
     sloppy_winnings_check: bool,
+
+    unit: Arc<String>,
+    location: Arc<String>,
 }
 
 impl GGHandHistoryParser {
@@ -50,6 +53,7 @@ impl GGHandHistoryParser {
         let re_description = r"^Poker Hand (#[^:]+): Hold'em No Limit *".to_owned()
             + &format!(r"\({REGEX_PRICE}/{REGEX_PRICE}\) - ")
             + r"(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})$";
+        // TODO: Change set_max_players for 9-max.
         const RE_TABLE_INFO: &'static str =
             r"^Table '([a-zA-z0-9]+)' 6-max Seat #([1-6]) is the button$";
         let re_seat_config = format!(r"^Seat ([1-6]): {REGEX_NAME} \({REGEX_PRICE} in chips\)$");
@@ -102,6 +106,8 @@ impl GGHandHistoryParser {
             re_summary_seat: Regex::new(RE_SUMMARY_SEAT).unwrap(),
             re_all_in_insurance: Regex::new(&re_all_in_insurance).unwrap(),
             sloppy_winnings_check,
+            unit: Arc::new("ct".to_owned()),
+            location: Arc::new("GG".to_owned()),
         }
     }
 
@@ -194,9 +200,15 @@ impl GGHandHistoryParser {
         };
 
         let mut game = Game::new(&players, button_index, small_blind, big_blind)?;
+        game.set_unit(self.unit.clone());
+        game.set_max_players(6)?;
+        game.set_location(self.location.clone());
+        game.set_date(date);
         game.set_table_name(table_name);
         game.set_hand_name(hand_name);
-        game.set_date(date);
+        if let Some(hero_index) = game.player_by_name("Hero") {
+            game.set_hero(hero_index)?;
+        }
 
         self.parse_posts(&mut lines, &mut game)?;
         self.parse_straddles(&mut lines, &mut game)?;
@@ -424,6 +436,7 @@ impl GGHandHistoryParser {
             if name != expected_name {
                 return Err(format!("deal: unexpected name {name}").into());
             }
+
             if let (Some(card_a), Some(card_b)) = (deal.get(2), deal.get(3)) {
                 let card_a = Card::from_str(card_a.as_str())?;
                 let card_b = Card::from_str(card_b.as_str())?;
