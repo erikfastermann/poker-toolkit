@@ -6,6 +6,7 @@ use std::time::Instant;
 use eframe::egui::{CentralPanel, Context, Rect, Style, UiBuilder, Vec2, ViewportBuilder, Visuals};
 use eframe::Frame;
 use poker_core::cards::Cards;
+use poker_core::db::DB;
 use poker_core::equity::{Equity, EquityTable};
 use poker_core::parser::GGHandHistoryParser;
 use poker_core::range::RangeTable;
@@ -150,6 +151,9 @@ fn parse_gg(args: &[String]) -> Result<()> {
         return Err(INVALID_COMMAND_ERROR.into());
     };
 
+    // TODO
+    let mut db = DB::open("hands.db")?;
+
     let read_time = Instant::now();
     let content = read_to_string(path)?;
     eprintln!(
@@ -167,7 +171,7 @@ fn parse_gg(args: &[String]) -> Result<()> {
     let assert_print_errors_time = Instant::now();
     let mut game_data = Vec::new();
     let mut error_count = 0usize;
-    for game in games {
+    for game in &games {
         match game {
             Ok(game) => {
                 game.internal_asserts_full(); // TODO
@@ -191,6 +195,13 @@ fn parse_gg(args: &[String]) -> Result<()> {
     eprintln!(
         "--- took {:?} to write the json output ---",
         write_json_time.elapsed(),
+    );
+
+    let write_db_time = Instant::now();
+    let new_hands_count = db.add_games(games.iter().filter_map(|game| game.as_ref().ok()))?;
+    eprintln!(
+        "--- took {:?} to write {new_hands_count} new hand(s) to the database ---",
+        write_db_time.elapsed(),
     );
 
     if error_count > 0 {

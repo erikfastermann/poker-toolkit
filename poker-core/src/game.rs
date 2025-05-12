@@ -66,11 +66,11 @@ pub enum Action {
 }
 
 impl Action {
-    fn is_street(self) -> bool {
+    pub fn is_street(self) -> bool {
         self.street().is_some()
     }
 
-    fn street(self) -> Option<Street> {
+    pub fn street(self) -> Option<Street> {
         match self {
             Action::Flop(_) => Some(Street::Flop),
             Action::Turn(_) => Some(Street::Turn),
@@ -79,11 +79,11 @@ impl Action {
         }
     }
 
-    fn is_player(self) -> bool {
+    pub fn is_player(self) -> bool {
         self.player().is_some()
     }
 
-    fn player(self) -> Option<usize> {
+    pub fn player(self) -> Option<usize> {
         let player = match self {
             Action::Post { player, .. } => player,
             Action::Straddle { player, .. } => player,
@@ -99,7 +99,7 @@ impl Action {
 }
 
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Street {
     PreFlop = 0,
@@ -188,6 +188,23 @@ impl Board {
 
     pub fn street(&self) -> Street {
         self.street
+    }
+
+    pub fn flop(&self) -> Option<[Card; 3]> {
+        if self.street >= Street::Flop {
+            let cards = &self.cards()[..Street::Flop.community_card_count()];
+            Some(cards.try_into().unwrap())
+        } else {
+            None
+        }
+    }
+
+    pub fn turn(&self) -> Option<Card> {
+        self.cards().get(3).copied()
+    }
+
+    pub fn river(&self) -> Option<Card> {
+        self.cards().get(4).copied()
     }
 }
 
@@ -810,7 +827,7 @@ impl Game {
         &mut self.boards[usize::from(self.current_board)]
     }
 
-    fn current_street_stacks(&self) -> &[u32] {
+    pub fn current_street_stacks(&self) -> &[u32] {
         &self.stacks_in_street[self.board().street().to_usize()][..self.player_count()]
     }
 
@@ -869,6 +886,10 @@ impl Game {
     fn in_hand_not_all_in(&self, index: usize) -> bool {
         assert!(index < self.player_count());
         self.not_folded.has(index) && !self.is_all_in(index)
+    }
+
+    pub fn actions(&self) -> &[Action] {
+        &self.actions[..self.current_action_index]
     }
 
     pub fn actions_in_street(&self) -> &[Action] {
@@ -1648,13 +1669,8 @@ impl Game {
         }
     }
 
-    fn runouts(&self) -> &[Board] {
-        assert_eq!(self.state(), State::ShowdownOrNextRunout);
-        let mut n = 1;
-        while n < Self::MAX_RUNOUTS && self.boards[n].street() == Street::River {
-            n += 1;
-        }
-        &self.boards[..n]
+    pub fn runouts(&self) -> &[Board] {
+        &self.boards[..usize::from(self.current_board + 1)]
     }
 
     pub fn showdown_custom(
@@ -2386,7 +2402,7 @@ impl Game {
 }
 
 #[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Player {
     pub name: Option<Arc<String>>,
     pub seat: Option<u8>,
@@ -2406,7 +2422,7 @@ impl Player {
 }
 
 #[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GameData {
     pub unit: Option<Arc<String>>,
     pub max_players: Option<u8>,

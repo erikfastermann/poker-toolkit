@@ -9,6 +9,7 @@ pub mod ai;
 mod bitset;
 pub mod card;
 pub mod cards;
+pub mod db;
 pub mod deck;
 pub mod equity;
 pub mod game;
