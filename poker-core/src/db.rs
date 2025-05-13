@@ -1,17 +1,24 @@
-use std::{fmt::Write, path::Path, sync::Arc};
+use std::{fmt::Write, path::Path, str::FromStr, sync::Arc};
 
 use chrono::NaiveDateTime;
-use rusqlite::{params, Connection, Transaction};
+use rusqlite::{
+    params,
+    types::{FromSql, FromSqlError, FromSqlResult, Type, ValueRef},
+    Connection, Params, Row, RowIndex, Transaction,
+};
 
 use crate::{
     bitset::Bitset,
     card::Card,
+    cards::Cards,
     game::{Game, GameData, State, Street},
     hand,
     result::Result,
 };
 
-// TODO: Extra checks, e.g. every hand has matching metadata entries.
+// TODO
+// - Extra checks, e.g. every hand has matching metadata entries
+// - Check entries for correctness when reading from the database
 
 pub struct DB {
     conn: Connection,
@@ -125,14 +132,14 @@ impl DB {
                 hand.unit,
                 hand.max_players,
                 hand.game_location,
-                hand.game_date.map(|date| date.to_string()),
+                hand.game_date,
                 hand.table_name,
                 hand.hand_name,
                 hand.hero_index,
                 hand.small_blind,
                 hand.big_blind,
                 hand.button_index,
-                hand.first_flop.map(|flop| cards_to_string(&flop)),
+                hand.first_flop.map(|flop| flop.to_string()),
                 hand.first_turn.map(|turn| turn.to_string()),
                 hand.first_river.map(|river| river.to_string()),
                 hand.pot_kind.to_str(),
@@ -176,10 +183,10 @@ impl DB {
                 player.starting_stack,
                 player.pot_contribution,
                 player.showdown_stack,
-                Action::actions_to_string(&player.pre_flop_action).unwrap(),
-                Action::actions_to_string(&player.flop_action),
-                Action::actions_to_string(&player.turn_action),
-                Action::actions_to_string(&player.river_action),
+                player.pre_flop_action.to_string().unwrap(),
+                player.flop_action.to_string(),
+                player.turn_action.to_string(),
+                player.river_action.to_string(),
             ],
         )?;
         Ok(())
@@ -190,16 +197,50 @@ impl DB {
         let count: u64 = hands_with_name.query_row((hand_name,), |row| row.get(0))?;
         Ok(count != 0)
     }
-}
 
-fn cards_to_string(cards: &[Card]) -> String {
-    let mut out = String::new();
-    for card in cards {
-        write!(&mut out, "{card}").unwrap();
+    pub fn load_hands_from_query(
+        &self,
+        query: &str,
+        params: impl Params,
+    ) -> Result<Vec<(Hand, Option<HandPlayer>)>> {
+        let mut stmt = self.conn.prepare(query)?;
+        // TODO: Can still potentially modify the database.
+        if !stmt.readonly() {
+            return Err("db: running non readonly query to get hands".into());
+        }
+
+        let hands = stmt
+            .query_map(params, |row| {
+                let hand = Hand::from_row(row)?;
+                let hand_player = HandPlayer::from_row(row)?;
+                Ok((hand, hand_player))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        Ok(hands)
     }
-    out
 }
 
+fn get_string(row: &Row<'_>, idx: impl RowIndex) -> rusqlite::Result<Option<Arc<String>>> {
+    let v = row.get::<_, Option<String>>(idx)?;
+    Ok(v.map(|v| Arc::new(v)))
+}
+
+impl FromSql for crate::hand::Hand {
+    fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
+        let hand = value.as_str()?;
+        crate::hand::Hand::from_str(&hand).map_err(|err| FromSqlError::Other(err))
+    }
+}
+
+impl FromSql for Card {
+    fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
+        let s = value.as_str()?;
+        Card::from_str(s).map_err(|err| FromSqlError::Other(err))
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct Hand {
     pub id: Option<u64>,
     pub unit: Option<Arc<String>>,
@@ -214,7 +255,7 @@ pub struct Hand {
     pub big_blind: u32,
     pub button_index: u8,
 
-    pub first_flop: Option<[Card; 3]>,
+    pub first_flop: Option<Flop>,
     pub first_turn: Option<Card>,
     pub first_river: Option<Card>,
 
@@ -266,7 +307,7 @@ impl Hand {
             big_blind: game.big_blind(),
             button_index: game_data.button_index,
             hero_index: game_data.hero_index,
-            first_flop: first_runout.flop(),
+            first_flop: first_runout.flop().map(|flop| Flop(flop)),
             first_turn: first_runout.turn(),
             first_river: first_runout.river(),
             pot_kind: PotKind::Walk,
@@ -347,6 +388,81 @@ impl Hand {
             self.players_post_flop = Some(u8::try_from(remaining_players).unwrap());
         }
     }
+
+    fn from_row(row: &Row<'_>) -> rusqlite::Result<Self> {
+        let id: u64 = row.get("id")?;
+        let hand = Self {
+            id: Some(id),
+            unit: get_string(row, "unit")?,
+            max_players: row.get("max_players")?,
+            game_location: get_string(row, "game_location")?,
+            game_date: row.get("game_date")?,
+            table_name: get_string(row, "table_name")?,
+            hand_name: get_string(row, "hand_name")?,
+            hero_index: row.get("hero_index")?,
+            small_blind: row.get("small_blind")?,
+            big_blind: row.get("big_blind")?,
+            button_index: row.get("button_index")?,
+            first_flop: row.get("first_flop")?,
+            first_turn: row.get("first_turn")?,
+            first_river: row.get("first_river")?,
+            pot_kind: row.get("pot_kind")?,
+            posting: row.get("posting")?,
+            straddling: row.get("straddling")?,
+            pre_flop_limping: row.get("pre_flop_limping")?,
+            pre_flop_cold_calling: row.get("pre_flop_cold_calling")?,
+            players_post_flop: row.get("players_post_flop")?,
+            players_at_showdown: row.get("players_at_showdown")?,
+            single_winner: row.get("single_winner")?,
+            final_full_pot_size: row.get("final_full_pot_size")?,
+        };
+        Ok(hand)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Flop(pub [Card; 3]);
+
+impl FromSql for Flop {
+    fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
+        let s = value.as_str()?;
+        if s.len() != 6 {
+            return Err(FromSqlError::Other(
+                format!("invalid cards '{s}': bad length").into(),
+            ));
+        }
+        if !s.is_ascii() {
+            return Err(FromSqlError::Other(
+                format!("invalid cards '{s}': not ascii").into(),
+            ));
+        }
+
+        let mut cards = [Card::MIN; 3];
+        let mut cards_set = Cards::EMPTY;
+        for i in 0..3 {
+            let card_raw = &s[i * 2..i * 2 + 2];
+            let card = Card::from_str(card_raw).map_err(|err| FromSqlError::Other(err))?;
+
+            if !cards_set.try_add(card) {
+                return Err(FromSqlError::Other(
+                    format!("invalid cards '{s}': duplicate card {card}").into(),
+                ));
+            };
+            cards[i] = card;
+        }
+
+        Ok(Flop(cards))
+    }
+}
+
+impl Flop {
+    fn to_string(self) -> String {
+        let mut out = String::with_capacity(6);
+        for card in self.0 {
+            write!(&mut out, "{card}").unwrap();
+        }
+        out
+    }
 }
 
 #[repr(u8)]
@@ -360,7 +476,27 @@ pub enum PotKind {
     FiveBetPlus,
 }
 
+impl FromSql for PotKind {
+    fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
+        let s = value.as_str()?;
+        Self::from_str(s)
+            .ok_or_else(|| FromSqlError::Other(format!("unknown pot kind '{s}'").into()))
+    }
+}
+
 impl PotKind {
+    fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "walk" => Some(PotKind::Walk),
+            "limped" => Some(PotKind::Limped),
+            "srp" => Some(PotKind::SRP),
+            "3-bet" => Some(PotKind::ThreeBet),
+            "4-bet" => Some(PotKind::FourBet),
+            "5-bet+" => Some(PotKind::FiveBetPlus),
+            _ => None,
+        }
+    }
+
     fn to_str(self) -> &'static str {
         match self {
             PotKind::Walk => "walk",
@@ -373,6 +509,7 @@ impl PotKind {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct HandPlayer {
     pub hand_id: Option<u64>,
     pub player: u8,
@@ -386,14 +523,48 @@ pub struct HandPlayer {
     pub pot_contribution: u32,
     pub showdown_stack: u32,
 
-    pub pre_flop_action: Vec<Action>,
-    pub flop_action: Vec<Action>,
-    pub turn_action: Vec<Action>,
-    pub river_action: Vec<Action>,
+    pub pre_flop_action: Actions,
+    pub flop_action: Actions,
+    pub turn_action: Actions,
+    pub river_action: Actions,
+}
+
+impl HandPlayer {
+    fn from_row(row: &Row<'_>) -> rusqlite::Result<Option<Self>> {
+        let hand_id_and_player: rusqlite::Result<(Option<u64>, u8)> = row
+            .get("hand_id")
+            .and_then(|hand_id| Ok((hand_id, row.get("player")?)));
+
+        let (hand_id, player) = match hand_id_and_player {
+            Ok((Some(hand_id), player)) => (hand_id, player),
+            Ok((None, _)) => return Ok(None),
+            Err(rusqlite::Error::InvalidParameterName(_)) => return Ok(None),
+            Err(rusqlite::Error::InvalidColumnType(_, _, Type::Null)) => return Ok(None),
+            Err(err) => return Err(err),
+        };
+
+        let hand_player = HandPlayer {
+            hand_id: Some(hand_id),
+            player,
+            player_name: get_string(row, "player_name")?,
+            seat: row.get("seat")?,
+            hand: row.get("hand")?,
+            went_to_showdown: row.get("went_to_showdown")?,
+            starting_stack: row.get("starting_stack")?,
+            pot_contribution: row.get("pot_contribution")?,
+            showdown_stack: row.get("showdown_stack")?,
+            pre_flop_action: row.get("pre_flop_action")?,
+            flop_action: row.get("flop_action")?,
+            turn_action: row.get("turn_action")?,
+            river_action: row.get("river_action")?,
+        };
+
+        Ok(Some(hand_player))
+    }
 }
 
 #[repr(u8)]
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub enum Action {
     Post = b'p',
     Straddle = b's',
@@ -405,20 +576,19 @@ pub enum Action {
 }
 
 impl Action {
-    fn actions_to_string(actions: &[Action]) -> Option<String> {
-        if actions.is_empty() {
-            None
-        } else {
-            Some(actions.iter().map(|action| action.to_char()).collect())
+    fn from_byte(b: u8) -> Option<Self> {
+        match b {
+            b'p' => Some(Action::Post),
+            b's' => Some(Action::Straddle),
+            b'f' => Some(Action::Fold),
+            b'x' => Some(Action::Check),
+            b'c' => Some(Action::Call),
+            b'b' => Some(Action::Bet),
+            b'r' => Some(Action::Raise),
+            _ => None,
         }
     }
 
-    fn to_char(self) -> char {
-        self as u8 as char
-    }
-}
-
-impl Action {
     fn from_game(action: crate::game::Action) -> Option<Self> {
         use crate::game::Action::*;
 
@@ -431,6 +601,48 @@ impl Action {
             Bet { .. } => Some(Action::Bet),
             Raise { .. } => Some(Action::Raise),
             _ => None,
+        }
+    }
+
+    fn to_char(self) -> char {
+        self as u8 as char
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Actions(pub Vec<Action>);
+
+impl FromSql for Actions {
+    fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
+        let actions = value
+            .as_str_or_null()?
+            .map(|s| Self::from_str(s).map_err(|err| FromSqlError::Other(err)))
+            .transpose()?
+            .unwrap_or_else(|| Self::empty());
+        Ok(actions)
+    }
+}
+
+impl Actions {
+    fn empty() -> Self {
+        Self(Vec::new())
+    }
+
+    fn from_str(s: &str) -> Result<Self> {
+        let actions = s
+            .bytes()
+            .map(|b| {
+                Action::from_byte(b).ok_or_else(|| format!("db: invalid actions '{s}'").into())
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Self(actions))
+    }
+
+    fn to_string(&self) -> Option<String> {
+        if self.0.is_empty() {
+            None
+        } else {
+            Some(self.0.iter().map(|action| action.to_char()).collect())
         }
     }
 }
@@ -463,14 +675,14 @@ impl HandBundle {
                 player_name: player.name.clone(),
                 seat: player.seat,
                 hand: player.hand,
-                went_to_showdown: !game.folded(index),
+                went_to_showdown: hand.players_at_showdown.is_some() && !game.folded(index),
                 starting_stack: player.starting_stack,
                 pot_contribution: game.total_invested(index),
                 showdown_stack: game.current_stacks()[index],
-                pre_flop_action: Vec::new(),
-                flop_action: Vec::new(),
-                turn_action: Vec::new(),
-                river_action: Vec::new(),
+                pre_flop_action: Actions::empty(),
+                flop_action: Actions::empty(),
+                turn_action: Actions::empty(),
+                river_action: Actions::empty(),
             })
             .collect();
 
@@ -501,7 +713,7 @@ impl HandBundle {
                     Street::Turn => &mut player.turn_action,
                     Street::River => &mut player.river_action,
                 };
-                actions.push(action);
+                actions.0.push(action);
             }
         }
     }

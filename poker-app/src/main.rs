@@ -25,13 +25,8 @@ fn main() -> Result<()> {
         Some("enumerate-table") => enumerate_table(&args[2..]),
         Some("simulate-table") => simulate_table(&args[2..]),
         Some("parse-gg") => parse_gg(&args[2..]),
-        Some("gui") => {
-            if args.len() != 2 {
-                return Err(INVALID_COMMAND_ERROR.into());
-            }
-            gui().map_err(|err| format!("{err}"))?;
-            Ok(())
-        }
+        Some("gui") => gui(&args[2..]),
+        Some("history-gui") => history_gui(&args[2..]),
         _ => Err(INVALID_COMMAND_ERROR.into()),
     }
 }
@@ -213,12 +208,36 @@ fn parse_gg(args: &[String]) -> Result<()> {
     }
 }
 
-fn gui() -> eframe::Result {
+fn history_gui(args: &[String]) -> Result<()> {
+    // TODO
+
+    const DEFAULT_QUERY: &str =
+        "SELECT * FROM hands LEFT JOIN hands_players ON id = hand_id AND hero_index = player";
+
+    let (db_path, query) = match args {
+        [db_path] => (db_path.as_str(), DEFAULT_QUERY),
+        [db_path, query] => (db_path.as_str(), query.as_str()),
+        _ => return Err(INVALID_COMMAND_ERROR.into()),
+    };
+
+    let db = DB::open(db_path)?;
+    let hands = db.load_hands_from_query(query, ())?;
+    println!("{hands:#?}");
+
+    Ok(())
+}
+
+fn gui(args: &[String]) -> Result<()> {
+    if args.len() != 2 {
+        return Err(INVALID_COMMAND_ERROR.into());
+    }
+
     env_logger::init();
     let options = eframe::NativeOptions {
         viewport: ViewportBuilder::default().with_maximized(true),
         ..Default::default()
     };
+
     eframe::run_native(
         "Poker Toolkit",
         options,
@@ -232,6 +251,9 @@ fn gui() -> eframe::Result {
             Ok(Box::new(App::new()?))
         }),
     )
+    .map_err(|err| err.to_string())?;
+
+    Ok(())
 }
 
 struct App {
