@@ -221,6 +221,15 @@ impl DB {
 
         Ok(hands)
     }
+
+    pub fn get_game_data(&self, hand_id: u64) -> Result<GameData> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT hand_data FROM hands_data WHERE id = ?")?;
+        let game_data: String = stmt.query_row((hand_id,), |row| row.get("hand_data"))?;
+        let game_data: GameData = serde_json::from_str(&game_data)?;
+        Ok(game_data)
+    }
 }
 
 fn get_string(row: &Row<'_>, idx: impl RowIndex) -> rusqlite::Result<Option<Arc<String>>> {

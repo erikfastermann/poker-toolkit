@@ -25,6 +25,7 @@ use crate::{
 pub struct GameView {
     game: Game,
     card_selector: CardSelector,
+    enable_game_builder: bool,
     game_builder: GameBuilder,
     player_action_generators: Vec<(
         &'static str,
@@ -53,6 +54,7 @@ impl GameView {
         let mut game_view = Self {
             game: Game::from_game_data(&GameData::default()).unwrap(),
             card_selector: CardSelector::new(),
+            enable_game_builder: true,
             game_builder: GameBuilder::new(player_action_generator_names, Some(0)),
             player_action_generators,
             current_player_action_generators: HashMap::new(),
@@ -62,6 +64,28 @@ impl GameView {
         game_view.game.draw_unset_hands(&mut rand::thread_rng());
         game_view.game.post_small_and_big_blind().unwrap();
         game_view
+    }
+
+    pub fn set_enable_game_builder(&mut self, enable_game_builder: bool) {
+        self.enable_game_builder = enable_game_builder;
+    }
+
+    pub fn set_pick_community_cards(&mut self, pick_community_cards: bool) {
+        self.pick_community_cards = pick_community_cards;
+    }
+
+    pub fn with_game_mut(&mut self, f: impl FnOnce(&mut Game)) -> Result<()> {
+        f(&mut self.game);
+
+        // TODO: Draw unset hands if required.
+
+        if self.game.state() == State::Post && !self.game.can_next() {
+            self.game.post_small_and_big_blind()?;
+        }
+
+        self.current_amount = 0;
+
+        Ok(())
     }
 
     pub fn view(&mut self, ui: &mut Ui) -> Result<()> {
@@ -547,18 +571,17 @@ impl GameView {
     }
 
     fn view_game_builder(&mut self, ctx: &Context) -> Result<()> {
+        if !self.enable_game_builder {
+            return Ok(());
+        }
+
         let Some(config) = self.game_builder.window(ctx, "Configure game".to_string()) else {
             return Ok(());
         };
 
-        self.game = config.game;
+        self.with_game_mut(|game| *game = config.game)?;
         self.game.draw_unset_hands(&mut rand::thread_rng());
-        if self.game.state() == State::Post && !self.game.can_next() {
-            self.game.post_small_and_big_blind()?;
-        }
-
-        self.current_amount = 0;
-        self.pick_community_cards = config.pick_community_cards;
+        self.set_pick_community_cards(config.pick_community_cards);
 
         self.current_player_action_generators.clear();
         for (player_index, player) in config.players.into_iter().enumerate() {

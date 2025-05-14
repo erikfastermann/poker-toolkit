@@ -8,11 +8,12 @@ use eframe::Frame;
 use poker_core::cards::Cards;
 use poker_core::db::{self, DB};
 use poker_core::equity::{Equity, EquityTable};
+use poker_core::game::Game;
 use poker_core::parser::GGHandHistoryParser;
 use poker_core::range::RangeTable;
 use poker_core::result::Result;
 use poker_gui::game_view::GameView;
-use poker_gui::history_viewer::HistoryViewer;
+use poker_gui::history_viewer::HistoryView;
 
 const INVALID_COMMAND_ERROR: &'static str = "Invalid command. See README for usage.";
 
@@ -224,6 +225,11 @@ fn history_gui(args: &[String]) -> Result<()> {
     let db = DB::open(db_path)?;
     let hands = db.load_hands_from_query(query, ())?;
 
+    let game_getter = move |hand_id| {
+        db.get_game_data(hand_id)
+            .and_then(|data| Game::from_game_data(&data))
+    };
+
     // TODO: Deduplicate.
     env_logger::init();
     let options = eframe::NativeOptions {
@@ -241,7 +247,7 @@ fn history_gui(args: &[String]) -> Result<()> {
             };
             cc.egui_ctx.set_style(style);
             egui_extras::install_image_loaders(&cc.egui_ctx);
-            Ok(Box::new(HandHistory::new(hands)?))
+            Ok(Box::new(HandHistory::new(hands, game_getter)?))
         }),
     )
     .map_err(|err| err.to_string())?;
@@ -250,7 +256,7 @@ fn history_gui(args: &[String]) -> Result<()> {
 }
 
 fn gui(args: &[String]) -> Result<()> {
-    if args.len() != 2 {
+    if args.len() != 0 {
         return Err(INVALID_COMMAND_ERROR.into());
     }
 
@@ -310,19 +316,22 @@ impl eframe::App for App {
 
 // TODO
 struct HandHistory {
-    history: HistoryViewer,
+    history: HistoryView,
 }
 
 impl HandHistory {
-    fn new(entries: Vec<(db::Hand, Option<db::HandPlayer>)>) -> Result<Self> {
+    fn new(
+        entries: Vec<(db::Hand, Option<db::HandPlayer>)>,
+        game_getter: impl FnMut(u64) -> Result<Game> + 'static,
+    ) -> Result<Self> {
         Ok(Self {
-            history: HistoryViewer::new(entries),
+            history: HistoryView::new(entries, Box::new(game_getter)),
         })
     }
 }
 
 impl eframe::App for HandHistory {
     fn update(&mut self, ctx: &Context, _frame: &mut Frame) {
-        CentralPanel::default().show(ctx, |ui| self.history.view(ui));
+        self.history.view(ctx);
     }
 }

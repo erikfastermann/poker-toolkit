@@ -1,47 +1,129 @@
-use eframe::egui::{Align, Layout, ScrollArea, Sense, TextStyle, Ui};
+use eframe::egui::{
+    Align, CentralPanel, Context, Layout, ScrollArea, Sense, TextStyle, TopBottomPanel, Ui,
+    UiBuilder,
+};
 use egui_extras::{Column, TableBody, TableBuilder, TableRow};
-use poker_core::{db, game::Game};
+use poker_core::{db, game::Game, result::Result};
 
-pub struct HistoryViewer {
+use crate::{card::draw_cards, game_view::GameView};
+
+pub struct HistoryView {
     entries: Vec<(db::Hand, Option<db::HandPlayer>)>,
+    current_entry: Option<usize>,
+    scroll_to_current_entry: bool,
+    game_view: Option<GameView>,
+    game_getter: Box<dyn FnMut(u64) -> Result<Game>>,
 }
 
-impl HistoryViewer {
-    pub fn new(entries: Vec<(db::Hand, Option<db::HandPlayer>)>) -> Self {
-        Self { entries }
+impl HistoryView {
+    pub fn new(
+        entries: Vec<(db::Hand, Option<db::HandPlayer>)>,
+        game_getter: Box<dyn FnMut(u64) -> Result<Game>>,
+    ) -> Self {
+        Self {
+            entries,
+            scroll_to_current_entry: false,
+            current_entry: None,
+            game_view: None,
+            game_getter,
+        }
     }
 
-    pub fn view(&mut self, ui: &mut Ui) {
-        ScrollArea::horizontal().show(ui, |ui| self.table(ui)).inner
+    pub fn view(&mut self, ctx: &Context) {
+        let old_entry = self.current_entry;
+        let has_game = self.game_view.is_some();
+
+        if has_game {
+            CentralPanel::default().show(ctx, |ui| self.game(ui));
+        }
+
+        let table_panel_height = if has_game {
+            ctx.screen_rect().height() * 0.3
+        } else {
+            ctx.screen_rect().height()
+        };
+
+        TopBottomPanel::bottom("table_panel")
+            .resizable(false)
+            .exact_height(table_panel_height)
+            .show(ctx, |ui| {
+                ScrollArea::horizontal().show(ui, |ui| self.table(ui));
+            });
+
+        if old_entry != self.current_entry {
+            self.update_game_view();
+            ctx.request_repaint();
+        }
+    }
+
+    fn update_game_view(&mut self) {
+        if let Some(current_entry) = self.current_entry {
+            if self.game_view.is_none() {
+                self.scroll_to_current_entry = true;
+            }
+
+            // TODO:
+            // - Handle errors
+            // - Run in background
+            let hand_id = self.entries[current_entry].0.id.unwrap();
+            let mut game = (self.game_getter)(hand_id).unwrap();
+            game.rewind();
+
+            let mut game_view = GameView::new();
+            game_view.set_enable_game_builder(false);
+            game_view
+                .with_game_mut(|current_game| *current_game = game)
+                .unwrap();
+            self.game_view = Some(game_view);
+        } else {
+            self.game_view = None;
+        }
+    }
+
+    fn game(&mut self, ui: &mut Ui) {
+        let mut max_rect = ui.max_rect().shrink(ui.max_rect().height() * 0.02);
+        max_rect.set_height(max_rect.height() * 0.7);
+        max_rect.set_width(max_rect.height() * 4.0 / 3.0);
+
+        ui.allocate_new_ui(UiBuilder::new().max_rect(max_rect), |ui| {
+            self.game_view.as_mut().unwrap().view(ui).unwrap();
+        });
     }
 
     fn table(&mut self, ui: &mut Ui) {
         let available_height = ui.available_height();
         let text_height = Self::text_height(ui);
 
-        TableBuilder::new(ui)
+        let mut builder = TableBuilder::new(ui)
             .striped(true)
             .resizable(true)
             .cell_layout(Layout::left_to_right(Align::Center))
-            .column(Column::auto())
-            .column(Column::auto())
-            .column(Column::auto())
-            .column(Column::auto())
-            .column(Column::auto())
-            .column(Column::auto())
-            .column(Column::auto())
-            .column(Column::auto())
-            .column(Column::auto())
-            .column(Column::auto())
-            .column(Column::auto())
-            .column(Column::auto())
-            .column(Column::auto())
-            .column(Column::auto())
-            .column(Column::auto())
-            .column(Column::auto())
+            .column(Column::remainder())
+            .column(Column::remainder())
+            .column(Column::remainder())
+            .column(Column::remainder())
+            .column(Column::remainder())
+            .column(Column::remainder())
+            .column(Column::remainder())
+            .column(Column::remainder())
+            .column(Column::remainder())
+            .column(Column::remainder())
+            .column(Column::remainder())
+            .column(Column::remainder())
+            .column(Column::remainder())
+            .column(Column::remainder())
+            .column(Column::remainder())
+            .column(Column::remainder())
             .min_scrolled_height(0.0)
             .max_scroll_height(available_height)
-            .sense(Sense::click())
+            .sense(Sense::click());
+
+        if self.scroll_to_current_entry {
+            builder = builder.scroll_to_row(self.current_entry.unwrap(), Some(Align::TOP));
+            self.scroll_to_current_entry = false;
+        }
+
+        builder
             .header(text_height, |header| self.table_header(header))
             .body(|body| self.table_body(body));
     }
@@ -99,12 +181,17 @@ impl HistoryViewer {
 
     fn table_body(&mut self, mut body: TableBody<'_>) {
         let text_height = Self::text_height(body.ui_mut());
-        body.rows(text_height, self.entries.len(), |row| {
+        body.rows(1.5 * text_height, self.entries.len(), |row| {
             self.table_row(row.index(), row);
         });
     }
 
     fn table_row(&mut self, index: usize, mut row: TableRow<'_, '_>) {
+        let selected = self
+            .current_entry
+            .is_some_and(|current_entry| current_entry == index);
+        row.set_selected(selected);
+
         let (hand, hand_player) = &self.entries[index];
 
         row.col(|ui| {
@@ -169,11 +256,11 @@ impl HistoryViewer {
         row.col(|ui| {
             let hand = hand_player
                 .as_ref()
-                .and_then(|hand_player| hand_player.hand)
-                .map(|hand| hand.to_string())
-                .unwrap_or_else(|| "-".to_string());
+                .and_then(|hand_player| hand_player.hand);
 
-            ui.label(hand);
+            if let Some(hand) = hand {
+                draw_cards(ui.painter(), ui.max_rect(), &hand.to_card_array());
+            }
         });
 
         row.col(|ui| {
@@ -186,12 +273,9 @@ impl HistoryViewer {
         });
 
         row.col(|ui| {
-            let flop = hand
-                .first_flop
-                .map(|flop| flop.to_string())
-                .unwrap_or_else(|| "-".to_owned());
-
-            ui.label(flop);
+            if let Some(flop) = hand.first_flop {
+                draw_cards(ui.painter(), ui.max_rect(), &flop.0);
+            }
         });
 
         row.col(|ui| {
@@ -204,12 +288,9 @@ impl HistoryViewer {
         });
 
         row.col(|ui| {
-            let turn = hand
-                .first_turn
-                .map(|turn| turn.to_string())
-                .unwrap_or_else(|| "-".to_owned());
-
-            ui.label(turn);
+            if let Some(turn) = hand.first_turn {
+                draw_cards(ui.painter(), ui.max_rect(), &[turn]);
+            }
         });
 
         row.col(|ui| {
@@ -222,12 +303,9 @@ impl HistoryViewer {
         });
 
         row.col(|ui| {
-            let river = hand
-                .first_river
-                .map(|river| river.to_string())
-                .unwrap_or_else(|| "-".to_owned());
-
-            ui.label(river);
+            if let Some(river) = hand.first_river {
+                draw_cards(ui.painter(), ui.max_rect(), &[river]);
+            }
         });
 
         row.col(|ui| {
@@ -261,6 +339,14 @@ impl HistoryViewer {
 
             ui.label(win_loss);
         });
+
+        if row.response().clicked() {
+            if selected {
+                self.current_entry = None;
+            } else {
+                self.current_entry = Some(index);
+            }
+        }
     }
 
     fn text_height(ui: &Ui) -> f32 {
