@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS hands(
     hand_name TEXT UNIQUE,
     hero_index INTEGER,
 
+    player_count INTEGER NOT NULL,
     small_blind INTEGER NOT NULL,
     big_blind INTEGER NOT NULL,
     button_index INTEGER NOT NULL,

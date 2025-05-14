@@ -111,6 +111,7 @@ impl DB {
                 table_name,
                 hand_name,
                 hero_index,
+                player_count,
                 small_blind,
                 big_blind,
                 button_index,
@@ -126,7 +127,7 @@ impl DB {
                 players_at_showdown,
                 single_winner,
                 final_full_pot_size
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 id,
                 hand.unit,
@@ -136,6 +137,7 @@ impl DB {
                 hand.table_name,
                 hand.hand_name,
                 hand.hero_index,
+                hand.player_count,
                 hand.small_blind,
                 hand.big_blind,
                 hand.button_index,
@@ -251,6 +253,7 @@ pub struct Hand {
     pub hand_name: Option<Arc<String>>,
     pub hero_index: Option<u8>,
 
+    pub player_count: u8,
     pub small_blind: u32,
     pub big_blind: u32,
     pub button_index: u8,
@@ -303,6 +306,7 @@ impl Hand {
             game_date: game.date(),
             table_name: game.table_name(),
             hand_name: game.hand_name(),
+            player_count: u8::try_from(game.player_count()).unwrap(),
             small_blind: game.small_blind(),
             big_blind: game.big_blind(),
             button_index: game_data.button_index,
@@ -400,6 +404,7 @@ impl Hand {
             table_name: get_string(row, "table_name")?,
             hand_name: get_string(row, "hand_name")?,
             hero_index: row.get("hero_index")?,
+            player_count: row.get("player_count")?,
             small_blind: row.get("small_blind")?,
             big_blind: row.get("big_blind")?,
             button_index: row.get("button_index")?,
@@ -456,7 +461,7 @@ impl FromSql for Flop {
 }
 
 impl Flop {
-    fn to_string(self) -> String {
+    pub fn to_string(self) -> String {
         let mut out = String::with_capacity(6);
         for card in self.0 {
             write!(&mut out, "{card}").unwrap();
@@ -638,7 +643,7 @@ impl Actions {
         Ok(Self(actions))
     }
 
-    fn to_string(&self) -> Option<String> {
+    pub fn to_string(&self) -> Option<String> {
         if self.0.is_empty() {
             None
         } else {

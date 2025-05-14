@@ -6,12 +6,13 @@ use std::time::Instant;
 use eframe::egui::{CentralPanel, Context, Rect, Style, UiBuilder, Vec2, ViewportBuilder, Visuals};
 use eframe::Frame;
 use poker_core::cards::Cards;
-use poker_core::db::DB;
+use poker_core::db::{self, DB};
 use poker_core::equity::{Equity, EquityTable};
 use poker_core::parser::GGHandHistoryParser;
 use poker_core::range::RangeTable;
 use poker_core::result::Result;
 use poker_gui::game_view::GameView;
+use poker_gui::history_viewer::HistoryViewer;
 
 const INVALID_COMMAND_ERROR: &'static str = "Invalid command. See README for usage.";
 
@@ -222,7 +223,28 @@ fn history_gui(args: &[String]) -> Result<()> {
 
     let db = DB::open(db_path)?;
     let hands = db.load_hands_from_query(query, ())?;
-    println!("{hands:#?}");
+
+    // TODO: Deduplicate.
+    env_logger::init();
+    let options = eframe::NativeOptions {
+        viewport: ViewportBuilder::default().with_maximized(true),
+        ..Default::default()
+    };
+
+    eframe::run_native(
+        "Poker Toolkit",
+        options,
+        Box::new(|cc| {
+            let style = Style {
+                visuals: Visuals::dark(),
+                ..Style::default()
+            };
+            cc.egui_ctx.set_style(style);
+            egui_extras::install_image_loaders(&cc.egui_ctx);
+            Ok(Box::new(HandHistory::new(hands)?))
+        }),
+    )
+    .map_err(|err| err.to_string())?;
 
     Ok(())
 }
@@ -283,5 +305,24 @@ impl eframe::App for App {
                 self.game.view(ui).unwrap()
             });
         });
+    }
+}
+
+// TODO
+struct HandHistory {
+    history: HistoryViewer,
+}
+
+impl HandHistory {
+    fn new(entries: Vec<(db::Hand, Option<db::HandPlayer>)>) -> Result<Self> {
+        Ok(Self {
+            history: HistoryViewer::new(entries),
+        })
+    }
+}
+
+impl eframe::App for HandHistory {
+    fn update(&mut self, ctx: &Context, _frame: &mut Frame) {
+        CentralPanel::default().show(ctx, |ui| self.history.view(ui));
     }
 }
