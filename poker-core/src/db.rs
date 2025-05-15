@@ -2,8 +2,9 @@ use std::{fmt::Write, path::Path, str::FromStr, sync::Arc};
 
 use chrono::NaiveDateTime;
 use rusqlite::{
+    functions::FunctionFlags,
     params,
-    types::{FromSql, FromSqlError, FromSqlResult, Type, ValueRef},
+    types::{FromSql, FromSqlError, FromSqlResult, Type, Value, ValueRef},
     Connection, Params, Row, RowIndex, Transaction,
 };
 
@@ -28,11 +29,26 @@ const SCHEMA: &str = include_str!("schema.sql");
 
 impl DB {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        // TODO: Extra open when not creating db.
+
         let conn = Connection::open(path)?;
         conn.pragma_update(None, "encoding", "UTF-8")?;
         conn.pragma_update(None, "synchronous", "EXTRA")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.execute_batch(SCHEMA)?;
+
+        conn.create_scalar_function("position", 3, FunctionFlags::SQLITE_DETERMINISTIC, |ctx| {
+            let player_count: usize = ctx.get(0)?;
+            let button_index: usize = ctx.get(1)?;
+            let player: usize = ctx.get(2)?;
+            let Some((short_name, _)) = Game::position_name(player_count, button_index, player)
+            else {
+                return Err(rusqlite::Error::UserFunctionError(
+                    "position: invalid indices".into(),
+                ));
+            };
+            Ok(short_name)
+        })?;
 
         let db = Self { conn };
         db.check_schema()?;
@@ -198,6 +214,42 @@ impl DB {
         let mut hands_with_name = tx.prepare("SELECT COUNT(*) FROM hands WHERE hand_name = ?")?;
         let count: u64 = hands_with_name.query_row((hand_name,), |row| row.get(0))?;
         Ok(count != 0)
+    }
+
+    pub fn query_for_each(
+        &self,
+        query: &str,
+        params: impl Params,
+        mut f: impl FnMut(&[Value]) -> bool,
+    ) -> Result<()> {
+        // TODO: Support returning Result from f.
+
+        let mut stmt = self.conn.prepare(query)?;
+        // TODO: Can still potentially modify the database.
+        if !stmt.readonly() {
+            return Err("db: non readonly query".into());
+        }
+
+        let mut rows = stmt.query(params)?;
+        let mut values = Vec::new();
+        while let Some(row) = rows.next()? {
+            values.truncate(0);
+
+            for index in 0..usize::MAX {
+                let value: Value = match row.get(index) {
+                    Ok(value) => value,
+                    Err(rusqlite::Error::InvalidColumnIndex(_)) => break,
+                    Err(err) => return Err(err.into()),
+                };
+                values.push(value);
+            }
+
+            if !f(&values) {
+                break;
+            }
+        }
+
+        Ok(())
     }
 
     pub fn load_hands_from_query(
@@ -552,7 +604,7 @@ impl HandPlayer {
         let (hand_id, player) = match hand_id_and_player {
             Ok((Some(hand_id), player)) => (hand_id, player),
             Ok((None, _)) => return Ok(None),
-            Err(rusqlite::Error::InvalidParameterName(_)) => return Ok(None),
+            Err(rusqlite::Error::InvalidColumnName(_)) => return Ok(None),
             Err(rusqlite::Error::InvalidColumnType(_, _, Type::Null)) => return Ok(None),
             Err(err) => return Err(err),
         };

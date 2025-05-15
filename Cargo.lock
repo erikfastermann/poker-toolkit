@@ -2534,6 +2534,7 @@ dependencies = [
  "env_logger",
  "poker-core",
  "poker-gui",
+ "rusqlite",
  "serde",
  "serde_json",
 ]

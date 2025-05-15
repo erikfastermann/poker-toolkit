@@ -1,4 +1,5 @@
 use std::cmp::Ordering;
+use std::fmt::Write;
 use std::fs::read_to_string;
 use std::io::{self, BufWriter};
 use std::time::Instant;
@@ -14,6 +15,7 @@ use poker_core::range::RangeTable;
 use poker_core::result::Result;
 use poker_gui::game_view::GameView;
 use poker_gui::history_viewer::HistoryView;
+use rusqlite::types::Value;
 
 const INVALID_COMMAND_ERROR: &'static str = "Invalid command. See README for usage.";
 
@@ -27,6 +29,7 @@ fn main() -> Result<()> {
         Some("enumerate-table") => enumerate_table(&args[2..]),
         Some("simulate-table") => simulate_table(&args[2..]),
         Some("parse-gg") => parse_gg(&args[2..]),
+        Some("query") => query(&args[2..]),
         Some("gui") => gui(&args[2..]),
         Some("history-gui") => history_gui(&args[2..]),
         _ => Err(INVALID_COMMAND_ERROR.into()),
@@ -208,6 +211,34 @@ fn parse_gg(args: &[String]) -> Result<()> {
     } else {
         Ok(())
     }
+}
+
+fn query(args: &[String]) -> Result<()> {
+    let [db_path, query] = args else {
+        return Err(INVALID_COMMAND_ERROR.into());
+    };
+    let db = DB::open(db_path)?;
+    db.query_for_each(query, (), |row| {
+        let mut formatted = String::new();
+
+        for (index, value) in row.iter().enumerate() {
+            match value {
+                Value::Null => write!(&mut formatted, "Null").unwrap(),
+                Value::Integer(n) => write!(&mut formatted, "{n}").unwrap(),
+                Value::Real(n) => write!(&mut formatted, "{n}").unwrap(),
+                Value::Text(s) => write!(&mut formatted, "{s:?}").unwrap(),
+                Value::Blob(b) => write!(&mut formatted, "{b:?}").unwrap(),
+            }
+
+            if index != row.len() - 1 {
+                write!(&mut formatted, ", ").unwrap();
+            }
+        }
+
+        println!("{formatted}");
+        true
+    })?;
+    Ok(())
 }
 
 fn history_gui(args: &[String]) -> Result<()> {
