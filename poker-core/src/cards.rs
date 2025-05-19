@@ -183,20 +183,19 @@ impl Ord for Top5 {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Cards(u64);
 
 impl fmt::Display for Cards {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut cards = self.iter().peekable();
-        write!(f, "[")?;
-        while let Some(card) = cards.next() {
-            write!(f, "{card}")?;
-            if cards.peek().is_some() {
-                write!(f, " ")?;
+        for rank in self.by_rank().iter() {
+            for suite in Suite::SUITES {
+                let card = Card::of(rank, suite);
+                if self.has(card) {
+                    write!(f, "{card}")?;
+                }
             }
         }
-        write!(f, "]")?;
         Ok(())
     }
 }
@@ -691,6 +690,26 @@ impl Cards {
     pub fn iter(self) -> CardsIter {
         CardsIter(self)
     }
+
+    pub fn unify_suites(self) -> Self {
+        let mut suite_relevance = Suite::SUITES;
+        suite_relevance.sort_by_key(|suite| {
+            let by_rank = CardsByRank::from_cards_suite(self, *suite);
+            (by_rank.count(), by_rank)
+        });
+
+        let mut suite_mapping = Suite::SUITES;
+        for (index, suite) in suite_relevance.into_iter().rev().enumerate() {
+            suite_mapping[suite.to_usize()] = Suite::SUITES[index];
+        }
+
+        let mut out = Self::EMPTY;
+        for card in self.iter() {
+            let card = Card::of(card.rank(), suite_mapping[card.suite().to_usize()]);
+            out.add(card);
+        }
+        out
+    }
 }
 
 pub struct CardsIter(Cards);
@@ -709,7 +728,7 @@ impl Iterator for CardsIter {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct CardsByRank(i16);
 
 impl fmt::Display for CardsByRank {
@@ -881,5 +900,27 @@ impl Iterator for CardsByRankIter {
             }
             None => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use super::*;
+
+    #[test]
+    fn test_unify_suites() {
+        unsafe {
+            crate::init::init();
+        }
+
+        let flops: HashSet<_> = Card::all()
+            .flat_map(|a| Card::all().map(move |b| (a, b)))
+            .flat_map(|(a, b)| Card::all().map(move |c| (a, b, c)))
+            .filter_map(|(a, b, c)| Cards::from_slice(&[a, b, c]))
+            .map(|cards| cards.unify_suites())
+            .collect();
+        assert_eq!(flops.len(), 1755);
     }
 }

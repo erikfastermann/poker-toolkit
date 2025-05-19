@@ -2,7 +2,7 @@ use std::{fmt::Write, path::Path, str::FromStr, sync::Arc};
 
 use chrono::NaiveDateTime;
 use rusqlite::{
-    functions::FunctionFlags,
+    functions::{Context, FunctionFlags},
     params,
     types::{FromSql, FromSqlError, FromSqlResult, Type, Value, ValueRef},
     Connection, Params, Row, RowIndex, Transaction,
@@ -31,28 +31,57 @@ impl DB {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         // TODO: Extra open when not creating db.
 
-        let conn = Connection::open(path)?;
-        conn.pragma_update(None, "encoding", "UTF-8")?;
-        conn.pragma_update(None, "synchronous", "EXTRA")?;
-        conn.pragma_update(None, "foreign_keys", "ON")?;
-        conn.execute_batch(SCHEMA)?;
-
-        conn.create_scalar_function("position", 3, FunctionFlags::SQLITE_DETERMINISTIC, |ctx| {
-            let player_count: usize = ctx.get(0)?;
-            let button_index: usize = ctx.get(1)?;
-            let player: usize = ctx.get(2)?;
-            let Some((short_name, _)) = Game::position_name(player_count, button_index, player)
-            else {
-                return Err(rusqlite::Error::UserFunctionError(
-                    "position: invalid indices".into(),
-                ));
-            };
-            Ok(short_name)
-        })?;
-
-        let db = Self { conn };
+        let db = Self {
+            conn: Connection::open(path)?,
+        };
+        db.init_schema()?;
+        db.create_scalars()?;
         db.check_schema()?;
         Ok(db)
+    }
+
+    fn init_schema(&self) -> Result<()> {
+        self.conn.pragma_update(None, "encoding", "UTF-8")?;
+        self.conn.pragma_update(None, "synchronous", "EXTRA")?;
+        self.conn.pragma_update(None, "foreign_keys", "ON")?;
+        self.conn.execute_batch(SCHEMA)?;
+        Ok(())
+    }
+
+    fn create_scalars(&self) -> Result<()> {
+        self.conn.create_scalar_function(
+            "position",
+            3,
+            FunctionFlags::SQLITE_DETERMINISTIC,
+            Self::scalar_position,
+        )?;
+
+        self.conn.create_scalar_function(
+            "unify_cards",
+            1,
+            FunctionFlags::SQLITE_DETERMINISTIC,
+            Self::scalar_unify_cards,
+        )?;
+
+        Ok(())
+    }
+
+    fn scalar_position(ctx: &Context<'_>) -> rusqlite::Result<&'static str> {
+        let player_count: usize = ctx.get(0)?;
+        let button_index: usize = ctx.get(1)?;
+        let player: usize = ctx.get(2)?;
+        let Some((short_name, _)) = Game::position_name(player_count, button_index, player) else {
+            return Err(rusqlite::Error::UserFunctionError(
+                "position: invalid indices".into(),
+            ));
+        };
+        Ok(short_name)
+    }
+
+    fn scalar_unify_cards(ctx: &Context<'_>) -> rusqlite::Result<String> {
+        let cards_raw = ctx.get_raw(0).as_str()?;
+        let cards = Cards::from_str(cards_raw).map_err(|err| FromSqlError::Other(err))?;
+        Ok(cards.unify_suites().to_string())
     }
 
     fn check_schema(&self) -> Result<()> {
