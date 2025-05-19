@@ -220,10 +220,8 @@ impl DB {
         &self,
         query: &str,
         params: impl Params,
-        mut f: impl FnMut(&[Value]) -> bool,
+        mut f: impl FnMut(&[Value]) -> Result<bool>,
     ) -> Result<()> {
-        // TODO: Support returning Result from f.
-
         let mut stmt = self.conn.prepare(query)?;
         // TODO: Can still potentially modify the database.
         if !stmt.readonly() {
@@ -244,7 +242,7 @@ impl DB {
                 values.push(value);
             }
 
-            if !f(&values) {
+            if !f(&values)? {
                 break;
             }
         }

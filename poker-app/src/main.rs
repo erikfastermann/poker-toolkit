@@ -218,25 +218,27 @@ fn query(args: &[String]) -> Result<()> {
         return Err(INVALID_COMMAND_ERROR.into());
     };
     let db = DB::open(db_path)?;
+
+    let mut formatted = String::new();
     db.query_for_each(query, (), |row| {
-        let mut formatted = String::new();
+        formatted.truncate(0);
 
         for (index, value) in row.iter().enumerate() {
             match value {
-                Value::Null => write!(&mut formatted, "Null").unwrap(),
-                Value::Integer(n) => write!(&mut formatted, "{n}").unwrap(),
-                Value::Real(n) => write!(&mut formatted, "{n}").unwrap(),
-                Value::Text(s) => write!(&mut formatted, "{s:?}").unwrap(),
-                Value::Blob(b) => write!(&mut formatted, "{b:?}").unwrap(),
+                Value::Null => write!(&mut formatted, "Null")?,
+                Value::Integer(n) => write!(&mut formatted, "{n}")?,
+                Value::Real(n) => write!(&mut formatted, "{n}")?,
+                Value::Text(s) => write!(&mut formatted, "{s:?}")?,
+                Value::Blob(b) => write!(&mut formatted, "{b:?}")?,
             }
 
             if index != row.len() - 1 {
-                write!(&mut formatted, ", ").unwrap();
+                write!(&mut formatted, ", ")?;
             }
         }
 
         println!("{formatted}");
-        true
+        Ok(true)
     })?;
     Ok(())
 }
