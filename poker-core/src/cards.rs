@@ -379,7 +379,7 @@ impl Cards {
         self.0.count_ones() as u8
     }
 
-    fn by_rank(self) -> CardsByRank {
+    pub fn by_rank(self) -> CardsByRank {
         CardsByRank::from_cards(self)
     }
 
@@ -710,6 +710,18 @@ impl Cards {
         }
         out
     }
+
+    pub fn suite_count(self) -> u8 {
+        let n = self
+            .suites()
+            .filter(|(_, by_rank)| !by_rank.is_empty())
+            .count();
+        u8::try_from(n).unwrap()
+    }
+
+    pub fn rank_highest_count(self) -> u8 {
+        self.counts().iter().max().copied().unwrap()
+    }
 }
 
 pub struct CardsIter(Cards);
@@ -860,6 +872,10 @@ impl CardsByRank {
             }
         }
         best_cards
+    }
+
+    pub fn is_empty(self) -> bool {
+        self == Self::EMPTY
     }
 
     pub fn count(self) -> i8 {
