@@ -5,9 +5,11 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::{array, fmt};
 
+use serde::{Deserialize, Serialize, Serializer};
+
 use crate::card::Card;
 use crate::cards::{Cards, CardsByRank};
-use crate::game::{Action, Game, MilliBigBlind, Player};
+use crate::game::{Action, Game, MilliBigBlind, Player, State};
 use crate::hand::Hand;
 use crate::rank::Rank;
 use crate::result::{Error, Result};
@@ -18,6 +20,15 @@ pub struct RangeEntry {
     high: Rank,
     low: Rank,
     suited: bool,
+}
+
+impl Serialize for RangeEntry {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.to_regular_string())
+    }
 }
 
 impl FromStr for RangeEntry {
@@ -71,6 +82,19 @@ impl RangeEntry {
         Self::new(high, low, suited).ok_or_else(|| "range entry: invalid format".into())
     }
 
+    fn to_regular_string(self) -> String {
+        // TODO: Static str.
+
+        let suite_info = if self.high == self.low {
+            ""
+        } else if self.suited {
+            "s"
+        } else {
+            "o"
+        };
+        format!("{}{}{}", self.high, self.low, suite_info)
+    }
+
     fn from_row_column(row: Rank, column: Rank) -> Self {
         Self {
             high: max(row, column),
@@ -113,6 +137,8 @@ impl fmt::Display for PreFlopRangeTable {
 }
 
 impl PreFlopRangeTable {
+    const COUNT: usize = Rank::COUNT * Rank::COUNT;
+
     pub fn entries() -> impl Iterator<Item = RangeEntry> {
         Rank::RANKS.into_iter().rev().flat_map(|row| {
             Rank::RANKS
@@ -344,9 +370,24 @@ impl PreFlopRangeTable {
     }
 }
 
-#[derive(Debug, Default, Clone)] // TODO: Nicer debug printing.
+#[derive(Debug, Default, Clone, Deserialize)] // TODO: Nicer debug printing.
 pub struct PreFlopRangeTableWith<T> {
     table: [[T; Rank::COUNT]; Rank::COUNT],
+}
+
+impl<T: Serialize> Serialize for PreFlopRangeTableWith<T> {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        use serde::ser::SerializeMap;
+
+        let mut state = serializer.serialize_map(Some(PreFlopRangeTable::COUNT))?;
+        for (entry, value) in self.iter() {
+            state.serialize_entry(&entry, value)?;
+        }
+        state.end()
+    }
 }
 
 impl<T> PreFlopRangeTableWith<T> {
@@ -667,7 +708,8 @@ impl<T> IndexMut<Hand> for RangeTableWith<T> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum PreFlopAction {
     Post { player: u8, amount: MilliBigBlind },
     Straddle { player: u8, amount: MilliBigBlind },
@@ -689,9 +731,24 @@ impl PreFlopAction {
             _ => false,
         }
     }
+
+    fn apply_to_game(self, game: &mut Game) -> Result<()> {
+        match self {
+            PreFlopAction::Post { player, amount } => {
+                game.additional_post(usize::from(player), u32::try_from(amount)?, false)
+            }
+            PreFlopAction::Straddle { player, amount } => {
+                game.straddle(usize::from(player), u32::try_from(amount)?)
+            }
+            PreFlopAction::Fold => game.fold(),
+            PreFlopAction::Check => game.check(),
+            PreFlopAction::Call => game.call(),
+            PreFlopAction::Raise(to) => game.raise(u32::try_from(to)?),
+        }
+    }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct RangeAction {
     pub action: PreFlopAction,
     /// Frequencies valid from 0 to 10_000, divide by 100 to get the percentage.
@@ -699,7 +756,7 @@ pub struct RangeAction {
     pub ev: Option<PreFlopRangeTableWith<MilliBigBlind>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct RangeConfigEntry {
     /// The initial small and big blind post is skipped.
     pub previous_actions: Vec<PreFlopAction>,
@@ -712,25 +769,14 @@ impl RangeConfigEntry {
         max_players: usize,
         depth: MilliBigBlind,
         small_blind: MilliBigBlind,
-    ) -> Result<()> {
+    ) -> Result<Vec<PreFlopAction>> {
         let depth = u32::try_from(depth)?;
         let players = vec![Player::with_starting_stack(depth); max_players];
         let mut game = Game::new(&players, 0, u32::try_from(small_blind)?, 1_000)?;
         game.post_small_and_big_blind()?;
 
         for action in self.previous_actions.iter().copied() {
-            match action {
-                PreFlopAction::Post { player, amount } => {
-                    game.additional_post(usize::from(player), u32::try_from(amount)?, false)?
-                }
-                PreFlopAction::Straddle { player, amount } => {
-                    game.straddle(usize::from(player), u32::try_from(amount)?)?
-                }
-                PreFlopAction::Fold => game.fold()?,
-                PreFlopAction::Check => game.check()?,
-                PreFlopAction::Call => game.call()?,
-                PreFlopAction::Raise(to) => game.raise(u32::try_from(to)?)?,
-            }
+            action.apply_to_game(&mut game)?;
         }
 
         let actions: HashSet<_> = self.actions.iter().map(|action| action.action).collect();
@@ -738,9 +784,18 @@ impl RangeConfigEntry {
             return Err("range config entry: duplicate action".into());
         }
 
+        let mut possible_next_actions = Vec::new();
         let mut total_frequencies: PreFlopRangeTableWith<u16> = PreFlopRangeTableWith::default();
+
         for action in &self.actions {
+            action.action.apply_to_game(&mut game)?;
+            let next_state = game.state();
+            game.undo().unwrap();
+
+            let mut not_zero = false;
             for (entry, frequency) in action.range.iter() {
+                not_zero |= *frequency != 0;
+
                 if *frequency > 10_000 {
                     return Err(
                         "range config entry: all frequencies must be less than 10_000 (100%)"
@@ -755,6 +810,10 @@ impl RangeConfigEntry {
                     return Err("range config entry: total frequencies overflow".into());
                 }
                 total_frequencies[entry] = next_frequency;
+            }
+
+            if matches!(next_state, State::Player(_)) && not_zero {
+                possible_next_actions.push(action.action);
             }
         }
 
@@ -776,11 +835,11 @@ impl RangeConfigEntry {
             return Err("range config entry: invalid total frequencies".into());
         }
 
-        Ok(())
+        Ok(possible_next_actions)
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct RangeConfigData {
     pub description: Option<Arc<String>>,
     pub max_players: usize,
