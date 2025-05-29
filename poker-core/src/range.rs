@@ -1,17 +1,19 @@
 use std::cmp::{max, min};
 use std::collections::HashSet;
 use std::ops::{BitAndAssign, Index, IndexMut};
+use std::sync::Arc;
 use std::{array, fmt};
 
 use crate::card::Card;
 use crate::cards::{Cards, CardsByRank};
+use crate::game::{Action, Game, MilliBigBlind, Player};
 use crate::hand::Hand;
 use crate::rank::Rank;
 use crate::result::Result;
 use crate::suite::Suite;
 
 #[derive(Clone, Copy)]
-struct RangeEntry {
+pub struct RangeEntry {
     high: Rank,
     low: Rank,
     suited: bool,
@@ -31,11 +33,27 @@ impl fmt::Display for RangeEntry {
 }
 
 impl RangeEntry {
-    fn from_hand(hand: Hand) -> Self {
+    pub fn new(high: Rank, low: Rank, suited: bool) -> Option<Self> {
+        if high < low || (high == low && suited) {
+            return None;
+        }
+
+        Some(Self { high, low, suited })
+    }
+
+    pub fn from_hand(hand: Hand) -> Self {
         RangeEntry {
             high: hand.high().rank(),
             low: hand.low().rank(),
             suited: hand.suited(),
+        }
+    }
+
+    fn from_row_column(row: Rank, column: Rank) -> Self {
+        Self {
+            high: max(row, column),
+            low: min(row, column),
+            suited: column < row,
         }
     }
 
@@ -59,11 +77,7 @@ impl fmt::Display for PreFlopRangeTable {
         for row in Rank::RANKS.iter().rev().copied() {
             let mut iter = Rank::RANKS.iter().rev().copied().peekable();
             while let Some(column) = iter.next() {
-                let entry = RangeEntry {
-                    high: max(row, column),
-                    low: min(row, column),
-                    suited: column < row,
-                };
+                let entry = RangeEntry::from_row_column(row, column);
                 let contains = if self.contains_entry(entry) { "T" } else { "F" };
                 write!(f, "{} ({})", entry, contains)?;
                 if iter.peek().is_some() {
@@ -77,6 +91,15 @@ impl fmt::Display for PreFlopRangeTable {
 }
 
 impl PreFlopRangeTable {
+    pub fn entries() -> impl Iterator<Item = RangeEntry> {
+        Rank::RANKS.into_iter().rev().flat_map(|row| {
+            Rank::RANKS
+                .into_iter()
+                .rev()
+                .map(move |column| RangeEntry::from_row_column(row, column))
+        })
+    }
+
     pub fn empty() -> Self {
         Self {
             table: [CardsByRank::EMPTY; Rank::COUNT],
@@ -126,7 +149,7 @@ impl PreFlopRangeTable {
         Ok(range)
     }
 
-    fn contains_entry(&self, entry: RangeEntry) -> bool {
+    pub fn contains_entry(&self, entry: RangeEntry) -> bool {
         let (a, b) = entry.first_second();
         self.table[a.to_usize()].has(b)
     }
@@ -296,6 +319,67 @@ impl PreFlopRangeTable {
             })?;
         }
         Ok(())
+    }
+}
+
+#[derive(Default, Clone)]
+pub struct PreFlopRangeTableWith<T> {
+    table: [[T; Rank::COUNT]; Rank::COUNT],
+}
+
+impl<T> PreFlopRangeTableWith<T> {
+    pub fn iter(&self) -> impl Iterator<Item = (RangeEntry, &T)> {
+        self.table
+            .iter()
+            .enumerate()
+            .rev()
+            .flat_map(|(row_index, row)| {
+                row.iter()
+                    .enumerate()
+                    .rev()
+                    .map(move |(column_index, value)| {
+                        let entry = RangeEntry::from_row_column(
+                            Rank::RANKS[row_index],
+                            Rank::RANKS[column_index],
+                        );
+                        (entry, value)
+                    })
+            })
+    }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (RangeEntry, &mut T)> {
+        self.table
+            .iter_mut()
+            .enumerate()
+            .rev()
+            .flat_map(|(row_index, row)| {
+                row.iter_mut()
+                    .enumerate()
+                    .rev()
+                    .map(move |(column_index, value)| {
+                        let entry = RangeEntry::from_row_column(
+                            Rank::RANKS[row_index],
+                            Rank::RANKS[column_index],
+                        );
+                        (entry, value)
+                    })
+            })
+    }
+}
+
+impl<T> Index<RangeEntry> for PreFlopRangeTableWith<T> {
+    type Output = T;
+
+    fn index(&self, entry: RangeEntry) -> &Self::Output {
+        let (a, b) = entry.first_second();
+        &self.table[a.to_usize()][b.to_usize()]
+    }
+}
+
+impl<T> IndexMut<RangeEntry> for PreFlopRangeTableWith<T> {
+    fn index_mut(&mut self, entry: RangeEntry) -> &mut Self::Output {
+        let (a, b) = entry.first_second();
+        &mut self.table[a.to_usize()][b.to_usize()]
     }
 }
 
@@ -558,5 +642,212 @@ impl<T> IndexMut<Hand> for RangeTableWith<T> {
     fn index_mut(&mut self, hand: Hand) -> &mut Self::Output {
         let index = hand.to_index();
         &mut self.table[index]
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PreFlopAction {
+    Post { player: u8, amount: MilliBigBlind },
+    Straddle { player: u8, amount: MilliBigBlind },
+    Fold,
+    Check,
+    Call,
+    Raise(MilliBigBlind),
+}
+
+impl PreFlopAction {
+    fn is_action_kind(self, action: Action) -> bool {
+        match (self, action) {
+            (PreFlopAction::Post { .. }, Action::Post { .. }) => true,
+            (PreFlopAction::Straddle { .. }, Action::Straddle { .. }) => true,
+            (PreFlopAction::Fold, Action::Fold(_)) => true,
+            (PreFlopAction::Check, Action::Check(_)) => true,
+            (PreFlopAction::Call, Action::Call { .. }) => true,
+            (PreFlopAction::Raise(_), Action::Raise { .. }) => true,
+            _ => false,
+        }
+    }
+}
+
+pub struct RangeAction {
+    pub action: PreFlopAction,
+    /// Frequencies valid from 0 to 10_000, divide by 100 to get the percentage.
+    pub range: PreFlopRangeTableWith<u16>,
+}
+
+pub struct RangeConfigEntry {
+    /// The initial small and big blind post is skipped.
+    pub previous_actions: Vec<PreFlopAction>,
+    pub actions: Vec<RangeAction>,
+    pub ev: Option<PreFlopRangeTableWith<MilliBigBlind>>,
+}
+
+impl RangeConfigEntry {
+    pub fn validate(
+        &self,
+        max_players: usize,
+        depth: MilliBigBlind,
+        small_blind: MilliBigBlind,
+    ) -> Result<()> {
+        let depth = u32::try_from(depth)?;
+        let players = vec![Player::with_starting_stack(depth); max_players];
+        let mut game = Game::new(&players, 0, u32::try_from(small_blind)?, 1_000)?;
+        game.post_small_and_big_blind()?;
+
+        for action in self.previous_actions.iter().copied() {
+            match action {
+                PreFlopAction::Post { player, amount } => {
+                    game.additional_post(usize::from(player), u32::try_from(amount)?, false)?
+                }
+                PreFlopAction::Straddle { player, amount } => {
+                    game.straddle(usize::from(player), u32::try_from(amount)?)?
+                }
+                PreFlopAction::Fold => game.fold()?,
+                PreFlopAction::Check => game.check()?,
+                PreFlopAction::Call => game.call()?,
+                PreFlopAction::Raise(to) => game.raise(u32::try_from(to)?)?,
+            }
+        }
+
+        let actions: HashSet<_> = self.actions.iter().map(|action| action.action).collect();
+        if actions.len() != self.actions.len() {
+            return Err("range config entry: duplicate action".into());
+        }
+
+        let mut total_frequencies: PreFlopRangeTableWith<u16> = PreFlopRangeTableWith::default();
+        for action in &self.actions {
+            for (entry, frequency) in action.range.iter() {
+                if *frequency > 10_000 {
+                    return Err(
+                        "range config entry: all frequencies must be less than 10_000 (100%)"
+                            .into(),
+                    );
+                }
+
+                let Some(next_frequency) = total_frequencies[entry].checked_add(*frequency) else {
+                    return Err("range config entry: total frequencies overflow".into());
+                };
+                if next_frequency > 10_000 {
+                    return Err("range config entry: total frequencies overflow".into());
+                }
+                total_frequencies[entry] = next_frequency;
+            }
+        }
+
+        let contains_fold = self
+            .actions
+            .iter()
+            .any(|action| action.action == PreFlopAction::Fold);
+
+        let valid_total_frequencies = if contains_fold {
+            total_frequencies
+                .iter()
+                .all(|(_, frequency)| *frequency == 10_000)
+        } else {
+            total_frequencies
+                .iter()
+                .all(|(_, frequency)| *frequency <= 10_000)
+        };
+        if !valid_total_frequencies {
+            return Err("range config entry: invalid total frequencies".into());
+        }
+
+        Ok(())
+    }
+}
+
+pub struct RangeConfigData {
+    pub description: Option<Arc<String>>,
+    pub max_players: usize,
+    pub depth: MilliBigBlind,
+    pub small_blind: MilliBigBlind,
+    pub ranges: Vec<RangeConfigEntry>,
+}
+
+pub struct RangeConfig {
+    description: Option<Arc<String>>,
+    max_players: usize,
+    depth: MilliBigBlind,
+    small_blind: MilliBigBlind,
+    ranges: Vec<RangeConfigEntry>,
+}
+
+impl Default for RangeConfig {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+impl RangeConfig {
+    const DEFAULT: Self = Self {
+        description: None,
+        max_players: Game::MAX_PLAYERS,
+        depth: 100_000,
+        small_blind: 500,
+        ranges: Vec::new(),
+    };
+
+    pub fn from_data(data: RangeConfigData) -> Result<Self> {
+        if data.depth < 1_000 {
+            return Err("range config: depth must be greater or equal to one big blind".into());
+        }
+        if data.max_players < Game::MIN_PLAYERS || data.max_players > Game::MAX_PLAYERS {
+            return Err("range config: invalid max players value".into());
+        }
+        if data.small_blind <= 0 || data.small_blind > 1_000 {
+            return Err("range config: invalid small blind size".into());
+        }
+
+        let mut previous_actions = HashSet::new();
+        for entry in &data.ranges {
+            if !previous_actions.insert(&entry.previous_actions) {
+                return Err("range config: contains duplicated previous actions entry".into());
+            }
+            entry.validate(data.max_players, data.depth, data.small_blind)?;
+        }
+
+        Ok(Self {
+            description: data.description,
+            max_players: data.max_players,
+            depth: data.depth,
+            small_blind: data.small_blind,
+            ranges: data.ranges,
+        })
+    }
+
+    pub fn to_data(self) -> RangeConfigData {
+        RangeConfigData {
+            description: self.description,
+            max_players: self.max_players,
+            depth: self.depth,
+            small_blind: self.small_blind,
+            ranges: self.ranges,
+        }
+    }
+
+    pub fn by_actions(&self, actions: &[Action]) -> Option<&RangeConfigEntry> {
+        assert!(actions
+            .iter()
+            .any(|action| matches!(action, Action::Post { .. })));
+        assert!(actions
+            .iter()
+            .all(|action| action.is_player() && !matches!(action, Action::Bet { .. })));
+
+        for entry in &self.ranges {
+            // TODO: Short handed gameplay and skip initial blinds.
+            let kinds_match = entry.previous_actions.len() == actions.len()
+                && entry
+                    .previous_actions
+                    .iter()
+                    .zip(actions)
+                    .all(|(a, b)| a.is_action_kind(*b));
+
+            if kinds_match {
+                // TODO: Support more fine granular matching by closest sizings.
+                return Some(entry);
+            }
+        }
+
+        None
     }
 }

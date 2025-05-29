@@ -23,6 +23,8 @@ use crate::result::Result;
 // - Nicer handling of state method with multiple runouts
 // - Add single mucks action if there is only one winner
 
+pub type MilliBigBlind = i32;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Action {
