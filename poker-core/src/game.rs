@@ -25,6 +25,20 @@ use crate::result::Result;
 
 pub type MilliBigBlind = i32;
 
+pub fn milli_big_blind_from_f64(n: f64) -> Result<MilliBigBlind> {
+    let n = n * 1_000.0;
+    if n.is_nan() || n.is_infinite() {
+        return Err("milli big blind: value is not valid".into());
+    }
+    let n = n.round();
+
+    if n < MilliBigBlind::MIN as f64 || n > MilliBigBlind::MAX as f64 {
+        return Err("milli big blind: value too small or large".into());
+    }
+
+    Ok(n as MilliBigBlind)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Action {

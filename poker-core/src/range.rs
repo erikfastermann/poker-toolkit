@@ -1,6 +1,7 @@
 use std::cmp::{max, min};
 use std::collections::HashSet;
 use std::ops::{BitAndAssign, Index, IndexMut};
+use std::str::FromStr;
 use std::sync::Arc;
 use std::{array, fmt};
 
@@ -9,7 +10,7 @@ use crate::cards::{Cards, CardsByRank};
 use crate::game::{Action, Game, MilliBigBlind, Player};
 use crate::hand::Hand;
 use crate::rank::Rank;
-use crate::result::Result;
+use crate::result::{Error, Result};
 use crate::suite::Suite;
 
 #[derive(Clone, Copy)]
@@ -17,6 +18,14 @@ pub struct RangeEntry {
     high: Rank,
     low: Rank,
     suited: bool,
+}
+
+impl FromStr for RangeEntry {
+    type Err = Error;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Self::from_bytes(s.as_bytes())
+    }
 }
 
 impl fmt::Display for RangeEntry {
@@ -47,6 +56,19 @@ impl RangeEntry {
             low: hand.low().rank(),
             suited: hand.suited(),
         }
+    }
+
+    pub fn from_bytes(b: &[u8]) -> Result<Self> {
+        let (high, low, suited) = match b {
+            [high, low] if *high == *low => (*high, *low, false),
+            [high, low, b'-'] if *high == *low => (*high, *low, false),
+            [high, low, b'o'] if *high != *low => (*high, *low, false),
+            [high, low, b's'] if *high != *low => (*high, *low, true),
+            _ => return Err("range entry: invalid format".into()),
+        };
+        let high = Rank::from_ascii(high)?;
+        let low = Rank::from_ascii(low)?;
+        Self::new(high, low, suited).ok_or_else(|| "range entry: invalid format".into())
     }
 
     fn from_row_column(row: Rank, column: Rank) -> Self {
@@ -322,7 +344,7 @@ impl PreFlopRangeTable {
     }
 }
 
-#[derive(Default, Clone)]
+#[derive(Debug, Default, Clone)] // TODO: Nicer debug printing.
 pub struct PreFlopRangeTableWith<T> {
     table: [[T; Rank::COUNT]; Rank::COUNT],
 }
@@ -669,17 +691,19 @@ impl PreFlopAction {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct RangeAction {
     pub action: PreFlopAction,
     /// Frequencies valid from 0 to 10_000, divide by 100 to get the percentage.
     pub range: PreFlopRangeTableWith<u16>,
+    pub ev: Option<PreFlopRangeTableWith<MilliBigBlind>>,
 }
 
+#[derive(Debug, Clone)]
 pub struct RangeConfigEntry {
     /// The initial small and big blind post is skipped.
     pub previous_actions: Vec<PreFlopAction>,
     pub actions: Vec<RangeAction>,
-    pub ev: Option<PreFlopRangeTableWith<MilliBigBlind>>,
 }
 
 impl RangeConfigEntry {
@@ -756,6 +780,7 @@ impl RangeConfigEntry {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct RangeConfigData {
     pub description: Option<Arc<String>>,
     pub max_players: usize,
@@ -764,6 +789,7 @@ pub struct RangeConfigData {
     pub ranges: Vec<RangeConfigEntry>,
 }
 
+#[derive(Debug, Clone)]
 pub struct RangeConfig {
     description: Option<Arc<String>>,
     max_players: usize,

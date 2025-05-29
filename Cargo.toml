@@ -3,6 +3,7 @@ members = [
     "poker-core",
     "poker-gui",
     "poker-app",
+    "gto-wizard-crawler",
 ]
 resolver = "2"
 
