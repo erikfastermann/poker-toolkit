@@ -1,0 +1,10 @@
+{
+    "gw_client_id": "TODO",
+    "bearer_token": "TODO",
+    "refresh_token": "TODO",
+    "game_type": "Cash6m50zGGGeneral",
+    "max_players": 6,
+    "depth": 100000,
+    "min_frequency": 0.0025,
+    "out_dir": "TODO"
+}

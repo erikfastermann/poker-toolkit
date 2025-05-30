@@ -111,6 +111,24 @@ impl RangeEntry {
             (self.low, self.high)
         }
     }
+
+    pub fn suited(self) -> bool {
+        self.suited
+    }
+
+    pub fn pair(self) -> bool {
+        self.high == self.low
+    }
+
+    pub fn combo_count(self) -> u8 {
+        if self.pair() {
+            6
+        } else if self.suited() {
+            4
+        } else {
+            12
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -137,7 +155,7 @@ impl fmt::Display for PreFlopRangeTable {
 }
 
 impl PreFlopRangeTable {
-    const COUNT: usize = Rank::COUNT * Rank::COUNT;
+    pub const COUNT: usize = Rank::COUNT * Rank::COUNT;
 
     pub fn entries() -> impl Iterator<Item = RangeEntry> {
         Rank::RANKS.into_iter().rev().flat_map(|row| {
@@ -754,6 +772,19 @@ pub struct RangeAction {
     /// Frequencies valid from 0 to 10_000, divide by 100 to get the percentage.
     pub range: PreFlopRangeTableWith<u16>,
     pub ev: Option<PreFlopRangeTableWith<MilliBigBlind>>,
+}
+
+impl RangeAction {
+    pub fn frequency(&self) -> f64 {
+        // TODO: Could cache this.
+
+        let count: u32 = self
+            .range
+            .iter()
+            .map(|(entry, frequency)| u32::from(entry.combo_count()) * u32::from(*frequency))
+            .sum();
+        f64::from(count) / (Hand::COUNT * 10_000) as f64
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
