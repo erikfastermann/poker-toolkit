@@ -143,22 +143,9 @@ impl Crawler {
         eprintln!("Processing {pre_flop_actions:?}...");
 
         let raw_range = self.get_raw_range(&pre_flop_actions).await?;
-        let actions = self.parse_raw_range(raw_range)?;
+        let entry = self.parse_raw_range(pre_flop_actions, raw_range)?;
 
-        eprintln!(
-            "Parsed range: {:?}",
-            actions
-                .iter()
-                .map(|action| (action.action, action.frequency() * 100.0))
-                .collect::<Vec<_>>()
-        );
-
-        let entry = RangeConfigEntry {
-            previous_actions: pre_flop_actions,
-            actions,
-        };
         self.store_range(entry).await?;
-
         Ok(())
     }
 
@@ -331,7 +318,13 @@ impl Crawler {
         Ok(())
     }
 
-    fn parse_raw_range(&self, raw_range: RawRangeData) -> Result<Vec<RangeAction>> {
+    fn parse_raw_range(
+        &self,
+        pre_flop_actions: Vec<PreFlopAction>,
+        raw_range: RawRangeData,
+    ) -> Result<RangeConfigEntry> {
+        let total_range = self.parse_raw_total_range(&pre_flop_actions, &raw_range)?;
+
         let mut actions: Vec<RangeAction> = Vec::new();
 
         for action_solution in raw_range.action_solutions {
@@ -350,10 +343,6 @@ impl Crawler {
                 _ => return Err("parse raw range: unknown strategy type".into()),
             };
 
-            if action_solution.evs.len() != PreFlopRangeTable::COUNT {
-                return Err("parse raw range: evs array has bad length".into());
-            }
-
             if action_solution.strategy.len() != PreFlopRangeTable::COUNT {
                 return Err("parse raw range: strategy array has bad length".into());
             }
@@ -368,62 +357,68 @@ impl Crawler {
                 ev[RangeEntry::from_str(hand).unwrap()] = current_ev;
             }
 
-            let mut range = PreFlopRangeTableWith::default();
-            for (strategy, hand) in action_solution
-                .strategy
-                .into_iter()
-                .zip(HANDS_ORDERED_BY_GTO_WIZARD_API)
-            {
-                if strategy.is_nan() || strategy < 0.0 || strategy > 1.0 {
-                    return Err("parse raw range: strategy not in range from zero to one".into());
-                }
-
-                let frequency = strategy * 10_000.0;
-                let frequency = frequency.trunc() as u16;
-
-                range[RangeEntry::from_str(hand).unwrap()] = frequency;
-            }
-
-            actions.push(RangeAction {
-                action,
-                range,
-                ev: Some(ev),
-            });
+            let range = convert_frequency_array_to_range(&action_solution.strategy)?;
+            actions.push(RangeAction::new(action, &total_range, range, Some(ev)));
         }
 
-        self.round_range_frequencies(&mut actions)?;
-        Ok(actions)
+        eprintln!("Parsed range, validating...");
+
+        let entry = RangeConfigEntry::new(
+            pre_flop_actions,
+            total_range,
+            actions,
+            self.max_players,
+            self.depth,
+            self.small_blind(),
+            true,
+        )?;
+
+        eprintln!(
+            "Validated range: {:?}",
+            entry
+                .actions()
+                .iter()
+                .map(|action| (action.action(), entry.frequency(action.action()) * 100.0))
+                .collect::<Vec<_>>()
+        );
+
+        Ok(entry)
     }
 
-    fn round_range_frequencies(&self, actions: &mut Vec<RangeAction>) -> Result<()> {
-        if !actions
+    fn parse_raw_total_range(
+        &self,
+        pre_flop_actions: &[PreFlopAction],
+        raw_range: &RawRangeData,
+    ) -> Result<PreFlopRangeTableWith<u16>> {
+        let current_game = RangeConfigEntry::build_game(
+            self.max_players,
+            self.depth,
+            self.small_blind(),
+            &pre_flop_actions,
+        )?;
+
+        let Some(current_player) = current_game.current_player() else {
+            return Err("parse raw range: internal error while computing current player".into());
+        };
+        let player_position = Game::position_name(
+            current_game.player_count(),
+            current_game.button_index(),
+            current_player,
+        )
+        .unwrap()
+        .0;
+
+        let current_player = raw_range
+            .players_info
             .iter()
-            .any(|action| action.action == PreFlopAction::Fold)
-        {
-            return Ok(());
-        }
+            .filter(|player_info| player_info.player.position == player_position)
+            .next();
+        let Some(current_player) = current_player else {
+            return Err("parse raw range: current player not found".into());
+        };
 
-        for entry in PreFlopRangeTable::entries() {
-            let total_frequencies = actions
-                .iter()
-                .map(|action| action.range[entry])
-                .fold(Some(0u16), |acc, n| acc.and_then(|acc| acc.checked_add(n)));
-
-            let Some(total_frequencies) = total_frequencies else {
-                return Err("parse js: total frequencies of range entry overflowed".into());
-            };
-
-            if total_frequencies < 10_000 {
-                let max_frequency_action = actions
-                    .iter_mut()
-                    .max_by_key(|action| action.range[entry])
-                    .unwrap();
-
-                max_frequency_action.range[entry] += 10_000 - total_frequencies;
-            }
-        }
-
-        Ok(())
+        let total_range = convert_frequency_array_to_range(&current_player.range)?;
+        Ok(total_range)
     }
 
     async fn store_range(&self, entry: RangeConfigEntry) -> Result<()> {
@@ -431,34 +426,41 @@ impl Crawler {
 
         let range_path = PathBuf::from(&self.out_dir).join(format!(
             "range_{}.json",
-            self.url_encode_pre_flop_actions(&entry.previous_actions)?
+            self.url_encode_pre_flop_actions(entry.previous_actions())?
         ));
         fs::write(range_path, serde_json::to_string_pretty(&entry)?).await?;
 
-        // Assume small blind is always half the big blind.
-        let possible_next_actions = entry.validate(self.max_players, self.depth, 500)?;
+        let possible_next_actions = entry.possible_next_actions(
+            self.max_players,
+            self.depth,
+            self.small_blind(),
+            self.min_frequency,
+        )?;
 
-        let next_actions = entry
-            .actions
-            .iter()
-            .filter(|action| possible_next_actions.contains(&action.action))
-            .filter(|action| action.frequency() >= self.min_frequency)
+        let next_actions = possible_next_actions
+            .into_iter()
             .map(|action| {
-                let mut actions = entry.previous_actions.clone();
-                actions.push(action.action);
+                let mut actions = Vec::from(entry.previous_actions());
+                actions.push(action);
                 actions
             })
             .collect();
 
-        self.queue_pop_and_push_next(&entry.previous_actions, next_actions)
+        self.queue_pop_and_push_next(entry.previous_actions(), next_actions)
             .await?;
         Ok(())
+    }
+
+    fn small_blind(&self) -> MilliBigBlind {
+        // Assume small blind is always half the big blind.
+        500
     }
 }
 
 #[derive(Debug, Deserialize)]
 struct RawRangeData {
     action_solutions: Vec<ActionSolution>,
+    players_info: Vec<PlayerInfo>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -474,6 +476,17 @@ struct Action {
     action_type: String,
     #[serde(rename = "betsize")]
     bet_size: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PlayerInfo {
+    player: Player,
+    range: Vec<f64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Player {
+    position: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -496,3 +509,36 @@ const HANDS_ORDERED_BY_GTO_WIZARD_API: &[&str] = &[
     "Q9o", "Q9s", "QJo", "QJs", "QQ", "QTo", "QTs", "T2o", "T2s", "T3o", "T3s", "T4o", "T4s",
     "T5o", "T5s", "T6o", "T6s", "T7o", "T7s", "T8o", "T8s", "T9o", "T9s", "TT",
 ];
+
+fn convert_frequency_array_to_range(frequencies: &[f64]) -> Result<PreFlopRangeTableWith<u16>> {
+    if frequencies.len() != PreFlopRangeTable::COUNT {
+        return Err("parse raw range: bad frequency array length".into());
+    }
+
+    let mut range = PreFlopRangeTableWith::default();
+
+    for (mut strategy, hand) in frequencies
+        .iter()
+        .copied()
+        .zip(HANDS_ORDERED_BY_GTO_WIZARD_API)
+    {
+        // Sometimes the GTO Wizard frequency is a litter bigger than 1.0.
+        if strategy > 1.0 && strategy <= 1.01 {
+            strategy = 1.0;
+        }
+
+        let frequency = convert_frequency(strategy)?;
+        range[RangeEntry::from_str(hand).unwrap()] = frequency;
+    }
+
+    Ok(range)
+}
+
+fn convert_frequency(frequency: f64) -> Result<u16> {
+    if frequency.is_nan() || frequency < 0.0 || frequency > 1.0 {
+        return Err("parse raw range: frequency not in range from zero to one".into());
+    }
+
+    let frequency = frequency * 10_000.0;
+    Ok(frequency.trunc() as u16)
+}

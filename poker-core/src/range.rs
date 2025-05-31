@@ -388,7 +388,7 @@ impl PreFlopRangeTable {
     }
 }
 
-#[derive(Debug, Default, Clone, Deserialize)] // TODO: Nicer debug printing.
+#[derive(Default, Clone, Deserialize)]
 pub struct PreFlopRangeTableWith<T> {
     table: [[T; Rank::COUNT]; Rank::COUNT],
 }
@@ -405,6 +405,18 @@ impl<T: Serialize> Serialize for PreFlopRangeTableWith<T> {
             state.serialize_entry(&entry, value)?;
         }
         state.end()
+    }
+}
+
+impl<T: fmt::Debug> fmt::Debug for PreFlopRangeTableWith<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut state = f.debug_map();
+
+        for (entry, value) in self.iter() {
+            state.entry(&entry.to_regular_string(), value);
+        }
+
+        state.finish()
     }
 }
 
@@ -768,65 +780,165 @@ impl PreFlopAction {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RangeAction {
-    pub action: PreFlopAction,
+    action: PreFlopAction,
+    frequency: u64,
     /// Frequencies valid from 0 to 10_000, divide by 100 to get the percentage.
-    pub range: PreFlopRangeTableWith<u16>,
-    pub ev: Option<PreFlopRangeTableWith<MilliBigBlind>>,
+    range: PreFlopRangeTableWith<u16>,
+    ev: Option<PreFlopRangeTableWith<MilliBigBlind>>,
 }
 
 impl RangeAction {
-    pub fn frequency(&self) -> f64 {
-        // TODO: Could cache this.
+    pub fn new(
+        action: PreFlopAction,
+        total_range: &PreFlopRangeTableWith<u16>,
+        range: PreFlopRangeTableWith<u16>,
+        ev: Option<PreFlopRangeTableWith<MilliBigBlind>>,
+    ) -> Self {
+        let mut action = Self {
+            action,
+            frequency: 0,
+            range,
+            ev,
+        };
+        action.frequency = action.init_frequency(total_range);
+        action
+    }
 
-        let count: u32 = self
-            .range
+    fn init_frequency(&self, total_range: &PreFlopRangeTableWith<u16>) -> u64 {
+        self.range
             .iter()
-            .map(|(entry, frequency)| u32::from(entry.combo_count()) * u32::from(*frequency))
-            .sum();
-        f64::from(count) / (Hand::COUNT * 10_000) as f64
+            .map(|(entry, frequency)| {
+                u64::from(total_range[entry])
+                    * u64::from(entry.combo_count())
+                    * u64::from(*frequency)
+            })
+            .sum()
+    }
+
+    pub fn action(&self) -> PreFlopAction {
+        self.action
+    }
+
+    pub fn range(&self) -> &PreFlopRangeTableWith<u16> {
+        &self.range
+    }
+
+    pub fn ev(&self) -> Option<&PreFlopRangeTableWith<MilliBigBlind>> {
+        self.ev.as_ref()
     }
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RangeConfigEntry {
     /// The initial small and big blind post is skipped.
-    pub previous_actions: Vec<PreFlopAction>,
-    pub actions: Vec<RangeAction>,
+    previous_actions: Vec<PreFlopAction>,
+    total_range: PreFlopRangeTableWith<u16>,
+    total_frequency: u64,
+    actions: Vec<RangeAction>,
 }
 
 impl RangeConfigEntry {
-    pub fn validate(
+    pub fn new(
+        previous_actions: Vec<PreFlopAction>,
+        total_range: PreFlopRangeTableWith<u16>,
+        actions: Vec<RangeAction>,
+        max_players: usize,
+        depth: MilliBigBlind,
+        small_blind: MilliBigBlind,
+        round_up_frequencies: bool,
+    ) -> Result<Self> {
+        let mut entry = Self {
+            previous_actions,
+            total_range,
+            total_frequency: 0,
+            actions,
+        };
+
+        if round_up_frequencies {
+            entry.round_up_frequencies()?;
+
+            for action in &mut entry.actions {
+                action.frequency = action.init_frequency(&entry.total_range);
+            }
+        }
+
+        entry.total_frequency = entry.init_total_frequency();
+
+        entry.validate(max_players, depth, small_blind)?;
+        Ok(entry)
+    }
+
+    fn init_total_frequency(&self) -> u64 {
+        self.total_range
+            .iter()
+            .map(|(entry, frequency)| u64::from(entry.combo_count()) * u64::from(*frequency))
+            .sum()
+    }
+
+    fn round_up_frequencies(&mut self) -> Result<()> {
+        if !self
+            .actions
+            .iter()
+            .any(|action| action.action == PreFlopAction::Fold)
+        {
+            return Ok(());
+        }
+
+        for entry in PreFlopRangeTable::entries() {
+            let total_frequencies = self
+                .actions
+                .iter()
+                .map(|action| action.range[entry])
+                .fold(Some(0u16), |acc, n| acc.and_then(|acc| acc.checked_add(n)));
+
+            let Some(total_frequencies) = total_frequencies else {
+                return Err(
+                    "round frequencies: total frequencies of range entry overflowed".into(),
+                );
+            };
+
+            if total_frequencies < 10_000 {
+                let max_frequency_action = self
+                    .actions
+                    .iter_mut()
+                    .max_by_key(|action| action.range()[entry])
+                    .unwrap();
+
+                max_frequency_action.range[entry] += 10_000 - total_frequencies;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn validate(
         &self,
         max_players: usize,
         depth: MilliBigBlind,
         small_blind: MilliBigBlind,
-    ) -> Result<Vec<PreFlopAction>> {
-        let depth = u32::try_from(depth)?;
-        let players = vec![Player::with_starting_stack(depth); max_players];
-        let mut game = Game::new(&players, 0, u32::try_from(small_blind)?, 1_000)?;
-        game.post_small_and_big_blind()?;
-
-        for action in self.previous_actions.iter().copied() {
-            action.apply_to_game(&mut game)?;
-        }
+    ) -> Result<()> {
+        let mut game = Self::build_game(max_players, depth, small_blind, &self.previous_actions)?;
 
         let actions: HashSet<_> = self.actions.iter().map(|action| action.action).collect();
         if actions.len() != self.actions.len() {
             return Err("range config entry: duplicate action".into());
         }
 
-        let mut possible_next_actions = Vec::new();
+        for (_, frequency) in self.total_range.iter() {
+            if *frequency > 10_000 {
+                return Err(
+                    "range config entry: range frequencies must be less than 10_000 (100%)".into(),
+                );
+            }
+        }
+
         let mut total_frequencies: PreFlopRangeTableWith<u16> = PreFlopRangeTableWith::default();
 
         for action in &self.actions {
             action.action.apply_to_game(&mut game)?;
-            let next_state = game.state();
             game.undo().unwrap();
 
-            let mut not_zero = false;
             for (entry, frequency) in action.range.iter() {
-                not_zero |= *frequency != 0;
-
                 if *frequency > 10_000 {
                     return Err(
                         "range config entry: all frequencies must be less than 10_000 (100%)"
@@ -843,8 +955,13 @@ impl RangeConfigEntry {
                 total_frequencies[entry] = next_frequency;
             }
 
-            if matches!(next_state, State::Player(_)) && not_zero {
-                possible_next_actions.push(action.action);
+            if action.frequency != action.init_frequency(&self.total_range) {
+                return Err(format!(
+                    "range config entry: bad action frequency: expected {}, got {}",
+                    action.init_frequency(&self.total_range),
+                    action.frequency
+                )
+                .into());
             }
         }
 
@@ -866,7 +983,80 @@ impl RangeConfigEntry {
             return Err("range config entry: invalid total frequencies".into());
         }
 
+        if self.total_frequency != self.init_total_frequency() {
+            return Err("range config entry: bad total frequency".into());
+        }
+
+        Ok(())
+    }
+
+    pub fn build_game(
+        max_players: usize,
+        depth: MilliBigBlind,
+        small_blind: MilliBigBlind,
+        previous_actions: &[PreFlopAction],
+    ) -> Result<Game> {
+        let depth = u32::try_from(depth)?;
+        let players = vec![Player::with_starting_stack(depth); max_players];
+        let mut game = Game::new(&players, 0, u32::try_from(small_blind)?, 1_000)?;
+        game.post_small_and_big_blind()?;
+
+        for action in previous_actions.iter().copied() {
+            action.apply_to_game(&mut game)?;
+        }
+
+        Ok(game)
+    }
+
+    pub fn possible_next_actions(
+        &self,
+        max_players: usize,
+        depth: MilliBigBlind,
+        small_blind: MilliBigBlind,
+        min_frequency: f64,
+    ) -> Result<Vec<PreFlopAction>> {
+        let mut game = Self::build_game(max_players, depth, small_blind, &self.previous_actions)?;
+        let mut possible_next_actions = Vec::new();
+
+        for action in &self.actions {
+            action.action.apply_to_game(&mut game)?;
+            let next_state = game.state();
+            game.undo().unwrap();
+
+            if matches!(next_state, State::Player(_))
+                && self.frequency(action.action) >= min_frequency
+            {
+                possible_next_actions.push(action.action);
+            }
+        }
+
         Ok(possible_next_actions)
+    }
+
+    pub fn previous_actions(&self) -> &[PreFlopAction] {
+        &self.previous_actions
+    }
+
+    pub fn total_range(&self) -> &PreFlopRangeTableWith<u16> {
+        &self.total_range
+    }
+
+    pub fn actions(&self) -> &[RangeAction] {
+        &self.actions
+    }
+
+    pub fn frequency(&self, action: PreFlopAction) -> f64 {
+        let action = self
+            .actions()
+            .iter()
+            .filter(|current_action| current_action.action == action)
+            .next();
+
+        if let Some(action) = action {
+            action.frequency as f64 / (self.total_frequency * 10_000) as f64
+        } else {
+            0.0
+        }
     }
 }
 
