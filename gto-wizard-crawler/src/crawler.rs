@@ -38,6 +38,7 @@ pub struct Config {
     max_players: usize,
     depth: MilliBigBlind,
     min_frequency: f64,
+    max_calls: usize,
     out_dir: String,
 }
 
@@ -49,6 +50,7 @@ pub struct Crawler {
     max_players: usize,
     depth: MilliBigBlind,
     min_frequency: f64,
+    max_calls: usize,
     out_dir: String,
 }
 
@@ -75,6 +77,7 @@ impl Crawler {
             max_players: config.max_players,
             depth: config.depth,
             min_frequency: config.min_frequency,
+            max_calls: config.max_calls,
             out_dir: config.out_dir,
         };
         Ok(crawler)
@@ -439,10 +442,20 @@ impl Crawler {
 
         let next_actions = possible_next_actions
             .into_iter()
-            .map(|action| {
+            .filter_map(|action| {
                 let mut actions = Vec::from(entry.previous_actions());
                 actions.push(action);
-                actions
+
+                if actions
+                    .iter()
+                    .filter(|action| **action == PreFlopAction::Call)
+                    .count()
+                    > self.max_calls
+                {
+                    None
+                } else {
+                    Some(actions)
+                }
             })
             .collect();
 

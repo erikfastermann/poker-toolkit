@@ -773,7 +773,10 @@ impl PreFlopAction {
             PreFlopAction::Fold => game.fold(),
             PreFlopAction::Check => game.check(),
             PreFlopAction::Call => game.call(),
-            PreFlopAction::Raise(to) => game.raise(u32::try_from(to)?),
+            // TODO:
+            // In the GTO Wizard crawler some raises are smaller than the minimum,
+            // so we sadly have to use this function.
+            PreFlopAction::Raise(to) => game.unsafe_raise_min_bet_unchecked(u32::try_from(to)?),
         }
     }
 }

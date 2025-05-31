@@ -1433,15 +1433,52 @@ impl Game {
         let Some((min_amount, min_to)) = self.can_raise() else {
             return Err("player is not allowed to raise".into());
         };
+
         if to < min_to {
             return Err("raise is smaller than the minimum".into());
         }
 
-        let amount = min_amount + to - min_to;
         let previous_street_stack = self.previous_street_stacks()[player];
         if to > previous_street_stack {
             return Err("player cannot afford raise".into());
         }
+
+        let Some(amount) = min_amount.checked_add(to - min_to) else {
+            return Err("calculating raise amount overflowed".into());
+        };
+
+        let old_stack = self.current_street_stacks()[player];
+        self.current_street_stacks_mut()[player] = previous_street_stack - to;
+
+        self.add_action(Action::Raise {
+            player: self.current_player,
+            old_stack,
+            amount,
+            to,
+        });
+        self.next_player();
+        Ok(())
+    }
+
+    pub fn unsafe_raise_min_bet_unchecked(&mut self, to: u32) -> Result<()> {
+        self.check_pre_update()?;
+        let player = self.current_player_result()?;
+        let Some((min_amount, min_to)) = self.can_raise() else {
+            return Err("player is not allowed to raise".into());
+        };
+
+        let previous_street_stack = self.previous_street_stacks()[player];
+        if to > previous_street_stack {
+            return Err("player cannot afford raise".into());
+        }
+
+        let Some(amount) = min_amount
+            .checked_add(to)
+            .and_then(|n| n.checked_sub(min_to))
+        else {
+            return Err("calculating raise amount overflowed".into());
+        };
+
         let old_stack = self.current_street_stacks()[player];
         self.current_street_stacks_mut()[player] = previous_street_stack - to;
 
