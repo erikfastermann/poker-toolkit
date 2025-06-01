@@ -1,21 +1,24 @@
 use std::cmp::{max, min};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::ops::{BitAndAssign, Index, IndexMut};
 use std::str::FromStr;
 use std::sync::Arc;
-use std::{array, fmt};
+use std::{array, fmt, iter};
 
-use serde::{Deserialize, Serialize, Serializer};
+use rand::distributions::WeightedIndex;
+use rand::prelude::Distribution;
+use rand::Rng;
+use serde::{de, Deserialize, Serialize, Serializer};
 
 use crate::card::Card;
 use crate::cards::{Cards, CardsByRank};
-use crate::game::{Action, Game, MilliBigBlind, Player, State};
+use crate::game::{Action, Game, MilliBigBlind, Player, State, Street};
 use crate::hand::Hand;
 use crate::rank::Rank;
 use crate::result::{Error, Result};
 use crate::suite::Suite;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct RangeEntry {
     high: Rank,
     low: Rank,
@@ -59,6 +62,14 @@ impl RangeEntry {
         }
 
         Some(Self { high, low, suited })
+    }
+
+    pub fn paired(rank: Rank) -> Self {
+        Self {
+            high: rank,
+            low: rank,
+            suited: false,
+        }
     }
 
     pub fn from_hand(hand: Hand) -> Self {
@@ -388,7 +399,7 @@ impl PreFlopRangeTable {
     }
 }
 
-#[derive(Default, Clone, Deserialize)]
+#[derive(Default, Clone)]
 pub struct PreFlopRangeTableWith<T> {
     table: [[T; Rank::COUNT]; Rank::COUNT],
 }
@@ -405,6 +416,30 @@ impl<T: Serialize> Serialize for PreFlopRangeTableWith<T> {
             state.serialize_entry(&entry, value)?;
         }
         state.end()
+    }
+}
+
+impl<'de, T: Deserialize<'de> + Default> Deserialize<'de> for PreFlopRangeTableWith<T> {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let range: BTreeMap<String, T> = BTreeMap::deserialize(deserializer)?;
+
+        if range.len() != PreFlopRangeTable::COUNT {
+            return Err(de::Error::invalid_length(
+                range.len(),
+                &PreFlopRangeTable::COUNT.to_string().as_str(),
+            ));
+        }
+
+        let mut out = Self::default();
+        for (key, value) in range {
+            let entry =
+                RangeEntry::from_str(&key).map_err(|err| de::Error::custom(err.to_string()))?;
+            out[entry] = value;
+        }
+        Ok(out)
     }
 }
 
@@ -738,7 +773,7 @@ impl<T> IndexMut<Hand> for RangeTableWith<T> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PreFlopAction {
     Post { player: u8, amount: MilliBigBlind },
@@ -781,7 +816,9 @@ impl PreFlopAction {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+// The value might not be valid after deserialization,
+// but is checked again in the parent struct.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RangeAction {
     action: PreFlopAction,
     frequency: u64,
@@ -789,6 +826,8 @@ pub struct RangeAction {
     range: PreFlopRangeTableWith<u16>,
     ev: Option<PreFlopRangeTableWith<MilliBigBlind>>,
 }
+
+const MAX_FREQUENCY: u16 = 10_000;
 
 impl RangeAction {
     pub fn new(
@@ -818,6 +857,10 @@ impl RangeAction {
             .sum()
     }
 
+    fn frequency(&self, total_frequency: u64) -> f64 {
+        self.frequency as f64 / (total_frequency * u64::from(MAX_FREQUENCY)) as f64
+    }
+
     pub fn action(&self) -> PreFlopAction {
         self.action
     }
@@ -831,7 +874,7 @@ impl RangeAction {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct RangeConfigEntry {
     /// The initial small and big blind post is skipped.
     previous_actions: Vec<PreFlopAction>,
@@ -900,14 +943,14 @@ impl RangeConfigEntry {
                 );
             };
 
-            if total_frequencies < 10_000 {
+            if total_frequencies < MAX_FREQUENCY {
                 let max_frequency_action = self
                     .actions
                     .iter_mut()
                     .max_by_key(|action| action.range()[entry])
                     .unwrap();
 
-                max_frequency_action.range[entry] += 10_000 - total_frequencies;
+                max_frequency_action.range[entry] += MAX_FREQUENCY - total_frequencies;
             }
         }
 
@@ -928,7 +971,7 @@ impl RangeConfigEntry {
         }
 
         for (_, frequency) in self.total_range.iter() {
-            if *frequency > 10_000 {
+            if *frequency > MAX_FREQUENCY {
                 return Err(
                     "range config entry: range frequencies must be less than 10_000 (100%)".into(),
                 );
@@ -942,7 +985,7 @@ impl RangeConfigEntry {
             game.undo().unwrap();
 
             for (entry, frequency) in action.range.iter() {
-                if *frequency > 10_000 {
+                if *frequency > MAX_FREQUENCY {
                     return Err(
                         "range config entry: all frequencies must be less than 10_000 (100%)"
                             .into(),
@@ -952,7 +995,7 @@ impl RangeConfigEntry {
                 let Some(next_frequency) = total_frequencies[entry].checked_add(*frequency) else {
                     return Err("range config entry: total frequencies overflow".into());
                 };
-                if next_frequency > 10_000 {
+                if next_frequency > MAX_FREQUENCY {
                     return Err("range config entry: total frequencies overflow".into());
                 }
                 total_frequencies[entry] = next_frequency;
@@ -976,11 +1019,11 @@ impl RangeConfigEntry {
         let valid_total_frequencies = if contains_fold {
             total_frequencies
                 .iter()
-                .all(|(_, frequency)| *frequency == 10_000)
+                .all(|(_, frequency)| *frequency == MAX_FREQUENCY)
         } else {
             total_frequencies
                 .iter()
-                .all(|(_, frequency)| *frequency <= 10_000)
+                .all(|(_, frequency)| *frequency <= MAX_FREQUENCY)
         };
         if !valid_total_frequencies {
             return Err("range config entry: invalid total frequencies".into());
@@ -1056,20 +1099,121 @@ impl RangeConfigEntry {
             .next();
 
         if let Some(action) = action {
-            action.frequency as f64 / (self.total_frequency * 10_000) as f64
+            action.frequency(self.total_frequency)
         } else {
             0.0
         }
     }
+
+    fn raise_diff_unchecked(&self, skip_players: usize, actions: &[Action]) -> u64 {
+        let allowed_actions = &actions[2..];
+
+        self.previous_actions
+            .iter()
+            .skip(skip_players)
+            .zip(allowed_actions)
+            .filter_map(|(expected, got)| match (*expected, *got) {
+                // Super simple difference.
+                (PreFlopAction::Raise(current_to), Action::Raise { to, .. }) => {
+                    Some(i64::from(current_to).abs_diff(i64::from(to)))
+                }
+                (PreFlopAction::Raise(_), _) | (_, Action::Raise { .. }) => unreachable!(),
+                _ => None,
+            })
+            .sum()
+    }
+
+    fn has_fold(&self) -> bool {
+        self.actions
+            .iter()
+            .any(|action| action.action == PreFlopAction::Fold)
+    }
+
+    fn fold_frequency(&self, entry: RangeEntry) -> u16 {
+        let fold_action = self
+            .actions
+            .iter()
+            .find(|action| action.action == PreFlopAction::Fold);
+
+        if let Some(fold_action) = fold_action {
+            fold_action.range[entry]
+        } else {
+            let entry_frequency: u16 = self.actions.iter().map(|action| action.range[entry]).sum();
+            MAX_FREQUENCY - entry_frequency
+        }
+    }
+
+    pub fn pick(&self, rng: &mut impl Rng, entry: RangeEntry) -> PreFlopAction {
+        if self.total_range[entry] == 0 {
+            return PreFlopAction::Fold;
+        }
+
+        let additional_fold_weight = {
+            let fold_weight = iter::once(self.fold_frequency(entry));
+            if self.has_fold() {
+                fold_weight.take(0)
+            } else {
+                fold_weight.take(1)
+            }
+        };
+
+        let weights = self
+            .actions
+            .iter()
+            .map(|action| action.range[entry])
+            .chain(additional_fold_weight);
+        let weighted_index = WeightedIndex::new(weights).unwrap();
+
+        let action_index = weighted_index.sample(rng);
+        if action_index >= self.actions.len() {
+            PreFlopAction::Fold
+        } else {
+            self.actions[action_index].action
+        }
+    }
+
+    pub fn from_data(
+        data: RangeConfigEntryData,
+        max_players: usize,
+        depth: MilliBigBlind,
+        small_blind: MilliBigBlind,
+    ) -> Result<Self> {
+        Self::new(
+            data.previous_actions,
+            data.total_range,
+            data.actions,
+            max_players,
+            depth,
+            small_blind,
+            false,
+        )
+    }
+
+    pub fn to_data(self) -> RangeConfigEntryData {
+        RangeConfigEntryData {
+            previous_actions: self.previous_actions,
+            total_range: self.total_range,
+            total_frequency: self.total_frequency,
+            actions: self.actions,
+        }
+    }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RangeConfigEntryData {
+    pub previous_actions: Vec<PreFlopAction>,
+    pub total_range: PreFlopRangeTableWith<u16>,
+    pub total_frequency: u64,
+    pub actions: Vec<RangeAction>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RangeConfigData {
     pub description: Option<Arc<String>>,
     pub max_players: usize,
     pub depth: MilliBigBlind,
     pub small_blind: MilliBigBlind,
-    pub ranges: Vec<RangeConfigEntry>,
+    pub ranges: Vec<RangeConfigEntryData>,
 }
 
 #[derive(Debug, Clone)]
@@ -1108,11 +1252,14 @@ impl RangeConfig {
         }
 
         let mut previous_actions = HashSet::new();
-        for entry in &data.ranges {
-            if !previous_actions.insert(&entry.previous_actions) {
+        let mut ranges = Vec::new();
+        for entry in data.ranges {
+            if !previous_actions.insert(entry.previous_actions.clone()) {
                 return Err("range config: contains duplicated previous actions entry".into());
             }
-            entry.validate(data.max_players, data.depth, data.small_blind)?;
+            let entry =
+                RangeConfigEntry::from_data(entry, data.max_players, data.depth, data.small_blind)?;
+            ranges.push(entry);
         }
 
         Ok(Self {
@@ -1120,7 +1267,7 @@ impl RangeConfig {
             max_players: data.max_players,
             depth: data.depth,
             small_blind: data.small_blind,
-            ranges: data.ranges,
+            ranges,
         })
     }
 
@@ -1130,33 +1277,96 @@ impl RangeConfig {
             max_players: self.max_players,
             depth: self.depth,
             small_blind: self.small_blind,
-            ranges: self.ranges,
+            ranges: self
+                .ranges
+                .into_iter()
+                .map(|entry| entry.to_data())
+                .collect(),
         }
     }
 
-    pub fn by_actions(&self, actions: &[Action]) -> Option<&RangeConfigEntry> {
-        assert!(actions
-            .iter()
-            .any(|action| matches!(action, Action::Post { .. })));
-        assert!(actions
-            .iter()
-            .all(|action| action.is_player() && !matches!(action, Action::Bet { .. })));
+    pub fn by_game_action_kinds<'a>(
+        &'a self,
+        game: &'a Game,
+    ) -> Result<impl Iterator<Item = &'a RangeConfigEntry> + 'a> {
+        if game.player_count() > self.max_players {
+            return Err("ranges by action kinds: more players than maximally allowed".into());
+        }
 
-        for entry in &self.ranges {
-            // TODO: Short handed gameplay and skip initial blinds.
-            let kinds_match = entry.previous_actions.len() == actions.len()
+        if game.is_heads_up_table() && self.max_players != 2 {
+            return Err("ranges by action kinds: not heads up ranges".into());
+        }
+
+        if self.small_blind != game.amount_to_milli_big_blinds_rounded(game.small_blind()) {
+            return Err("ranges by action kinds: small blind does not match".into());
+        }
+
+        // TODO: Pretty big limitation.
+        let stack_depth_matches = game
+            .starting_stacks()
+            .iter()
+            .copied()
+            .all(|stack| game.amount_to_milli_big_blinds_rounded(stack) == self.depth);
+        if !stack_depth_matches {
+            return Err("ranges by action kinds: at least on stack has an unexpected depth".into());
+        }
+
+        let actions = game.actions();
+
+        if game.state() == State::Post {
+            return Err("ranges by action kinds: missing initial posts".into());
+        }
+
+        if game.board().street() != Street::PreFlop {
+            return Err("ranges by action kinds: not pre flop".into());
+        }
+
+        let skip_players = self.max_players - game.player_count();
+
+        let ranges = self.ranges.iter().filter(move |entry| {
+            // The ranges might be slightly different for shorthanded gameplay.
+            let skipped_players_folded = entry
+                .previous_actions
+                .iter()
+                .copied()
+                .take(skip_players)
+                .all(|action| action == PreFlopAction::Fold);
+
+            let kinds_match = entry.previous_actions.len() == actions.len() - 2
                 && entry
                     .previous_actions
                     .iter()
-                    .zip(actions)
+                    .skip(skip_players)
+                    .zip(&actions[2..])
                     .all(|(a, b)| a.is_action_kind(*b));
 
-            if kinds_match {
-                // TODO: Support more fine granular matching by closest sizings.
-                return Some(entry);
+            skipped_players_folded && kinds_match
+        });
+
+        Ok(ranges)
+    }
+
+    pub fn by_game_best_fit_raise_simple<'a>(
+        &'a self,
+        game: &'a Game,
+    ) -> Result<(&'a RangeConfigEntry, u64)> {
+        let mut ranges = self.by_game_action_kinds(game)?;
+
+        let Some(mut best_range) = ranges.next() else {
+            return Err("range by actions: no range matches".into());
+        };
+
+        let skip_players = self.max_players.checked_sub(game.player_count()).unwrap();
+        let mut best_diff = best_range.raise_diff_unchecked(skip_players, game.actions());
+
+        for range in ranges {
+            let current_diff = range.raise_diff_unchecked(skip_players, game.actions());
+            if current_diff < best_diff {
+                best_range = range;
+                best_diff = current_diff;
             }
         }
 
-        None
+        Ok((best_range, best_diff))
     }
 }

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, fs, sync::Arc};
 
 use eframe::egui::{
     Align, Align2, Button, Color32, Context, DragValue, FontFamily, FontId, Layout, Painter, Pos2,
@@ -6,9 +6,10 @@ use eframe::egui::{
 };
 
 use poker_core::{
-    ai::{AlwaysCheckCall, AlwaysFold, PlayerActionGenerator},
+    ai::{AlwaysAllIn, AlwaysCheckCall, AlwaysFold, PlayerActionGenerator, SimpleStrategy},
     game::{Action, Game, GameData, State, Street},
     hand::Hand,
+    range::{RangeConfig, RangeConfigData},
     result::Result,
 };
 
@@ -39,13 +40,38 @@ pub struct GameView {
 
 impl GameView {
     pub fn new() -> Self {
-        let player_action_generators: Vec<(
+        Self::new_inner(None).unwrap()
+    }
+
+    pub fn new_with_simple_strategy(pre_flop_ranges_config_path: &str) -> Result<Self> {
+        Self::new_inner(Some(pre_flop_ranges_config_path))
+    }
+
+    fn new_inner(pre_flop_ranges_config_path: Option<&str>) -> Result<Self> {
+        let mut player_action_generators: Vec<(
             &'static str,
             Box<dyn FnMut() -> Box<dyn PlayerActionGenerator>>,
         )> = vec![
             ("Fold", Box::new(|| Box::new(AlwaysFold))),
             ("Check/Call", Box::new(|| Box::new(AlwaysCheckCall))),
+            ("AllIn", Box::new(|| Box::new(AlwaysAllIn))),
         ];
+
+        let default_player_action = if let Some(path) = pre_flop_ranges_config_path {
+            let pre_flop_ranges_raw = fs::read_to_string(path)?;
+            let pre_flop_ranges: RangeConfigData = serde_json::from_str(&pre_flop_ranges_raw)?;
+            let pre_flop_ranges = Arc::new(RangeConfig::from_data(pre_flop_ranges)?);
+
+            player_action_generators.push((
+                "Simple",
+                Box::new(move || Box::new(SimpleStrategy::new(pre_flop_ranges.clone()))),
+            ));
+
+            player_action_generators.len() - 1
+        } else {
+            0
+        };
+
         let player_action_generator_names = player_action_generators
             .iter()
             .map(|(name, _)| *name)
@@ -55,15 +81,20 @@ impl GameView {
             game: Game::from_game_data(&GameData::default()).unwrap(),
             card_selector: CardSelector::new(),
             enable_game_builder: true,
-            game_builder: GameBuilder::new(player_action_generator_names, Some(0)),
+            game_builder: GameBuilder::new(
+                player_action_generator_names,
+                Some(default_player_action),
+            ),
             player_action_generators,
             current_player_action_generators: HashMap::new(),
             current_amount: 0,
             pick_community_cards: false,
         };
+
         game_view.game.draw_unset_hands(&mut rand::thread_rng());
         game_view.game.post_small_and_big_blind().unwrap();
-        game_view
+
+        Ok(game_view)
     }
 
     pub fn set_enable_game_builder(&mut self, enable_game_builder: bool) {
@@ -123,7 +154,7 @@ impl GameView {
                         .get_mut(&player)
                         .unwrap()
                         .player_action(&self.game)?;
-                    self.game.apply_action(action)?;
+                    action.apply_to_game(&mut self.game)?;
                     ctx.request_repaint();
                     return Ok(());
                 }

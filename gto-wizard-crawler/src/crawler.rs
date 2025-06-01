@@ -3,6 +3,7 @@ use std::{
     io::ErrorKind,
     path::{Path, PathBuf},
     str::FromStr,
+    sync::Arc,
     time::Duration,
 };
 
@@ -21,8 +22,8 @@ use serde_json::json;
 use poker_core::{
     game::{milli_big_blind_from_f64, Game, MilliBigBlind},
     range::{
-        PreFlopAction, PreFlopRangeTable, PreFlopRangeTableWith, RangeAction, RangeConfigEntry,
-        RangeEntry,
+        PreFlopAction, PreFlopRangeTable, PreFlopRangeTableWith, RangeAction, RangeConfig,
+        RangeConfigData, RangeConfigEntry, RangeConfigEntryData, RangeEntry,
     },
     result::Result,
 };
@@ -55,6 +56,8 @@ pub struct Crawler {
 }
 
 impl Crawler {
+    const RANGE_FILE_PREFIX: &str = "range_";
+
     pub async fn new(config: Config) -> Result<Self> {
         if config.depth < 1_000 || config.depth % 1000 != 0 {
             return Err("crawler: invalid depth".into());
@@ -131,7 +134,8 @@ impl Crawler {
         loop {
             let queue = self.read_queue().await?;
             let Some(next_pre_flop_actions) = queue.first() else {
-                eprintln!("Queue is empty, nothing to do. Exiting....");
+                eprintln!("Queue is empty, nothing to do. Writing full config...");
+                self.write_full_config().await?;
                 return Ok(());
             };
 
@@ -428,10 +432,15 @@ impl Crawler {
         eprintln!("Storing progress...");
 
         let range_path = PathBuf::from(&self.out_dir).join(format!(
-            "range_{}.json",
+            "{}{}.json",
+            Self::RANGE_FILE_PREFIX,
             self.url_encode_pre_flop_actions(entry.previous_actions())?
         ));
-        fs::write(range_path, serde_json::to_string_pretty(&entry)?).await?;
+        fs::write(
+            range_path,
+            serde_json::to_string_pretty(&entry.clone().to_data())?,
+        )
+        .await?;
 
         let possible_next_actions = entry.possible_next_actions(
             self.max_players,
@@ -467,6 +476,51 @@ impl Crawler {
     fn small_blind(&self) -> MilliBigBlind {
         // Assume small blind is always half the big blind.
         500
+    }
+
+    async fn write_full_config(&self) -> Result<()> {
+        let config = self.build_full_config().await?;
+        let config_serialized = serde_json::to_string_pretty(&config.to_data())?;
+
+        let config_path = PathBuf::from(&self.out_dir)
+            .join(format!("config_{}_{}.json", self.game_type, self.depth));
+        fs::write(config_path, config_serialized).await?;
+
+        Ok(())
+    }
+
+    async fn build_full_config(&self) -> Result<RangeConfig> {
+        let mut out_dir = fs::read_dir(&self.out_dir).await?;
+        let mut ranges = Vec::new();
+
+        while let Some(entry) = out_dir.next_entry().await? {
+            let is_range = entry.path().file_name().is_some_and(|file_name| {
+                file_name
+                    .as_encoded_bytes()
+                    .starts_with(Self::RANGE_FILE_PREFIX.as_bytes())
+            });
+            if !is_range {
+                continue;
+            }
+
+            let range_content = fs::read_to_string(entry.path()).await?;
+            let range: RangeConfigEntryData = serde_json::from_str(&range_content)?;
+
+            ranges.push(range);
+        }
+
+        ranges.sort_by(|a, b| a.previous_actions.cmp(&b.previous_actions));
+
+        let config = RangeConfigData {
+            description: Some(Arc::new(self.game_type.clone())),
+            max_players: self.max_players,
+            depth: self.depth,
+            small_blind: self.small_blind(),
+            ranges,
+        };
+        let config = RangeConfig::from_data(config)?;
+
+        Ok(config)
     }
 }
 

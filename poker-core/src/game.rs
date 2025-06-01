@@ -23,7 +23,8 @@ use crate::result::Result;
 // - Nicer handling of state method with multiple runouts
 // - Add single mucks action if there is only one winner
 
-pub type MilliBigBlind = i32;
+// TODO: Check that after changing this from i32 to i64 no overflow issues occur.
+pub type MilliBigBlind = i64;
 
 pub fn milli_big_blind_from_f64(n: f64) -> Result<MilliBigBlind> {
     let n = n * 1_000.0;
@@ -37,6 +38,23 @@ pub fn milli_big_blind_from_f64(n: f64) -> Result<MilliBigBlind> {
     }
 
     Ok(n as MilliBigBlind)
+}
+
+pub fn milli_big_blind_to_amount_rounded(n: MilliBigBlind, big_blind: u32) -> Option<u32> {
+    if n < 0 {
+        return None;
+    }
+
+    let full_blinds = n / 1000;
+    let frac = u32::try_from(n % 1000).ok()?;
+
+    let full_blinds = u32::try_from(full_blinds)
+        .ok()
+        .and_then(|n| n.checked_mul(big_blind))?;
+
+    let frac = ((f64::from(frac) / 1000.0) * f64::from(big_blind)).round();
+
+    full_blinds.checked_add(frac as u32)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -813,6 +831,15 @@ impl Game {
         self.player_count() == Self::MIN_PLAYERS
     }
 
+    pub fn amount_to_milli_big_blinds_rounded(&self, amount: u32) -> MilliBigBlind {
+        let full_blinds = amount / self.big_blind;
+        let remainder = amount % self.big_blind;
+
+        let frac = ((1.0 / f64::from(self.big_blind)) * f64::from(remainder) * 1000.0).round();
+
+        MilliBigBlind::from(full_blinds) * 1000 + frac as MilliBigBlind
+    }
+
     pub fn small_blind(&self) -> u32 {
         self.small_blind
     }
@@ -841,6 +868,10 @@ impl Game {
 
     fn board_mut(&mut self) -> &mut Board {
         &mut self.boards[usize::from(self.current_board)]
+    }
+
+    pub fn starting_stacks(&self) -> &[u32] {
+        &self.starting_stacks[..self.player_count()]
     }
 
     pub fn current_street_stacks(&self) -> &[u32] {
@@ -1492,6 +1523,20 @@ impl Game {
         Ok(())
     }
 
+    pub fn all_in(&mut self) -> Result<()> {
+        self.check_pre_update()?;
+        let player = self.current_player_result()?;
+
+        let max_amount = self.previous_street_stacks()[player];
+        if self.can_bet().is_some() {
+            self.bet(max_amount)
+        } else if self.can_raise().is_some() {
+            self.raise(max_amount)
+        } else {
+            Err("all in: player not allowed to bet or raise".into())
+        }
+    }
+
     pub fn uncalled_bet(&mut self) -> Result<()> {
         self.check_pre_update()?;
         let State::UncalledBet { player, amount } = self.state() else {
@@ -2050,6 +2095,11 @@ impl Game {
         } else {
             Some(self.hands[index])
         }
+    }
+
+    pub fn current_hand(&self) -> Option<Hand> {
+        self.current_player()
+            .and_then(|player| self.get_hand(player))
     }
 
     pub fn apply_action(&mut self, action: Action) -> Result<()> {

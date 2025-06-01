@@ -289,9 +289,11 @@ fn history_gui(args: &[String]) -> Result<()> {
 }
 
 fn gui(args: &[String]) -> Result<()> {
-    if args.len() != 0 {
-        return Err(INVALID_COMMAND_ERROR.into());
-    }
+    let pre_flop_ranges_config_path = match args {
+        [] => None,
+        [pre_flop_ranges_config_path] => Some(pre_flop_ranges_config_path.as_str()),
+        _ => return Err(INVALID_COMMAND_ERROR.into()),
+    };
 
     env_logger::init();
     let options = eframe::NativeOptions {
@@ -309,7 +311,7 @@ fn gui(args: &[String]) -> Result<()> {
             };
             cc.egui_ctx.set_style(style);
             egui_extras::install_image_loaders(&cc.egui_ctx);
-            Ok(Box::new(App::new()?))
+            Ok(Box::new(App::new(pre_flop_ranges_config_path)?))
         }),
     )
     .map_err(|err| err.to_string())?;
@@ -322,10 +324,13 @@ struct App {
 }
 
 impl App {
-    fn new() -> Result<Self> {
-        Ok(Self {
-            game: GameView::new(),
-        })
+    fn new(pre_flop_ranges_config_path: Option<&str>) -> Result<Self> {
+        let game = if let Some(path) = pre_flop_ranges_config_path {
+            GameView::new_with_simple_strategy(path)?
+        } else {
+            GameView::new()
+        };
+        Ok(Self { game })
     }
 }
 
