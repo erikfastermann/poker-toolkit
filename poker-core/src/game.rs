@@ -100,6 +100,24 @@ pub enum Action {
 }
 
 impl Action {
+    pub fn kind_str(self) -> &'static str {
+        match self {
+            Action::Post { .. } => "Post",
+            Action::Straddle { .. } => "Straddle",
+            Action::Fold(_) => "Fold",
+            Action::Check(_) => "Check",
+            Action::Call { .. } => "Call",
+            Action::Bet { .. } => "Bet",
+            Action::Raise { .. } => "Raise",
+            Action::Flop(_) => "Flop",
+            Action::Turn(_) => "Turn",
+            Action::River(_) => "River",
+            Action::UncalledBet { .. } => "Uncalled bet",
+            Action::Shows { .. } => "Shows",
+            Action::MucksOrUnknown(_) => "Mucks",
+        }
+    }
+
     pub fn is_street(self) -> bool {
         self.street().is_some()
     }
@@ -126,6 +144,23 @@ impl Action {
             Action::Call { player, .. } => player,
             Action::Bet { player, .. } => player,
             Action::Raise { player, .. } => player,
+            _ => return None,
+        };
+        Some(usize::from(player))
+    }
+
+    pub fn player_all(self) -> Option<usize> {
+        let player = match self {
+            Action::Post { player, .. } => player,
+            Action::Straddle { player, .. } => player,
+            Action::Fold(player) => player,
+            Action::Check(player) => player,
+            Action::Call { player, .. } => player,
+            Action::Bet { player, .. } => player,
+            Action::Raise { player, .. } => player,
+            Action::UncalledBet { player, .. } => player,
+            Action::Shows { player, .. } => player,
+            Action::MucksOrUnknown(player) => player,
             _ => return None,
         };
         Some(usize::from(player))
@@ -2284,6 +2319,10 @@ impl Game {
             _ if at_final_action => false,
             _ => true,
         }
+    }
+
+    pub fn forward(&mut self) {
+        while self.next() {}
     }
 
     pub fn next(&mut self) -> bool {

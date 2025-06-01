@@ -36,6 +36,7 @@ pub struct GameView {
     current_player_action_generators: HashMap<usize, Box<dyn PlayerActionGenerator>>,
     current_amount: u32,
     pick_community_cards: bool,
+    show_all_hands: bool,
 }
 
 impl GameView {
@@ -89,6 +90,7 @@ impl GameView {
             current_player_action_generators: HashMap::new(),
             current_amount: 0,
             pick_community_cards: false,
+            show_all_hands: true,
         };
 
         game_view.game.draw_unset_hands(&mut rand::thread_rng());
@@ -287,6 +289,15 @@ impl GameView {
         let button_width = button_height;
         let button_size = Vec2::new(button_width, button_height);
 
+        let rewind_button = ui
+            .add_enabled_ui(self.game.can_previous(), |ui| {
+                ui.add_sized(button_size, Button::new("<<"))
+            })
+            .inner;
+        if rewind_button.clicked() {
+            self.game.rewind();
+        }
+
         let previous_button = ui
             .add_enabled_ui(self.game.can_previous(), |ui| {
                 ui.add_sized(button_size, Button::new("<"))
@@ -303,6 +314,15 @@ impl GameView {
             .inner;
         if next_button.clicked() {
             assert!(self.game.next());
+        }
+
+        let forward_button = ui
+            .add_enabled_ui(self.game.can_next(), |ui| {
+                ui.add_sized(button_size, Button::new(">>"))
+            })
+            .inner;
+        if forward_button.clicked() {
+            self.game.forward();
         }
 
         Ok(())
@@ -375,13 +395,17 @@ impl GameView {
         Ok(())
     }
 
-    fn action_bar_upper_left_buttons(&self, ui: &mut Ui) -> Result<()> {
+    fn action_bar_upper_left_buttons(&mut self, ui: &mut Ui) -> Result<()> {
         let bounding_rect = ui.max_rect();
-        let button_size = Vec2::new(bounding_rect.width() / 15.0, bounding_rect.height() * 0.8);
-        if ui.add_sized(button_size, Button::new("📋")).clicked() {
+        let widget_size = Vec2::new(bounding_rect.width() / 15.0, bounding_rect.height() * 0.8);
+
+        if ui.add_sized(widget_size, Button::new("📋")).clicked() {
             let json = serde_json::to_string_pretty(&self.game.clone().to_validation_data())?;
             ui.ctx().copy_text(json);
         }
+
+        ui.checkbox(&mut self.show_all_hands, "Show all");
+
         Ok(())
     }
 
@@ -469,6 +493,7 @@ impl GameView {
 
     fn draw_player(&self, painter: &Painter, player: usize, center: Pos2, size: Vec2) -> Vec2 {
         let bounding_rect = Rect::from_center_size(center, size);
+
         let mut name_stack_rect = bounding_rect.with_min_y(bounding_rect.bottom() - size.y / 3.2);
         let name_stack_shape = Shape::rect_filled(
             name_stack_rect,
@@ -476,6 +501,7 @@ impl GameView {
             Color32::BLACK,
         );
         painter.add(name_stack_shape);
+
         let full_name_stack_rect = name_stack_rect;
         if self.game.button_index() == player {
             let button_radius = name_stack_rect.height() / 4.0;
@@ -493,11 +519,12 @@ impl GameView {
             FontId::new(name_rect.height() * 0.9, FontFamily::Proportional),
             Color32::WHITE,
         );
+
         let stack_rect = name_stack_rect.with_min_y(name_stack_rect.center().y);
         painter.text(
             stack_rect.center(),
             Align2::CENTER_CENTER,
-            self.game.current_stacks()[player],
+            self.stack_text(player),
             FontId::new(stack_rect.height() * 0.9, FontFamily::Proportional),
             Color32::WHITE,
         );
@@ -545,6 +572,44 @@ impl GameView {
         card_a_rect.size()
     }
 
+    fn stack_text(&self, player: usize) -> String {
+        let show_last_action = self.game.state() != State::End
+            && self
+                .game
+                .actions()
+                .last()
+                .filter(|action| !matches!(action, Action::Post { .. } | Action::Straddle { .. }))
+                .and_then(|action| action.player_all())
+                .is_some_and(|action_player| action_player == player);
+
+        if show_last_action {
+            let action = self.game.actions().last().unwrap();
+            return action.kind_str().to_uppercase();
+        }
+
+        let only_post_straddle = self
+            .game
+            .actions()
+            .iter()
+            .all(|action| matches!(action, Action::Post { .. } | Action::Straddle { .. }));
+
+        if only_post_straddle {
+            let action = self
+                .game
+                .actions()
+                .iter()
+                .copied()
+                .rev()
+                .find(|action| action.player().is_some_and(|current| current == player));
+
+            if let Some(action) = action {
+                return action.kind_str().to_uppercase();
+            }
+        }
+
+        self.game.current_stacks()[player].to_string()
+    }
+
     fn draw_invested(
         &self,
         player: usize,
@@ -552,7 +617,7 @@ impl GameView {
         bounding_rect: Rect,
         player_center: Pos2,
     ) {
-        if self.game.current_player().is_none() {
+        if self.game.state() == State::End {
             return;
         }
         let invested = self.game.invested_in_street(player);
@@ -629,12 +694,13 @@ impl GameView {
     }
 
     fn visible_hand(&self, player: usize) -> Option<Hand> {
-        if self.current_player_action_generators.contains_key(&player)
-            && !self.game.hand_shown(player)
+        if self.show_all_hands
+            || self.game.hand_shown(player)
+            || !self.current_player_action_generators.contains_key(&player)
         {
-            None
-        } else {
             self.game.get_hand(player)
+        } else {
+            None
         }
     }
 }

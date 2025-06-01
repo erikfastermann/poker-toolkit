@@ -55,6 +55,12 @@ impl fmt::Display for RangeEntry {
     }
 }
 
+impl fmt::Debug for RangeEntry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self, f)
+    }
+}
+
 impl RangeEntry {
     pub fn new(high: Rank, low: Rank, suited: bool) -> Option<Self> {
         if high < low || (high == low && suited) {
@@ -1105,8 +1111,8 @@ impl RangeConfigEntry {
         }
     }
 
-    fn raise_diff_unchecked(&self, skip_players: usize, actions: &[Action]) -> u64 {
-        let allowed_actions = &actions[2..];
+    fn raise_diff_unchecked(&self, skip_players: usize, game: &Game) -> u64 {
+        let allowed_actions = &game.actions()[2..];
 
         self.previous_actions
             .iter()
@@ -1115,7 +1121,8 @@ impl RangeConfigEntry {
             .filter_map(|(expected, got)| match (*expected, *got) {
                 // Super simple difference.
                 (PreFlopAction::Raise(current_to), Action::Raise { to, .. }) => {
-                    Some(i64::from(current_to).abs_diff(i64::from(to)))
+                    let to = game.amount_to_milli_big_blinds_rounded(to);
+                    Some(i64::from(current_to).abs_diff(to))
                 }
                 (PreFlopAction::Raise(_), _) | (_, Action::Raise { .. }) => unreachable!(),
                 _ => None,
@@ -1357,10 +1364,10 @@ impl RangeConfig {
         };
 
         let skip_players = self.max_players.checked_sub(game.player_count()).unwrap();
-        let mut best_diff = best_range.raise_diff_unchecked(skip_players, game.actions());
+        let mut best_diff = best_range.raise_diff_unchecked(skip_players, game);
 
         for range in ranges {
-            let current_diff = range.raise_diff_unchecked(skip_players, game.actions());
+            let current_diff = range.raise_diff_unchecked(skip_players, game);
             if current_diff < best_diff {
                 best_range = range;
                 best_diff = current_diff;
