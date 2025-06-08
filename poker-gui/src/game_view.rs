@@ -9,7 +9,7 @@ use poker_core::{
     ai::{AlwaysAllIn, AlwaysCheckCall, AlwaysFold, PlayerActionGenerator, SimpleStrategy},
     game::{Action, Game, GameData, State, Street},
     hand::Hand,
-    range::{RangeConfig, RangeConfigData},
+    range::{PreFlopRangeConfig, PreFlopRangeConfigData},
     result::Result,
 };
 
@@ -17,6 +17,7 @@ use crate::{
     card::{draw_card, draw_hidden_card},
     card_selector::CardSelector,
     game_builder::GameBuilder,
+    range_viewer::RangeViewer,
 };
 
 // TODO:
@@ -37,6 +38,7 @@ pub struct GameView {
     current_amount: u32,
     pick_community_cards: bool,
     show_all_hands: bool,
+    range_viewer: RangeViewer,
 }
 
 impl GameView {
@@ -60,8 +62,9 @@ impl GameView {
 
         let default_player_action = if let Some(path) = pre_flop_ranges_config_path {
             let pre_flop_ranges_raw = fs::read_to_string(path)?;
-            let pre_flop_ranges: RangeConfigData = serde_json::from_str(&pre_flop_ranges_raw)?;
-            let pre_flop_ranges = Arc::new(RangeConfig::from_data(pre_flop_ranges)?);
+            let pre_flop_ranges: PreFlopRangeConfigData =
+                serde_json::from_str(&pre_flop_ranges_raw)?;
+            let pre_flop_ranges = Arc::new(PreFlopRangeConfig::from_data(pre_flop_ranges)?);
 
             player_action_generators.push((
                 "Simple",
@@ -91,6 +94,7 @@ impl GameView {
             current_amount: 0,
             pick_community_cards: false,
             show_all_hands: true,
+            range_viewer: RangeViewer::new(),
         };
 
         game_view.game.draw_unset_hands(&mut rand::thread_rng());
@@ -136,6 +140,9 @@ impl GameView {
         self.view_card_selector(ui)?;
 
         self.view_game_builder(ui.ctx())?;
+
+        // TODO: Current range of AI.
+        self.range_viewer.window(ui.ctx(), "Range".to_owned());
 
         self.finalize(ui.ctx())
     }

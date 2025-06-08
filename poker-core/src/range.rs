@@ -99,7 +99,7 @@ impl RangeEntry {
         Self::new(high, low, suited).ok_or_else(|| "range entry: invalid format".into())
     }
 
-    fn to_regular_string(self) -> String {
+    pub fn to_regular_string(self) -> String {
         // TODO: Static str.
 
         let suite_info = if self.high == self.low {
@@ -112,7 +112,7 @@ impl RangeEntry {
         format!("{}{}{}", self.high, self.low, suite_info)
     }
 
-    fn from_row_column(row: Rank, column: Rank) -> Self {
+    pub fn from_row_column(row: Rank, column: Rank) -> Self {
         Self {
             high: max(row, column),
             low: min(row, column),
@@ -145,6 +145,22 @@ impl RangeEntry {
         } else {
             12
         }
+    }
+
+    pub fn iter_hands(self) -> impl Iterator<Item = Hand> {
+        Suite::SUITES
+            .into_iter()
+            .flat_map(move |a| {
+                let offset = if self.pair() { a.to_usize() } else { 0 };
+                Suite::SUITES[offset..]
+                    .into_iter()
+                    .copied()
+                    .map(move |b| (a, b))
+            })
+            .filter(move |(a, b)| (a == b) == self.suited)
+            .filter_map(move |(a, b)| {
+                Hand::of_two_cards(Card::of(self.high, a), Card::of(self.low, b))
+            })
     }
 }
 
@@ -747,6 +763,18 @@ impl<T: Default> Default for RangeTableWith<T> {
     }
 }
 
+impl<T: fmt::Debug> fmt::Debug for RangeTableWith<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut state = f.debug_map();
+
+        for (hand, value) in self.iter() {
+            state.entry(&hand, value);
+        }
+
+        state.finish()
+    }
+}
+
 impl<T> RangeTableWith<T> {
     pub fn iter(&self) -> impl Iterator<Item = (Hand, &T)> {
         self.table
@@ -820,12 +848,23 @@ impl PreFlopAction {
             PreFlopAction::Raise(to) => game.unsafe_raise_min_bet_unchecked(u32::try_from(to)?),
         }
     }
+
+    fn to_full_range(self) -> RangeActionKind {
+        match self {
+            Self::Post { player, amount } => RangeActionKind::Post { player, amount },
+            Self::Straddle { player, amount } => RangeActionKind::Straddle { player, amount },
+            Self::Fold => RangeActionKind::Fold,
+            Self::Check => RangeActionKind::Check,
+            Self::Call => RangeActionKind::Call,
+            Self::Raise(to) => RangeActionKind::Raise(to),
+        }
+    }
 }
 
 // The value might not be valid after deserialization,
 // but is checked again in the parent struct.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RangeAction {
+pub struct PreFlopRangeAction {
     action: PreFlopAction,
     frequency: u64,
     /// Frequencies valid from 0 to 10_000, divide by 100 to get the percentage.
@@ -835,7 +874,7 @@ pub struct RangeAction {
 
 const MAX_FREQUENCY: u16 = 10_000;
 
-impl RangeAction {
+impl PreFlopRangeAction {
     pub fn new(
         action: PreFlopAction,
         total_range: &PreFlopRangeTableWith<u16>,
@@ -878,22 +917,34 @@ impl RangeAction {
     pub fn ev(&self) -> Option<&PreFlopRangeTableWith<MilliBigBlind>> {
         self.ev.as_ref()
     }
+
+    pub fn full_range(&self) -> RangeTableWith<u16> {
+        let mut full_range: RangeTableWith<u16> = RangeTableWith::default();
+
+        for (entry, frequency) in self.range.iter() {
+            for hand in entry.iter_hands() {
+                full_range[hand] = *frequency;
+            }
+        }
+
+        full_range
+    }
 }
 
 #[derive(Debug, Clone)]
-pub struct RangeConfigEntry {
+pub struct PreFlopRangeConfigEntry {
     /// The initial small and big blind post is skipped.
     previous_actions: Vec<PreFlopAction>,
     total_range: PreFlopRangeTableWith<u16>,
     total_frequency: u64,
-    actions: Vec<RangeAction>,
+    actions: Vec<PreFlopRangeAction>,
 }
 
-impl RangeConfigEntry {
+impl PreFlopRangeConfigEntry {
     pub fn new(
         previous_actions: Vec<PreFlopAction>,
         total_range: PreFlopRangeTableWith<u16>,
-        actions: Vec<RangeAction>,
+        actions: Vec<PreFlopRangeAction>,
         max_players: usize,
         depth: MilliBigBlind,
         small_blind: MilliBigBlind,
@@ -1093,11 +1144,21 @@ impl RangeConfigEntry {
         &self.total_range
     }
 
-    pub fn actions(&self) -> &[RangeAction] {
+    pub fn actions(&self) -> &[PreFlopRangeAction] {
         &self.actions
     }
 
     pub fn frequency(&self, action: PreFlopAction) -> f64 {
+        // TODO: Integrate fold frequency.
+
+        if self.total_frequency == 0 {
+            return if action == PreFlopAction::Fold {
+                1.0
+            } else {
+                0.0
+            };
+        }
+
         let action = self
             .actions()
             .iter()
@@ -1180,7 +1241,7 @@ impl RangeConfigEntry {
     }
 
     pub fn from_data(
-        data: RangeConfigEntryData,
+        data: PreFlopRangeConfigEntryData,
         max_players: usize,
         depth: MilliBigBlind,
         small_blind: MilliBigBlind,
@@ -1196,49 +1257,79 @@ impl RangeConfigEntry {
         )
     }
 
-    pub fn to_data(self) -> RangeConfigEntryData {
-        RangeConfigEntryData {
+    pub fn to_data(self) -> PreFlopRangeConfigEntryData {
+        PreFlopRangeConfigEntryData {
             previous_actions: self.previous_actions,
             total_range: self.total_range,
             total_frequency: self.total_frequency,
             actions: self.actions,
         }
     }
+
+    pub fn full_total_range(&self) -> RangeTableWith<u16> {
+        let mut full_total_range: RangeTableWith<u16> = RangeTableWith::default();
+
+        for (entry, frequency) in self.total_range.iter() {
+            for hand in entry.iter_hands() {
+                full_total_range[hand] = *frequency;
+            }
+        }
+
+        full_total_range
+    }
+
+    pub fn to_full_range(&self) -> RangeConfigEntry {
+        let total_range = self.full_total_range();
+
+        let actions: Vec<_> = self
+            .actions
+            .iter()
+            .map(|action| {
+                RangeAction::new(
+                    action.action.to_full_range(),
+                    &total_range,
+                    action.full_range(),
+                )
+            })
+            .collect();
+
+        RangeConfigEntry::new(total_range, actions).unwrap()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RangeConfigEntryData {
+pub struct PreFlopRangeConfigEntryData {
     pub previous_actions: Vec<PreFlopAction>,
     pub total_range: PreFlopRangeTableWith<u16>,
     pub total_frequency: u64,
-    pub actions: Vec<RangeAction>,
+    pub actions: Vec<PreFlopRangeAction>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RangeConfigData {
+pub struct PreFlopRangeConfigData {
     pub description: Option<Arc<String>>,
     pub max_players: usize,
     pub depth: MilliBigBlind,
     pub small_blind: MilliBigBlind,
-    pub ranges: Vec<RangeConfigEntryData>,
+    pub ranges: Vec<PreFlopRangeConfigEntryData>,
 }
 
 #[derive(Debug, Clone)]
-pub struct RangeConfig {
+pub struct PreFlopRangeConfig {
     description: Option<Arc<String>>,
     max_players: usize,
     depth: MilliBigBlind,
     small_blind: MilliBigBlind,
-    ranges: Vec<RangeConfigEntry>,
+    ranges: Vec<PreFlopRangeConfigEntry>,
 }
 
-impl Default for RangeConfig {
+impl Default for PreFlopRangeConfig {
     fn default() -> Self {
         Self::DEFAULT
     }
 }
 
-impl RangeConfig {
+impl PreFlopRangeConfig {
     const DEFAULT: Self = Self {
         description: None,
         max_players: Game::MAX_PLAYERS,
@@ -1247,7 +1338,7 @@ impl RangeConfig {
         ranges: Vec::new(),
     };
 
-    pub fn from_data(data: RangeConfigData) -> Result<Self> {
+    pub fn from_data(data: PreFlopRangeConfigData) -> Result<Self> {
         if data.depth < 1_000 {
             return Err("range config: depth must be greater or equal to one big blind".into());
         }
@@ -1264,8 +1355,12 @@ impl RangeConfig {
             if !previous_actions.insert(entry.previous_actions.clone()) {
                 return Err("range config: contains duplicated previous actions entry".into());
             }
-            let entry =
-                RangeConfigEntry::from_data(entry, data.max_players, data.depth, data.small_blind)?;
+            let entry = PreFlopRangeConfigEntry::from_data(
+                entry,
+                data.max_players,
+                data.depth,
+                data.small_blind,
+            )?;
             ranges.push(entry);
         }
 
@@ -1278,8 +1373,8 @@ impl RangeConfig {
         })
     }
 
-    pub fn to_data(self) -> RangeConfigData {
-        RangeConfigData {
+    pub fn to_data(self) -> PreFlopRangeConfigData {
+        PreFlopRangeConfigData {
             description: self.description,
             max_players: self.max_players,
             depth: self.depth,
@@ -1292,10 +1387,14 @@ impl RangeConfig {
         }
     }
 
+    pub fn ranges(&self) -> &[PreFlopRangeConfigEntry] {
+        &self.ranges
+    }
+
     pub fn by_game_action_kinds<'a>(
         &'a self,
         game: &'a Game,
-    ) -> Result<impl Iterator<Item = &'a RangeConfigEntry> + 'a> {
+    ) -> Result<impl Iterator<Item = &'a PreFlopRangeConfigEntry> + 'a> {
         if game.player_count() > self.max_players {
             return Err("ranges by action kinds: more players than maximally allowed".into());
         }
@@ -1356,7 +1455,7 @@ impl RangeConfig {
     pub fn by_game_best_fit_raise_simple<'a>(
         &'a self,
         game: &'a Game,
-    ) -> Result<(&'a RangeConfigEntry, u64)> {
+    ) -> Result<(&'a PreFlopRangeConfigEntry, u64)> {
         let mut ranges = self.by_game_action_kinds(game)?;
 
         let Some(mut best_range) = ranges.next() else {
@@ -1375,5 +1474,273 @@ impl RangeConfig {
         }
 
         Ok((best_range, best_diff))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RangeActionKind {
+    Post { player: u8, amount: MilliBigBlind },
+    Straddle { player: u8, amount: MilliBigBlind },
+    Fold,
+    Check,
+    Call,
+    Bet(MilliBigBlind),
+    Raise(MilliBigBlind),
+}
+
+/// Might not be valid after initialization.
+#[derive(Debug, Clone)]
+pub struct RangeAction {
+    action: RangeActionKind,
+    frequency: u64,
+    /// Frequencies valid from 0 to 10_000, divide by 100 to get the percentage.
+    range: RangeTableWith<u16>,
+}
+
+impl RangeAction {
+    pub fn new(
+        action: RangeActionKind,
+        total_range: &RangeTableWith<u16>,
+        range: RangeTableWith<u16>,
+    ) -> Self {
+        let mut action = Self {
+            action,
+            frequency: 0,
+            range,
+        };
+        action.frequency = action.init_frequency(total_range);
+        action
+    }
+
+    fn init_frequency(&self, total_range: &RangeTableWith<u16>) -> u64 {
+        self.range
+            .iter()
+            .map(|(hand, frequency)| u64::from(total_range[hand]) * u64::from(*frequency))
+            .sum()
+    }
+
+    fn frequency(&self, total_frequency: u64) -> f64 {
+        self.frequency as f64 / (total_frequency * u64::from(MAX_FREQUENCY)) as f64
+    }
+
+    fn entry_frequency(&self, total_range: &RangeTableWith<u16>, entry: RangeEntry) -> f64 {
+        let total_range_sum: u64 = entry
+            .iter_hands()
+            .map(|hand| u64::from(total_range[hand]))
+            .sum();
+
+        if total_range_sum == 0 {
+            return if self.action == RangeActionKind::Fold {
+                1.0
+            } else {
+                0.0
+            };
+        }
+
+        let entry_sum: u64 = entry
+            .iter_hands()
+            .map(|hand| u64::from(total_range[hand]) * u64::from(self.range[hand]))
+            .sum();
+
+        (entry_sum / total_range_sum) as f64 / f64::from(MAX_FREQUENCY)
+    }
+
+    pub fn action(&self) -> RangeActionKind {
+        self.action
+    }
+
+    pub fn range(&self) -> &RangeTableWith<u16> {
+        &self.range
+    }
+}
+
+#[derive(Default, Debug, Clone)]
+pub struct RangeConfigEntry {
+    total_range: RangeTableWith<u16>,
+    total_frequency: u64,
+    actions: Vec<RangeAction>,
+}
+
+impl RangeConfigEntry {
+    pub fn new(total_range: RangeTableWith<u16>, actions: Vec<RangeAction>) -> Result<Self> {
+        let mut entry = Self {
+            total_range,
+            total_frequency: 0,
+            actions,
+        };
+        entry.total_frequency = entry.init_total_frequency();
+
+        entry.validate()?;
+        Ok(entry)
+    }
+
+    fn init_total_frequency(&self) -> u64 {
+        self.total_range
+            .iter()
+            .map(|(_, frequency)| u64::from(*frequency))
+            .sum()
+    }
+
+    fn validate(&self) -> Result<()> {
+        let actions: HashSet<_> = self.actions.iter().map(|action| action.action).collect();
+        if actions.len() != self.actions.len() {
+            return Err("range config entry: duplicate action".into());
+        }
+
+        for (_, frequency) in self.total_range.iter() {
+            if *frequency > MAX_FREQUENCY {
+                return Err(
+                    "range config entry: range frequencies must be less than 10_000 (100%)".into(),
+                );
+            }
+        }
+
+        let mut total_frequencies: RangeTableWith<u16> = RangeTableWith::default();
+
+        for action in &self.actions {
+            for (entry, frequency) in action.range.iter() {
+                if *frequency > MAX_FREQUENCY {
+                    return Err(
+                        "range config entry: all frequencies must be less than 10_000 (100%)"
+                            .into(),
+                    );
+                }
+
+                let Some(next_frequency) = total_frequencies[entry].checked_add(*frequency) else {
+                    return Err("range config entry: total frequencies overflow".into());
+                };
+                if next_frequency > MAX_FREQUENCY {
+                    return Err("range config entry: total frequencies overflow".into());
+                }
+                total_frequencies[entry] = next_frequency;
+            }
+
+            if action.frequency != action.init_frequency(&self.total_range) {
+                return Err(format!(
+                    "range config entry: bad action frequency: expected {}, got {}",
+                    action.init_frequency(&self.total_range),
+                    action.frequency
+                )
+                .into());
+            }
+        }
+
+        let contains_fold = self
+            .actions
+            .iter()
+            .any(|action| action.action == RangeActionKind::Fold);
+
+        let valid_total_frequencies = if contains_fold {
+            total_frequencies
+                .iter()
+                .all(|(_, frequency)| *frequency == MAX_FREQUENCY)
+        } else {
+            total_frequencies
+                .iter()
+                .all(|(_, frequency)| *frequency <= MAX_FREQUENCY)
+        };
+        if !valid_total_frequencies {
+            return Err("range config entry: invalid total frequencies".into());
+        }
+
+        if self.total_frequency != self.init_total_frequency() {
+            return Err("range config entry: bad total frequency".into());
+        }
+
+        Ok(())
+    }
+
+    pub fn total_range(&self) -> &RangeTableWith<u16> {
+        &self.total_range
+    }
+
+    pub fn actions(&self) -> &[RangeAction] {
+        &self.actions
+    }
+
+    pub fn action_kinds(&self) -> impl Iterator<Item = RangeActionKind> + '_ {
+        let fold = iter::repeat(RangeActionKind::Fold);
+        let fold = if self.has_fold() {
+            fold.take(0)
+        } else {
+            fold.take(1)
+        };
+
+        self.actions.iter().map(|action| action.action).chain(fold)
+    }
+
+    fn has_fold(&self) -> bool {
+        self.actions
+            .iter()
+            .any(|action| action.action == RangeActionKind::Fold)
+    }
+
+    pub fn frequency(&self, action: RangeActionKind) -> f64 {
+        if self.total_frequency == 0 {
+            return if action == RangeActionKind::Fold {
+                1.0
+            } else {
+                0.0
+            };
+        }
+
+        let range_action = self
+            .actions()
+            .iter()
+            .filter(|current_action| current_action.action == action)
+            .next();
+
+        if let Some(range_action) = range_action {
+            range_action.frequency(self.total_frequency)
+        } else if action == RangeActionKind::Fold {
+            let known_frequency: u64 = self.actions.iter().map(|action| action.frequency).sum();
+            let known_frequency =
+                known_frequency as f64 / self.total_frequency as f64 / f64::from(MAX_FREQUENCY);
+
+            let frequency = 1.0 - known_frequency;
+            if frequency.abs() <= 0.00_01 {
+                0.0
+            } else {
+                frequency
+            }
+        } else {
+            0.0
+        }
+    }
+
+    pub fn total_entry_frequency(&self, entry: RangeEntry) -> f64 {
+        let entry_sum: u64 = entry
+            .iter_hands()
+            .map(|hand| u64::from(self.total_range[hand]))
+            .sum();
+        entry_sum as f64 / f64::from(entry.combo_count()) / f64::from(MAX_FREQUENCY)
+    }
+
+    pub fn entry_frequency(&self, action: RangeActionKind, entry: RangeEntry) -> f64 {
+        let range_action = self
+            .actions()
+            .iter()
+            .filter(|current_action| current_action.action == action)
+            .next();
+
+        if let Some(range_action) = range_action {
+            range_action.entry_frequency(&self.total_range, entry)
+        } else if action == RangeActionKind::Fold {
+            let known_entry_frequencies: f64 = self
+                .actions
+                .iter()
+                .map(|action| action.entry_frequency(&self.total_range, entry))
+                .sum();
+
+            let frequency = 1.0 - known_entry_frequencies; // This might not be as precise as we would like.
+            if frequency.abs() <= 0.00_01 {
+                0.0
+            } else {
+                frequency
+            }
+        } else {
+            0.0
+        }
     }
 }

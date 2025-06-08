@@ -22,8 +22,9 @@ use serde_json::json;
 use poker_core::{
     game::{milli_big_blind_from_f64, Game, MilliBigBlind},
     range::{
-        PreFlopAction, PreFlopRangeTable, PreFlopRangeTableWith, RangeAction, RangeConfig,
-        RangeConfigData, RangeConfigEntry, RangeConfigEntryData, RangeEntry,
+        PreFlopAction, PreFlopRangeAction, PreFlopRangeConfig, PreFlopRangeConfigData,
+        PreFlopRangeConfigEntry, PreFlopRangeConfigEntryData, PreFlopRangeTable,
+        PreFlopRangeTableWith, RangeEntry,
     },
     result::Result,
 };
@@ -329,10 +330,10 @@ impl Crawler {
         &self,
         pre_flop_actions: Vec<PreFlopAction>,
         raw_range: RawRangeData,
-    ) -> Result<RangeConfigEntry> {
+    ) -> Result<PreFlopRangeConfigEntry> {
         let total_range = self.parse_raw_total_range(&pre_flop_actions, &raw_range)?;
 
-        let mut actions: Vec<RangeAction> = Vec::new();
+        let mut actions: Vec<PreFlopRangeAction> = Vec::new();
 
         for action_solution in raw_range.action_solutions {
             let action = match action_solution.action.action_type.as_str() {
@@ -365,12 +366,17 @@ impl Crawler {
             }
 
             let range = convert_frequency_array_to_range(&action_solution.strategy)?;
-            actions.push(RangeAction::new(action, &total_range, range, Some(ev)));
+            actions.push(PreFlopRangeAction::new(
+                action,
+                &total_range,
+                range,
+                Some(ev),
+            ));
         }
 
         eprintln!("Parsed range, validating...");
 
-        let entry = RangeConfigEntry::new(
+        let entry = PreFlopRangeConfigEntry::new(
             pre_flop_actions,
             total_range,
             actions,
@@ -397,7 +403,7 @@ impl Crawler {
         pre_flop_actions: &[PreFlopAction],
         raw_range: &RawRangeData,
     ) -> Result<PreFlopRangeTableWith<u16>> {
-        let current_game = RangeConfigEntry::build_game(
+        let current_game = PreFlopRangeConfigEntry::build_game(
             self.max_players,
             self.depth,
             self.small_blind(),
@@ -428,7 +434,7 @@ impl Crawler {
         Ok(total_range)
     }
 
-    async fn store_range(&self, entry: RangeConfigEntry) -> Result<()> {
+    async fn store_range(&self, entry: PreFlopRangeConfigEntry) -> Result<()> {
         eprintln!("Storing progress...");
 
         let range_path = PathBuf::from(&self.out_dir).join(format!(
@@ -489,7 +495,7 @@ impl Crawler {
         Ok(())
     }
 
-    async fn build_full_config(&self) -> Result<RangeConfig> {
+    async fn build_full_config(&self) -> Result<PreFlopRangeConfig> {
         let mut out_dir = fs::read_dir(&self.out_dir).await?;
         let mut ranges = Vec::new();
 
@@ -504,21 +510,21 @@ impl Crawler {
             }
 
             let range_content = fs::read_to_string(entry.path()).await?;
-            let range: RangeConfigEntryData = serde_json::from_str(&range_content)?;
+            let range: PreFlopRangeConfigEntryData = serde_json::from_str(&range_content)?;
 
             ranges.push(range);
         }
 
         ranges.sort_by(|a, b| a.previous_actions.cmp(&b.previous_actions));
 
-        let config = RangeConfigData {
+        let config = PreFlopRangeConfigData {
             description: Some(Arc::new(self.game_type.clone())),
             max_players: self.max_players,
             depth: self.depth,
             small_blind: self.small_blind(),
             ranges,
         };
-        let config = RangeConfig::from_data(config)?;
+        let config = PreFlopRangeConfig::from_data(config)?;
 
         Ok(config)
     }

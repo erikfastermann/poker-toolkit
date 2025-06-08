@@ -4,7 +4,7 @@ use rand::{rngs::StdRng, SeedableRng};
 
 use crate::{
     game::{milli_big_blind_to_amount_rounded, Game, Street},
-    range::{PreFlopAction, RangeConfig, RangeEntry},
+    range::{PreFlopAction, PreFlopRangeConfig, RangeEntry},
     rank::Rank,
     result::Result,
 };
@@ -103,7 +103,7 @@ impl PlayerActionGenerator for AlwaysAllIn {
 
 pub struct SimpleStrategy {
     rng: StdRng,
-    pre_flop_ranges: Arc<RangeConfig>,
+    pre_flop_ranges: Arc<PreFlopRangeConfig>,
 }
 
 impl PlayerActionGenerator for SimpleStrategy {
@@ -117,7 +117,7 @@ impl PlayerActionGenerator for SimpleStrategy {
 }
 
 impl SimpleStrategy {
-    pub fn new(pre_flop_ranges: Arc<RangeConfig>) -> Self {
+    pub fn new(pre_flop_ranges: Arc<PreFlopRangeConfig>) -> Self {
         Self {
             rng: StdRng::from_entropy(),
             pre_flop_ranges,
@@ -132,7 +132,9 @@ impl SimpleStrategy {
             && (range_entry == RangeEntry::paired(Rank::Ace)
                 || range_entry == RangeEntry::paired(Rank::King))
         {
+            dbg!(range_entry);
             if let Some((_, to)) = game.can_raise() {
+                // TODO:
                 // The totally not suspicious min raise.
                 // Might not be the best choice,
                 // should want to call after 3-betting often etc.
@@ -160,16 +162,22 @@ impl SimpleStrategy {
                 // TODO:
                 // Ranges might have random holes that can totally happen in real life.
                 // Also stuff like limping. Use custom logic here.
-                Err(_) => return Ok(AiAction::CheckFold),
+                Err(err) => {
+                    dbg!(err);
+                    return Ok(AiAction::CheckFold);
+                }
             };
 
         if diff_milli_big_blinds >= 15_000 {
             // Arbitrary choice, in reality this might be way too large in most situations.
+            dbg!(diff_milli_big_blinds, game.actions());
             return Ok(AiAction::CheckFold);
         }
 
         let range_entry = RangeEntry::from_hand(game.current_hand().unwrap());
         let action = range.pick(&mut self.rng, range_entry);
+        // TODO:
+        // Adjust sizing to bets and handle smaller than min raise.
         Ok(AiAction::from_pre_flop(action, game.big_blind())?)
     }
 }
