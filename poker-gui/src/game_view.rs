@@ -1,8 +1,8 @@
 use std::{collections::HashMap, fs, sync::Arc};
 
 use eframe::egui::{
-    Align, Align2, Button, Color32, Context, DragValue, FontFamily, FontId, Layout, Painter, Pos2,
-    Rect, Rgba, Shape, Slider, Stroke, StrokeKind, TextStyle, Ui, UiBuilder, Vec2,
+    Align, Align2, Button, Color32, Context, DragValue, FontFamily, FontId, Id, Layout, Painter,
+    Pos2, Rect, Rgba, Shape, Slider, Stroke, StrokeKind, TextStyle, Ui, UiBuilder, Vec2,
 };
 
 use poker_core::{
@@ -17,7 +17,7 @@ use crate::{
     card::{draw_card, draw_hidden_card},
     card_selector::CardSelector,
     game_builder::GameBuilder,
-    range_viewer::RangeViewer,
+    range_viewer::{RangeValue, RangeViewer},
 };
 
 // TODO:
@@ -33,12 +33,17 @@ pub struct GameView {
         &'static str,
         Box<dyn FnMut() -> Box<dyn PlayerActionGenerator>>,
     )>,
+
     // TODO: Offload to background thread.
     current_player_action_generators: HashMap<usize, Box<dyn PlayerActionGenerator>>,
+    /// The keys are the indices of the inserted action values.
+    current_range_histories: HashMap<usize, Vec<RangeValue>>,
+    last_applied_action_index: usize,
+    range_viewer: RangeViewer,
+
     current_amount: u32,
     pick_community_cards: bool,
     show_all_hands: bool,
-    range_viewer: RangeViewer,
 }
 
 impl GameView {
@@ -91,10 +96,12 @@ impl GameView {
             ),
             player_action_generators,
             current_player_action_generators: HashMap::new(),
+            current_range_histories: HashMap::new(),
+            last_applied_action_index: 2, // Skip initial posts.
+            range_viewer: RangeViewer::new(),
             current_amount: 0,
             pick_community_cards: false,
             show_all_hands: true,
-            range_viewer: RangeViewer::new(),
         };
 
         game_view.game.draw_unset_hands(&mut rand::thread_rng());
@@ -141,8 +148,7 @@ impl GameView {
 
         self.view_game_builder(ui.ctx())?;
 
-        // TODO: Current range of AI.
-        self.range_viewer.window(ui.ctx(), "Range".to_owned());
+        self.view_ranges(ui.ctx());
 
         self.finalize(ui.ctx())
     }
@@ -152,35 +158,86 @@ impl GameView {
             return Ok(());
         }
 
-        loop {
-            match self.game.state() {
-                State::Player(player)
-                    if self.current_player_action_generators.contains_key(&player) =>
-                {
-                    // TODO: Gracefully handle errors and check action is valid.
-                    let action = self
-                        .current_player_action_generators
-                        .get_mut(&player)
-                        .unwrap()
-                        .player_action(&self.game)?;
-                    action.apply_to_game(&mut self.game)?;
-                    ctx.request_repaint();
-                    return Ok(());
+        self.apply_action_to_villains()?;
+
+        match self.game.state() {
+            State::Player(player)
+                if self.current_player_action_generators.contains_key(&player) =>
+            {
+                // TODO: Gracefully handle errors and check action is valid.
+                let (action, config, ranges) = self
+                    .current_player_action_generators
+                    .get_mut(&player)
+                    .unwrap()
+                    .update_hero(&self.game)?;
+
+                action.apply_to_game(&mut self.game)?;
+
+                let mut ranges_history_entry = vec![RangeValue::Full(config)];
+                if let Some(ranges) = ranges {
+                    for current_player in self.game.players_not_folded() {
+                        if current_player == player {
+                            continue;
+                        }
+
+                        // TODO: Check index is valid.
+                        ranges_history_entry
+                            .push(RangeValue::Simple(ranges[current_player].clone()))
+                    }
                 }
-                State::Street(_) if !self.pick_community_cards => {
-                    let mut rng = rand::thread_rng();
-                    self.game.draw_next_street(&mut rng)?;
-                }
-                State::UncalledBet { .. } => {
-                    self.game.uncalled_bet()?;
-                }
-                State::ShowOrMuck(_) => {
-                    self.game.show_hand()?;
-                }
-                State::ShowdownOrNextRunout => self.game.showdown_simple()?,
-                _ => return Ok(()),
+
+                self.current_range_histories
+                    .insert(self.game.actions().len(), ranges_history_entry);
+
+                self.apply_action_to_villains()?;
             }
+            State::Street(_) if !self.pick_community_cards => {
+                let mut rng = rand::thread_rng();
+                self.game.draw_next_street(&mut rng)?;
+            }
+            State::UncalledBet { .. } => {
+                self.game.uncalled_bet()?;
+            }
+            State::ShowOrMuck(_) => {
+                self.game.show_hand()?;
+            }
+            State::ShowdownOrNextRunout => self.game.showdown_simple()?,
+            _ => return Ok(()),
         }
+
+        ctx.request_repaint();
+        Ok(())
+    }
+
+    fn apply_action_to_villains(&mut self) -> Result<()> {
+        if self.game.can_next() {
+            return Ok(());
+        }
+
+        if self.game.actions().len() <= self.last_applied_action_index {
+            return Ok(());
+        }
+
+        let Some(action) = self.game.actions().last().copied() else {
+            return Ok(());
+        };
+
+        let Some(action_player) = action.player() else {
+            return Ok(());
+        };
+
+        for (player, action_generator) in &mut self.current_player_action_generators {
+            if self.game.folded(*player) || *player == action_player {
+                continue;
+            }
+
+            // TODO: Handle errors gracefully.
+            action_generator.update_villain(&self.game)?;
+        }
+
+        self.last_applied_action_index = self.game.actions().len();
+
+        Ok(())
     }
 
     fn draw_table(&self, painter: &Painter, bounding_rect: Rect) {
@@ -686,7 +743,11 @@ impl GameView {
         self.game.draw_unset_hands(&mut rand::thread_rng());
         self.set_pick_community_cards(config.pick_community_cards);
 
+        self.current_range_histories = HashMap::new();
+        self.last_applied_action_index = 2; // Skip initial posts.
         self.current_player_action_generators.clear();
+        self.range_viewer = RangeViewer::new();
+
         for (player_index, player) in config.players.into_iter().enumerate() {
             let Some(ai_index) = player.action_generator else {
                 continue;
@@ -698,6 +759,34 @@ impl GameView {
 
         ctx.request_repaint();
         Ok(())
+    }
+
+    fn view_ranges(&mut self, ctx: &Context) {
+        let Some(ranges) = self.current_range_histories.get(&self.game.actions().len()) else {
+            return;
+        };
+
+        self.range_viewer.replace_ranges(ranges.clone());
+
+        let player = self.game.actions().last().unwrap().player().unwrap();
+
+        let villain_title = if self.range_viewer.selected() != 0 {
+            // TODO: A little hacky that this depends on the concrete insertion order in the array.
+            let villain = self
+                .game
+                .players_not_folded()
+                .filter(|villain| *villain != player)
+                .nth(self.range_viewer.selected() - 1)
+                .unwrap();
+
+            format!(" ({})", self.game.player_name(villain))
+        } else {
+            String::new()
+        };
+
+        let title = format!("Range - {}{}", self.game.player_name(player), villain_title);
+        // TODO: Nicer rendering and default position of window.
+        self.range_viewer.window(ctx, Id::new("Range"), title);
     }
 
     fn visible_hand(&self, player: usize) -> Option<Hand> {

@@ -57,6 +57,15 @@ pub fn milli_big_blind_to_amount_rounded(n: MilliBigBlind, big_blind: u32) -> Op
     full_blinds.checked_add(frac as u32)
 }
 
+pub fn amount_to_milli_big_blinds_rounded(amount: u32, big_blind: u32) -> MilliBigBlind {
+    let full_blinds = amount / big_blind;
+    let remainder = amount % big_blind;
+
+    let frac = ((1.0 / f64::from(big_blind)) * f64::from(remainder) * 1000.0).round();
+
+    MilliBigBlind::from(full_blinds) * 1000 + frac as MilliBigBlind
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Action {
@@ -414,6 +423,23 @@ impl Game {
         } else {
             let index = (player_count - button_index + player) % player_count;
             Some(names[index])
+        }
+    }
+
+    pub fn player_to_button_offset(
+        player_count: usize,
+        button_index: usize,
+        player: usize,
+    ) -> Option<usize> {
+        if player_count < Self::MIN_PLAYERS
+            || player_count > Self::MAX_PLAYERS
+            || button_index >= player_count
+            || player >= player_count
+        {
+            None
+        } else {
+            let index = (player_count - button_index + player) % player_count;
+            Some(index)
         }
     }
 
@@ -867,12 +893,7 @@ impl Game {
     }
 
     pub fn amount_to_milli_big_blinds_rounded(&self, amount: u32) -> MilliBigBlind {
-        let full_blinds = amount / self.big_blind;
-        let remainder = amount % self.big_blind;
-
-        let frac = ((1.0 / f64::from(self.big_blind)) * f64::from(remainder) * 1000.0).round();
-
-        MilliBigBlind::from(full_blinds) * 1000 + frac as MilliBigBlind
+        amount_to_milli_big_blinds_rounded(amount, self.big_blind)
     }
 
     pub fn small_blind(&self) -> u32 {
@@ -1118,6 +1139,17 @@ impl Game {
             Some((amount, old_stack))
         } else {
             Some((last_amount, to))
+        }
+    }
+
+    pub fn can_all_in(&self) -> Option<u32> {
+        let player = self.current_player()?;
+
+        if self.can_bet().is_some() || self.can_raise().is_some() {
+            let max_amount = self.previous_street_stacks()[player];
+            Some(max_amount)
+        } else {
+            None
         }
     }
 
@@ -1560,15 +1592,16 @@ impl Game {
 
     pub fn all_in(&mut self) -> Result<()> {
         self.check_pre_update()?;
-        let player = self.current_player_result()?;
+        let Some(amount) = self.can_all_in() else {
+            return Err("all in: no current player or player not allowed to bet or raise".into());
+        };
 
-        let max_amount = self.previous_street_stacks()[player];
         if self.can_bet().is_some() {
-            self.bet(max_amount)
+            self.bet(amount)
         } else if self.can_raise().is_some() {
-            self.raise(max_amount)
+            self.raise(amount)
         } else {
-            Err("all in: player not allowed to bet or raise".into())
+            unreachable!()
         }
     }
 

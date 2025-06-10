@@ -1,4 +1,4 @@
-use std::cmp::{max, min};
+use std::cmp::{self, max, min};
 use std::collections::{BTreeMap, HashSet};
 use std::ops::{BitAndAssign, Index, IndexMut};
 use std::str::FromStr;
@@ -547,6 +547,16 @@ impl RangeTable {
         Self { table }
     };
 
+    pub fn from_frequencies_not_zero(range: &RangeTableWith<u16>) -> Self {
+        let mut out = Self::EMPTY;
+
+        for (hand, _) in range.iter().filter(|(_, freq)| **freq > 0) {
+            out.add_hand(hand);
+        }
+
+        out
+    }
+
     pub fn from_range_table(table: &PreFlopRangeTable) -> Self {
         let mut out = RangeTable::EMPTY;
         table.for_each_hand(|hand| out.add_hand(hand));
@@ -689,6 +699,16 @@ impl RangeTable {
     pub fn is_empty(&self) -> bool {
         self == &Self::EMPTY
     }
+
+    pub fn to_frequencies(&self, frequency: u16) -> RangeTableWith<u16> {
+        let mut out = RangeTableWith::default();
+
+        for hand in self.into_iter() {
+            out[hand] = frequency;
+        }
+
+        out
+    }
 }
 
 impl<'a> IntoIterator for &'a RangeTable {
@@ -750,7 +770,7 @@ impl fmt::Debug for RangeTable {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct RangeTableWith<T> {
     table: [T; Hand::COUNT],
 }
@@ -871,8 +891,6 @@ pub struct PreFlopRangeAction {
     range: PreFlopRangeTableWith<u16>,
     ev: Option<PreFlopRangeTableWith<MilliBigBlind>>,
 }
-
-const MAX_FREQUENCY: u16 = 10_000;
 
 impl PreFlopRangeAction {
     pub fn new(
@@ -1489,8 +1507,61 @@ pub enum RangeActionKind {
     Raise(MilliBigBlind),
 }
 
+impl RangeActionKind {
+    pub fn from_game_action(game: &Game, action: Action) -> Result<Self> {
+        match action {
+            Action::Post { player, amount, .. } => {
+                let Some(player) = Game::player_to_button_offset(
+                    game.player_count(),
+                    game.button_index(),
+                    usize::from(player),
+                ) else {
+                    return Err(
+                        "range action from game action: failed converting player to button offset"
+                            .into(),
+                    );
+                };
+                let player = u8::try_from(player).unwrap();
+
+                Ok(Self::Post {
+                    player,
+                    amount: game.amount_to_milli_big_blinds_rounded(amount),
+                })
+            }
+            Action::Straddle { player, amount } => {
+                let Some(player) = Game::player_to_button_offset(
+                    game.player_count(),
+                    game.button_index(),
+                    usize::from(player),
+                ) else {
+                    return Err(
+                        "range action from game action: failed converting player to button offset"
+                            .into(),
+                    );
+                };
+                let player = u8::try_from(player).unwrap();
+
+                Ok(Self::Straddle {
+                    player,
+                    amount: game.amount_to_milli_big_blinds_rounded(amount),
+                })
+            }
+            Action::Fold(_) => Ok(Self::Fold),
+            Action::Check(_) => Ok(Self::Check),
+            Action::Call { .. } => Ok(Self::Call),
+            Action::Bet { amount, .. } => {
+                Ok(Self::Bet(game.amount_to_milli_big_blinds_rounded(amount)))
+            }
+            Action::Raise { to, .. } => {
+                Ok(Self::Raise(game.amount_to_milli_big_blinds_rounded(to)))
+            }
+            _ => Err("range action from game action: action type not supported".into()),
+        }
+    }
+}
+
 /// Might not be valid after initialization.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RangeAction {
     action: RangeActionKind,
     frequency: u64,
@@ -1555,10 +1626,11 @@ impl RangeAction {
     }
 }
 
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Debug, Clone, PartialEq, Eq)]
 pub struct RangeConfigEntry {
     total_range: RangeTableWith<u16>,
     total_frequency: u64,
+    // TODO: Probably better to just always store the folding range.
     actions: Vec<RangeAction>,
 }
 
@@ -1573,6 +1645,18 @@ impl RangeConfigEntry {
 
         entry.validate()?;
         Ok(entry)
+    }
+
+    pub fn distribute_action(
+        total_range: RangeTableWith<u16>,
+        action: RangeActionKind,
+    ) -> Result<Self> {
+        let action = RangeAction::new(
+            action,
+            &total_range,
+            RangeTable::from_frequencies_not_zero(&total_range).to_frequencies(MAX_FREQUENCY),
+        );
+        Self::new(total_range, vec![action])
     }
 
     fn init_total_frequency(&self) -> u64 {
@@ -1670,6 +1754,35 @@ impl RangeConfigEntry {
         self.actions.iter().map(|action| action.action).chain(fold)
     }
 
+    pub fn action_range(&self, action: RangeActionKind) -> Option<RangeTableWith<u16>> {
+        let mut fold_range = RangeTable::FULL.to_frequencies(MAX_FREQUENCY);
+
+        let action_range =
+            if let Some(range_action) = self.actions.iter().find(|a| a.action == action) {
+                &range_action.range
+            } else if action == RangeActionKind::Fold {
+                for range_action in &self.actions {
+                    for (hand, frequency) in range_action.range.iter() {
+                        fold_range[hand] -= frequency;
+                    }
+                }
+
+                &fold_range
+            } else {
+                return None;
+            };
+
+        let mut out = RangeTableWith::default();
+
+        for (hand, frequency) in action_range.iter() {
+            let frequency = u32::from(self.total_range[hand]) * u32::from(*frequency);
+            let frequency = (f64::from(frequency) / f64::from(MAX_FREQUENCY)).round() as u16;
+            out[hand] = frequency;
+        }
+
+        Some(out)
+    }
+
     fn has_fold(&self) -> bool {
         self.actions
             .iter()
@@ -1743,4 +1856,130 @@ impl RangeConfigEntry {
             0.0
         }
     }
+
+    fn fold_frequency(&self, hand: Hand) -> u16 {
+        let fold_action = self
+            .actions
+            .iter()
+            .find(|action| action.action == RangeActionKind::Fold);
+
+        if let Some(fold_action) = fold_action {
+            fold_action.range[hand]
+        } else {
+            let known_frequency: u16 = self.actions.iter().map(|action| action.range[hand]).sum();
+            MAX_FREQUENCY - known_frequency
+        }
+    }
+
+    pub fn pick(&self, rng: &mut impl Rng, hand: Hand) -> RangeActionKind {
+        if self.total_range[hand] == 0 {
+            return RangeActionKind::Fold;
+        }
+
+        let additional_fold_weight = {
+            let fold_weight = iter::once(self.fold_frequency(hand));
+            if self.has_fold() {
+                fold_weight.take(0)
+            } else {
+                fold_weight.take(1)
+            }
+        };
+
+        let weights = self
+            .actions
+            .iter()
+            .map(|action| action.range[hand])
+            .chain(additional_fold_weight);
+        let weighted_index = WeightedIndex::new(weights).unwrap();
+
+        let action_index = weighted_index.sample(rng);
+        if action_index >= self.actions.len() {
+            RangeActionKind::Fold
+        } else {
+            self.actions[action_index].action
+        }
+    }
+
+    fn finalize_update(&mut self) -> Result<()> {
+        for action in &mut self.actions {
+            action.frequency = action.init_frequency(&self.total_range);
+        }
+
+        match self.validate() {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                // If validate fails, "poison" self by emptying,
+                // to ensure no invalid state is visible to the outside.
+                *self = Self::default();
+                Err(err)
+            }
+        }
+    }
+
+    fn update_hand_only_action_inner(&mut self, hand: Hand, action: RangeActionKind) -> Result<()> {
+        if self.total_range[hand] == 0 {
+            return Err("update range: hand is not in range".into());
+        }
+
+        if self
+            .action_kinds()
+            .all(|current_action| action != current_action)
+        {
+            let range_action = RangeAction::new(
+                action,
+                &self.total_range,
+                RangeTable::EMPTY.to_frequencies(0),
+            );
+            self.actions.push(range_action);
+        }
+
+        for range_action in &mut self.actions {
+            range_action.range[hand] = 0;
+        }
+
+        if action != RangeActionKind::Fold || self.has_fold() {
+            let range_action = self
+                .actions
+                .iter_mut()
+                .find(|a| a.action == action)
+                .unwrap();
+
+            range_action.range[hand] = MAX_FREQUENCY;
+        }
+
+        Ok(())
+    }
+
+    pub fn update_hand_only_action(&mut self, hand: Hand, action: RangeActionKind) -> Result<()> {
+        self.update_hand_only_action_inner(hand, action)?;
+        self.finalize_update()
+    }
+
+    pub fn update_entry_only_action(
+        &mut self,
+        entry: RangeEntry,
+        action: RangeActionKind,
+    ) -> Result<()> {
+        for hand in entry.iter_hands() {
+            self.update_hand_only_action_inner(hand, action)?;
+        }
+        self.finalize_update()
+    }
+}
+
+// TODO: Probably better to use a custom type for range frequencies.
+
+pub const MAX_FREQUENCY: u16 = 10_000;
+
+pub fn range_entry_frequency(range: &RangeTableWith<u16>, entry: RangeEntry) -> f64 {
+    let total_frequency: u32 = entry
+        .iter_hands()
+        .map(|hand| u32::from(cmp::min(range[hand], MAX_FREQUENCY)))
+        .sum();
+    f64::from(total_frequency) / f64::from(entry.combo_count()) / f64::from(MAX_FREQUENCY)
+}
+
+pub fn frequency_to_f64(n: u16) -> f64 {
+    let n = cmp::min(n, MAX_FREQUENCY);
+    f64::from(n) / f64::from(MAX_FREQUENCY)
 }

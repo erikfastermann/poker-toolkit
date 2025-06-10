@@ -67,7 +67,7 @@ impl Suite {
         Ok(suite)
     }
 
-    fn to_i8(self) -> i8 {
+    const fn to_i8(self) -> i8 {
         self as i8
     }
 
@@ -79,7 +79,7 @@ impl Suite {
         self.to_u8().into()
     }
 
-    pub fn to_index(self) -> i8 {
+    pub const fn to_index(self) -> i8 {
         let index = self.to_i8() * 16;
         debug_assert!(index >= 0 && index < 64);
         index

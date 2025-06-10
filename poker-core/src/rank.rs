@@ -1,6 +1,9 @@
 use std::fmt;
 
-use rand::{distributions::{Distribution, Standard}, Rng};
+use rand::{
+    distributions::{Distribution, Standard},
+    Rng,
+};
 
 use crate::result::Result;
 
@@ -79,22 +82,10 @@ impl Rank {
     pub const COUNT: usize = 13;
 
     pub const RANKS: [Rank; Rank::COUNT] = [
-        Two,
-        Three,
-        Four,
-        Five,
-        Six,
-        Seven,
-        Eight,
-        Nine,
-        Ten,
-        Jack,
-        Queen,
-        King,
-        Ace,
+        Two, Three, Four, Five, Six, Seven, Eight, Nine, Ten, Jack, Queen, King, Ace,
     ];
 
-    pub fn to_i8(self) -> i8 {
+    pub const fn to_i8(self) -> i8 {
         self as i8
     }
 

@@ -5,7 +5,9 @@ use serde_with::{DeserializeFromStr, SerializeDisplay};
 use crate::{
     card::Card,
     cards::Cards,
+    rank::Rank,
     result::{Error, Result},
+    suite::Suite,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, DeserializeFromStr, SerializeDisplay)]
@@ -35,6 +37,11 @@ static mut HANDS: [Hand; Hand::COUNT] = [Hand::UNDEFINED; Hand::COUNT];
 
 impl Hand {
     pub(crate) const UNDEFINED: Self = Self(Card::MIN, Card::MIN);
+
+    pub const MIN: Self = Self(
+        Card::of(Rank::Three, Suite::Diamonds),
+        Card::of(Rank::Two, Suite::Diamonds),
+    );
 
     pub const COUNT: usize = 52 * 51 / 2;
 

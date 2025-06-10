@@ -1,37 +1,82 @@
-use std::cmp;
+use std::{cmp, mem};
 
 use eframe::egui::{
-    Align2, Color32, Context, FontFamily, FontId, Painter, Pos2, Rect, Sense, Ui, Vec2, Window,
+    Align2, Button, Color32, Context, FontFamily, FontId, Id, Painter, Pos2, Rect, Sense, Ui, Vec2,
+    Window,
 };
 
 use poker_core::{
-    range::{RangeActionKind, RangeConfigEntry, RangeEntry},
+    range::{range_entry_frequency, RangeActionKind, RangeConfigEntry, RangeEntry, RangeTableWith},
     rank::Rank,
 };
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RangeValue {
+    Simple(RangeTableWith<u16>),
+    Full(RangeConfigEntry),
+}
+
+#[derive(Debug, Clone)]
 pub struct RangeViewer {
-    range: RangeConfigEntry,
+    ranges: Vec<RangeValue>,
+    selected: usize,
 }
 
 impl RangeViewer {
     pub fn new() -> Self {
         Self {
-            range: RangeConfigEntry::default(),
+            ranges: vec![RangeValue::Full(RangeConfigEntry::default())],
+            selected: 0,
         }
     }
 
-    pub fn range(&self) -> &RangeConfigEntry {
-        &self.range
+    pub fn selected(&self) -> usize {
+        self.selected
     }
 
-    pub fn set_range(&mut self, range: RangeConfigEntry) {
-        self.range = range;
+    pub fn ranges(&self) -> &[RangeValue] {
+        &self.ranges
     }
 
-    pub fn window(&mut self, ctx: &Context, title: String) {
+    pub fn ranges_mut(&mut self) -> &mut [RangeValue] {
+        &mut self.ranges
+    }
+
+    pub fn push_range(&mut self, range: RangeValue) {
+        self.ranges.push(range);
+    }
+
+    pub fn remove_range(&mut self, index: usize) -> Option<RangeValue> {
+        if self.ranges.len() == 1 || index >= self.ranges.len() {
+            None
+        } else {
+            let old = self.ranges.remove(index);
+            if self.selected >= self.ranges.len() {
+                self.selected = self.ranges.len() - 1;
+            }
+            Some(old)
+        }
+    }
+
+    pub fn replace_ranges(&mut self, mut ranges: Vec<RangeValue>) -> Option<Vec<RangeValue>> {
+        if ranges.len() < 1 {
+            None
+        } else {
+            if ranges != self.ranges {
+                mem::swap(&mut self.ranges, &mut ranges);
+                self.selected = 0;
+                Some(ranges)
+            } else {
+                None
+            }
+        }
+    }
+
+    pub fn window(&mut self, ctx: &Context, id: Id, title: String) {
         Window::new(title)
+            .id(id)
             .resizable([false, false])
-            .default_size([500.0, 500.0])
+            .default_size([400.0, 450.0]) // TODO: Resize.
             .show(ctx, |ui| self.view(ui));
     }
 
@@ -40,16 +85,13 @@ impl RangeViewer {
 
         let bounding_rect = ui.available_rect_before_wrap();
 
-        let range_rect_size = if bounding_rect.height() > bounding_rect.width() {
-            bounding_rect.width()
-        } else {
-            bounding_rect.height()
-        };
         let range_rect =
-            Rect::from_center_size(bounding_rect.center(), Vec2::splat(range_rect_size));
+            Rect::from_min_size(bounding_rect.left_top(), Vec2::splat(bounding_rect.width()));
 
         self.draw_range(ui, range_rect);
         ui.allocate_rect(range_rect, Sense::empty());
+
+        self.navigation_bar(ui);
     }
 
     fn draw_range(&self, ui: &mut Ui, bounding_rect: Rect) {
@@ -82,22 +124,41 @@ impl RangeViewer {
     ) {
         let field_rect = painter.clip_rect();
 
-        let height_percent = self.range.total_entry_frequency(entry);
-        let top_y = field_rect.bottom() - height_percent as f32 * field_rect.height();
-        let mut left_x = field_rect.left();
+        let range = &self.ranges[self.selected];
 
-        for (action, color) in action_kinds.iter().copied() {
-            let frequency = self.range.entry_frequency(action, entry);
+        let height_percent = match range {
+            RangeValue::Simple(range) => range_entry_frequency(range, entry),
+            RangeValue::Full(range) => range.total_entry_frequency(entry),
+        };
 
-            let right_x = left_x + frequency as f32 * field_rect.width();
-            let frequency_rect = Rect::from_two_pos(
-                Pos2::new(left_x, top_y),
-                Pos2::new(right_x, field_rect.bottom()),
-            );
+        let top = field_rect.bottom() - height_percent as f32 * field_rect.height();
 
-            painter.rect_filled(frequency_rect, 0.0, color);
+        match range {
+            RangeValue::Simple(_) => {
+                let frequency_rect = Rect::from_two_pos(
+                    Pos2::new(field_rect.left(), top),
+                    Pos2::new(field_rect.right(), field_rect.bottom()),
+                );
 
-            left_x = right_x;
+                painter.rect_filled(frequency_rect, 0.0, Color32::WHITE);
+            }
+            RangeValue::Full(range) => {
+                let mut left = field_rect.left();
+
+                for (action, color) in action_kinds.iter().copied() {
+                    let frequency = range.entry_frequency(action, entry);
+
+                    let right = left + frequency as f32 * field_rect.width();
+                    let frequency_rect = Rect::from_two_pos(
+                        Pos2::new(left, top),
+                        Pos2::new(right, field_rect.bottom()),
+                    );
+
+                    painter.rect_filled(frequency_rect, 0.0, color);
+
+                    left = right;
+                }
+            }
         }
 
         painter.rect_filled(field_rect, 0, Color32::from_black_alpha(80));
@@ -111,8 +172,11 @@ impl RangeViewer {
     }
 
     fn action_kinds_colors(&self) -> Vec<(RangeActionKind, Color32)> {
-        let mut actions: Vec<_> = self
-            .range
+        let RangeValue::Full(range) = &self.ranges[self.selected] else {
+            return Vec::new();
+        };
+
+        let mut actions: Vec<_> = range
             .action_kinds()
             .map(|action| (action, Color32::BLACK))
             .collect();
@@ -143,5 +207,29 @@ impl RangeViewer {
         }
 
         actions
+    }
+
+    fn navigation_bar(&mut self, ui: &mut Ui) {
+        let old_selected = self.selected;
+
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(self.selected > 0, Button::new("<"))
+                .clicked()
+            {
+                self.selected -= 1;
+            }
+
+            if ui
+                .add_enabled(self.selected < self.ranges.len() - 1, Button::new(">"))
+                .clicked()
+            {
+                self.selected += 1;
+            }
+        });
+
+        if self.selected != old_selected {
+            ui.ctx().request_repaint();
+        }
     }
 }

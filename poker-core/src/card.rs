@@ -47,7 +47,7 @@ impl Card {
 
     pub const COUNT: usize = Suite::COUNT * Rank::COUNT;
 
-    pub fn of(rank: Rank, suite: Suite) -> Self {
+    pub const fn of(rank: Rank, suite: Suite) -> Self {
         Self(suite.to_index() + rank.to_i8())
     }
 

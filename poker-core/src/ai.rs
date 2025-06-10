@@ -1,13 +1,29 @@
-use std::sync::Arc;
+use std::{error::Error, fmt, sync::Arc};
 
 use rand::{rngs::StdRng, SeedableRng};
 
 use crate::{
     game::{milli_big_blind_to_amount_rounded, Game, Street},
-    range::{PreFlopAction, PreFlopRangeConfig, RangeEntry},
+    range::{
+        PreFlopAction, PreFlopRangeConfig, RangeActionKind, RangeConfigEntry, RangeEntry,
+        RangeTable, RangeTableWith, MAX_FREQUENCY,
+    },
     rank::Rank,
     result::Result,
 };
+
+// TODO: Remove dbg's.
+
+#[derive(Debug)]
+pub struct ErrorRangeUnimplemented;
+
+impl fmt::Display for ErrorRangeUnimplemented {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self, f)
+    }
+}
+
+impl Error for ErrorRangeUnimplemented {}
 
 // Post / Straddle excluded for now.
 #[derive(Debug, Clone, Copy)]
@@ -22,7 +38,9 @@ pub enum AiAction {
 impl AiAction {
     pub fn from_pre_flop(action: PreFlopAction, big_blind: u32) -> Result<Self> {
         match action {
-            PreFlopAction::Post { .. } | PreFlopAction::Straddle { .. } => todo!(),
+            PreFlopAction::Post { .. } | PreFlopAction::Straddle { .. } => {
+                Err("ai action from pre flop: straddle and post currently not supported".into())
+            }
             PreFlopAction::Fold => Ok(AiAction::Fold),
             PreFlopAction::Check => Ok(AiAction::CheckFold),
             PreFlopAction::Call => Ok(AiAction::CheckCall),
@@ -31,6 +49,70 @@ impl AiAction {
                     Ok(AiAction::BetRaise(amount))
                 } else {
                     Err("ai action from pre flop action: conversion of raise amount failed".into())
+                }
+            }
+        }
+    }
+
+    pub fn from_range(action: RangeActionKind, big_blind: u32) -> Result<Self> {
+        match action {
+            RangeActionKind::Post { .. } | RangeActionKind::Straddle { .. } => {
+                Err("ai action from range: straddle and post currently not supported".into())
+            }
+            RangeActionKind::Fold => Ok(AiAction::Fold),
+            RangeActionKind::Check => Ok(AiAction::CheckFold),
+            RangeActionKind::Call => Ok(AiAction::CheckCall),
+            RangeActionKind::Bet(amount) | RangeActionKind::Raise(amount) => {
+                if let Some(amount) = milli_big_blind_to_amount_rounded(amount, big_blind) {
+                    Ok(AiAction::BetRaise(amount))
+                } else {
+                    Err("ai action from range: conversion of bet or raise amount failed".into())
+                }
+            }
+        }
+    }
+
+    pub fn to_range(self, game: &Game) -> Result<RangeActionKind> {
+        if game.current_player().is_none() {
+            return Err("ai action to range: game is not a player decision point".into());
+        }
+
+        match self {
+            AiAction::Fold => Ok(RangeActionKind::Fold),
+            AiAction::CheckFold => {
+                if game.can_check() {
+                    Ok(RangeActionKind::Check)
+                } else {
+                    Ok(RangeActionKind::Fold)
+                }
+            }
+            AiAction::CheckCall => {
+                if game.can_check() {
+                    Ok(RangeActionKind::Check)
+                } else if game.can_call().is_some() {
+                    Ok(RangeActionKind::Call)
+                } else {
+                    Err("ai action to range: check/call not possible".into())
+                }
+            }
+            AiAction::BetRaise(amount) => {
+                if game.can_bet().is_some() {
+                    Ok(RangeActionKind::Bet(
+                        game.amount_to_milli_big_blinds_rounded(amount),
+                    ))
+                } else if game.can_raise().is_some() {
+                    Ok(RangeActionKind::Raise(
+                        game.amount_to_milli_big_blinds_rounded(amount),
+                    ))
+                } else {
+                    Err("ai action to range: bet/raise not possible".into())
+                }
+            }
+            AiAction::AllIn => {
+                if let Some(amount) = game.can_all_in() {
+                    Self::BetRaise(amount).to_range(game)
+                } else {
+                    Err("ai action to range: all-in not possible".into())
                 }
             }
         }
@@ -74,45 +156,90 @@ impl AiAction {
 }
 
 pub trait PlayerActionGenerator {
-    fn player_action(&mut self, game: &Game) -> Result<AiAction>;
+    fn update_villain(&mut self, _game: &Game) -> Result<()> {
+        Ok(())
+    }
+
+    fn update_hero(
+        &mut self,
+        _game: &Game,
+    ) -> Result<(AiAction, RangeConfigEntry, Option<&[RangeTableWith<u16>]>)>;
 }
 
 pub struct AlwaysFold;
 
 impl PlayerActionGenerator for AlwaysFold {
-    fn player_action(&mut self, _game: &Game) -> Result<AiAction> {
-        Ok(AiAction::Fold)
+    fn update_hero(
+        &mut self,
+        _game: &Game,
+    ) -> Result<(AiAction, RangeConfigEntry, Option<&[RangeTableWith<u16>]>)> {
+        let total_range = RangeTable::FULL.to_frequencies(MAX_FREQUENCY);
+        let config = RangeConfigEntry::distribute_action(total_range, RangeActionKind::Fold)?;
+        Ok((AiAction::Fold, config, None))
     }
 }
 
 pub struct AlwaysCheckCall;
 
 impl PlayerActionGenerator for AlwaysCheckCall {
-    fn player_action(&mut self, _game: &Game) -> Result<AiAction> {
-        Ok(AiAction::CheckCall)
+    fn update_hero(
+        &mut self,
+        game: &Game,
+    ) -> Result<(AiAction, RangeConfigEntry, Option<&[RangeTableWith<u16>]>)> {
+        let total_range = RangeTable::FULL.to_frequencies(MAX_FREQUENCY);
+        let action = AiAction::CheckCall.to_range(game)?;
+        let config = RangeConfigEntry::distribute_action(total_range, action)?;
+        Ok((AiAction::CheckCall, config, None))
     }
 }
 
 pub struct AlwaysAllIn;
 
 impl PlayerActionGenerator for AlwaysAllIn {
-    fn player_action(&mut self, _game: &Game) -> Result<AiAction> {
-        Ok(AiAction::AllIn)
+    fn update_hero(
+        &mut self,
+        game: &Game,
+    ) -> Result<(AiAction, RangeConfigEntry, Option<&[RangeTableWith<u16>]>)> {
+        let total_range = RangeTable::FULL.to_frequencies(MAX_FREQUENCY);
+        let action = AiAction::AllIn.to_range(game)?;
+        let config = RangeConfigEntry::distribute_action(total_range, action)?;
+        Ok((AiAction::AllIn, config, None))
     }
 }
 
 pub struct SimpleStrategy {
     rng: StdRng,
+    current_ranges: Vec<RangeTableWith<u16>>,
     pre_flop_ranges: Arc<PreFlopRangeConfig>,
 }
 
 impl PlayerActionGenerator for SimpleStrategy {
-    fn player_action(&mut self, game: &Game) -> Result<AiAction> {
-        if game.board().street() == Street::PreFlop {
-            self.pre_flop(game)
-        } else {
-            Ok(AiAction::CheckCall) // TODO
-        }
+    fn update_villain(&mut self, game: &Game) -> Result<()> {
+        // Using self range calculation for enemy.
+
+        let action = game.actions().last().copied().unwrap();
+        let action = RangeActionKind::from_game_action(game, action)?;
+
+        let mut game = game.clone();
+        assert!(game.previous());
+
+        let range = self.player(&game)?;
+        self.current_ranges[game.current_player().unwrap()] = range.action_range(action).unwrap();
+
+        Ok(())
+    }
+
+    fn update_hero(
+        &mut self,
+        game: &Game,
+    ) -> Result<(AiAction, RangeConfigEntry, Option<&[RangeTableWith<u16>]>)> {
+        let range = self.player(game)?;
+        // TODO: Check that this works correctly regarding folds etc..
+        let action = range.pick(&mut self.rng, game.current_hand().unwrap());
+        self.current_ranges[game.current_player().unwrap()] = range.action_range(action).unwrap();
+
+        let action = AiAction::from_range(action, game.big_blind())?;
+        Ok((action, range, Some(&self.current_ranges)))
     }
 }
 
@@ -121,33 +248,50 @@ impl SimpleStrategy {
         Self {
             rng: StdRng::from_entropy(),
             pre_flop_ranges,
+            current_ranges: vec![RangeTable::FULL.to_frequencies(MAX_FREQUENCY); Game::MAX_PLAYERS],
         }
     }
 
-    fn pre_flop(&mut self, game: &Game) -> Result<AiAction> {
-        let action = self.pre_flop_inner(game)?;
+    fn player(&self, game: &Game) -> Result<RangeConfigEntry> {
+        if game.board().street() == Street::PreFlop {
+            self.pre_flop_single(game)
+        } else {
+            self.post_flop_single(game)
+        }
+    }
 
-        let range_entry = RangeEntry::from_hand(game.current_hand().unwrap());
-        if action.contains_fold()
-            && (range_entry == RangeEntry::paired(Rank::Ace)
-                || range_entry == RangeEntry::paired(Rank::King))
-        {
-            dbg!(range_entry);
-            if let Some((_, to)) = game.can_raise() {
+    fn pre_flop_single(&self, game: &Game) -> Result<RangeConfigEntry> {
+        let mut config = self.pre_flop_inner(game)?;
+
+        let aces_kings = [
+            RangeEntry::paired(Rank::Ace),
+            RangeEntry::paired(Rank::King),
+        ];
+
+        for entry in aces_kings {
+            if config.total_entry_frequency(entry) != 0.0
+                && config.entry_frequency(RangeActionKind::Fold, entry) != 0.0
+            {
                 // TODO:
                 // The totally not suspicious min raise.
                 // Might not be the best choice,
                 // should want to call after 3-betting often etc.
-                Ok(AiAction::BetRaise(to))
-            } else {
-                Ok(AiAction::CheckCall)
+
+                dbg!(entry);
+                let action = if let Some((_, to)) = game.can_raise() {
+                    AiAction::BetRaise(to)
+                } else {
+                    AiAction::CheckCall
+                };
+
+                config.update_entry_only_action(entry, action.to_range(game)?)?;
             }
-        } else {
-            Ok(action)
         }
+
+        Ok(config)
     }
 
-    fn pre_flop_inner(&mut self, game: &Game) -> Result<AiAction> {
+    fn pre_flop_inner(&self, game: &Game) -> Result<RangeConfigEntry> {
         // TODO:
         // Custom pre flop logic and adaptation for things like limping,
         // unexpected calls, crazy sizings.
@@ -163,21 +307,33 @@ impl SimpleStrategy {
                 // Ranges might have random holes that can totally happen in real life.
                 // Also stuff like limping. Use custom logic here.
                 Err(err) => {
-                    dbg!(err);
-                    return Ok(AiAction::CheckFold);
+                    dbg!(err, game.actions());
+                    return self.current_range_check_fold(game);
                 }
             };
 
         if diff_milli_big_blinds >= 15_000 {
             // Arbitrary choice, in reality this might be way too large in most situations.
             dbg!(diff_milli_big_blinds, game.actions());
-            return Ok(AiAction::CheckFold);
+            return self.current_range_check_fold(game);
         }
 
-        let range_entry = RangeEntry::from_hand(game.current_hand().unwrap());
-        let action = range.pick(&mut self.rng, range_entry);
-        // TODO:
-        // Adjust sizing to bets and handle smaller than min raise.
-        Ok(AiAction::from_pre_flop(action, game.big_blind())?)
+        Ok(range.to_full_range())
+    }
+
+    fn current_range_check_fold(&self, game: &Game) -> Result<RangeConfigEntry> {
+        RangeConfigEntry::distribute_action(
+            self.current_ranges[game.current_player().unwrap()].clone(),
+            AiAction::CheckFold.to_range(game)?,
+        )
+    }
+
+    fn post_flop_single(&self, game: &Game) -> Result<RangeConfigEntry> {
+        // TODO
+
+        let total_range = self.current_ranges[game.current_player().unwrap()].clone();
+        let action = AiAction::CheckCall.to_range(game)?;
+        let config = RangeConfigEntry::distribute_action(total_range, action)?;
+        Ok(config)
     }
 }
