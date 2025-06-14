@@ -1,8 +1,8 @@
 use std::{cmp, mem};
 
 use eframe::egui::{
-    Align2, Button, Color32, Context, FontFamily, FontId, Id, Label, Painter, Pos2, Rect,
-    ScrollArea, Sense, Ui, Vec2, Window,
+    text::LayoutJob, Align2, Button, Color32, Context, FontFamily, FontId, Id, Label, Painter,
+    Pos2, Rect, ScrollArea, Sense, TextFormat, Ui, Vec2, WidgetText, Window,
 };
 
 use poker_core::{
@@ -124,6 +124,9 @@ impl RangeViewer {
 
                 let entry = RangeEntry::from_row_column(row, column);
                 self.draw_entry(&ui.painter_at(field_rect), entry, &action_kinds);
+
+                ui.allocate_rect(field_rect, Sense::hover())
+                    .on_hover_ui(|ui| self.entry_hover_label(ui, entry, &action_kinds));
             }
         }
     }
@@ -181,6 +184,55 @@ impl RangeViewer {
             FontId::new(field_rect.width() / 3.0, FontFamily::Monospace),
             Color32::WHITE,
         );
+    }
+
+    fn entry_hover_label(
+        &self,
+        ui: &mut Ui,
+        entry: RangeEntry,
+        action_kinds: &[(RangeActionKind, Color32)],
+    ) {
+        let label = match &self.ranges[self.selected] {
+            RangeValue::Simple(range) => {
+                let frequency = range_entry_frequency(range, entry);
+                let text = format!("{}: {:.1}", entry.to_regular_string(), frequency * 100.0);
+                WidgetText::from(text)
+            }
+            RangeValue::Full(range) => {
+                let mut job = LayoutJob::default();
+
+                job.append(
+                    &format!("{}: ", entry.to_regular_string()),
+                    0.0,
+                    TextFormat::simple(FontId::default(), Color32::WHITE),
+                );
+
+                for (index, (action, color)) in action_kinds.iter().copied().enumerate() {
+                    job.append(
+                        &action.to_string(),
+                        0.0,
+                        TextFormat::simple(FontId::default(), color),
+                    );
+
+                    let frequency = range.entry_frequency(action, entry);
+                    let mut frequency_text = format!(": {:.1}%", frequency * 100.0);
+
+                    if index < action_kinds.len() - 1 {
+                        frequency_text += "; ";
+                    }
+
+                    job.append(
+                        &frequency_text,
+                        0.0,
+                        TextFormat::simple(FontId::default(), Color32::WHITE),
+                    );
+                }
+
+                WidgetText::from(job)
+            }
+        };
+
+        ui.label(label);
     }
 
     fn action_kinds_colors(&self) -> Vec<(RangeActionKind, Color32)> {

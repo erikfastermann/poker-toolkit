@@ -12,7 +12,9 @@ use serde::{de, Deserialize, Serialize, Serializer};
 
 use crate::card::Card;
 use crate::cards::{Cards, CardsByRank};
-use crate::game::{Action, Game, MilliBigBlind, Player, State, Street};
+use crate::game::{
+    milli_big_blind_to_f64_approximate, Action, Game, MilliBigBlind, Player, State, Street,
+};
 use crate::hand::Hand;
 use crate::rank::Rank;
 use crate::result::{Error, Result};
@@ -1505,6 +1507,34 @@ pub enum RangeActionKind {
     Call,
     Bet(MilliBigBlind),
     Raise(MilliBigBlind),
+}
+
+impl fmt::Display for RangeActionKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            RangeActionKind::Post { player, amount } => write!(
+                f,
+                "Post from {player} to {:.2}",
+                milli_big_blind_to_f64_approximate(amount)
+            ),
+            RangeActionKind::Straddle { player, amount } => {
+                write!(
+                    f,
+                    "Straddle from {player} to {:.2}",
+                    milli_big_blind_to_f64_approximate(amount)
+                )
+            }
+            RangeActionKind::Fold => write!(f, "Fold"),
+            RangeActionKind::Check => write!(f, "Check"),
+            RangeActionKind::Call => write!(f, "Call"),
+            RangeActionKind::Bet(amount) => {
+                write!(f, "Bet {:.2}", milli_big_blind_to_f64_approximate(amount))
+            }
+            RangeActionKind::Raise(to) => {
+                write!(f, "Raise {:.2}", milli_big_blind_to_f64_approximate(to))
+            }
+        }
+    }
 }
 
 impl RangeActionKind {

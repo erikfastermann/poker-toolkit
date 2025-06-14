@@ -40,6 +40,15 @@ pub fn milli_big_blind_from_f64(n: f64) -> Result<MilliBigBlind> {
     Ok(n as MilliBigBlind)
 }
 
+pub fn milli_big_blind_to_f64_approximate(n: MilliBigBlind) -> f64 {
+    // This might have some rounding issues.
+    let full_blinds = (n / 1000) as f64;
+    let frac = (n % 1000) as f64 / 1000.0;
+
+    // This might have some rounding issues.
+    full_blinds + frac
+}
+
 pub fn milli_big_blind_to_amount_rounded(n: MilliBigBlind, big_blind: u32) -> Option<u32> {
     if n < 0 {
         return None;
