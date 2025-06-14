@@ -1857,6 +1857,22 @@ impl RangeConfigEntry {
         }
     }
 
+    pub fn hand_frequency(&self, action: RangeActionKind, hand: Hand) -> u16 {
+        let range_action = self
+            .actions()
+            .iter()
+            .filter(|current_action| current_action.action == action)
+            .next();
+
+        if let Some(range_action) = range_action {
+            range_action.range[hand]
+        } else if action == RangeActionKind::Fold {
+            self.fold_frequency(hand)
+        } else {
+            0
+        }
+    }
+
     fn fold_frequency(&self, hand: Hand) -> u16 {
         let fold_action = self
             .actions

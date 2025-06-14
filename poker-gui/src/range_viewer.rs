@@ -1,8 +1,8 @@
 use std::{cmp, mem};
 
 use eframe::egui::{
-    Align2, Button, Color32, Context, FontFamily, FontId, Id, Painter, Pos2, Rect, Sense, Ui, Vec2,
-    Window,
+    Align2, Button, Color32, Context, FontFamily, FontId, Id, Label, Painter, Pos2, Rect,
+    ScrollArea, Sense, Ui, Vec2, Window,
 };
 
 use poker_core::{
@@ -20,6 +20,7 @@ pub enum RangeValue {
 pub struct RangeViewer {
     ranges: Vec<RangeValue>,
     selected: usize,
+    details: String,
 }
 
 impl RangeViewer {
@@ -27,6 +28,7 @@ impl RangeViewer {
         Self {
             ranges: vec![RangeValue::Full(RangeConfigEntry::default())],
             selected: 0,
+            details: String::new(),
         }
     }
 
@@ -72,11 +74,19 @@ impl RangeViewer {
         }
     }
 
+    pub fn details(&mut self) -> &str {
+        &self.details
+    }
+
+    pub fn set_details(&mut self, details: String) {
+        self.details = details;
+    }
+
     pub fn window(&mut self, ctx: &Context, id: Id, title: String) {
         Window::new(title)
             .id(id)
             .resizable([false, false])
-            .default_size([400.0, 450.0]) // TODO: Resize.
+            .default_size([400.0, 400.0]) // TODO: Resize.
             .show(ctx, |ui| self.view(ui));
     }
 
@@ -92,6 +102,8 @@ impl RangeViewer {
         ui.allocate_rect(range_rect, Sense::empty());
 
         self.navigation_bar(ui);
+
+        self.details_text(ui);
     }
 
     fn draw_range(&self, ui: &mut Ui, bounding_rect: Rect) {
@@ -231,5 +243,17 @@ impl RangeViewer {
         if self.selected != old_selected {
             ui.ctx().request_repaint();
         }
+    }
+
+    fn details_text(&self, ui: &mut Ui) {
+        if self.details.is_empty() {
+            return;
+        }
+
+        ui.separator();
+
+        ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
+            ui.add_sized(ui.available_size(), Label::new(&self.details));
+        });
     }
 }

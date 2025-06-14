@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fs, sync::Arc};
+use std::{collections::HashMap, fmt::Write, fs, mem, sync::Arc};
 
 use eframe::egui::{
     Align, Align2, Button, Color32, Context, DragValue, FontFamily, FontId, Id, Layout, Painter,
@@ -37,7 +37,9 @@ pub struct GameView {
     // TODO: Offload to background thread.
     current_player_action_generators: HashMap<usize, Box<dyn PlayerActionGenerator>>,
     /// The keys are the indices of the inserted action values.
-    current_range_histories: HashMap<usize, Vec<RangeValue>>,
+    /// The values contain the length of the matching generator logs.
+    current_range_histories: HashMap<usize, (Vec<RangeValue>, usize)>,
+    current_generator_logs: Vec<String>,
     last_applied_action_index: usize,
     range_viewer: RangeViewer,
 
@@ -97,6 +99,7 @@ impl GameView {
             player_action_generators,
             current_player_action_generators: HashMap::new(),
             current_range_histories: HashMap::new(),
+            current_generator_logs: vec![String::new(); Game::MAX_PLAYERS],
             last_applied_action_index: 2, // Skip initial posts.
             range_viewer: RangeViewer::new(),
             current_amount: 0,
@@ -164,12 +167,14 @@ impl GameView {
             State::Player(player)
                 if self.current_player_action_generators.contains_key(&player) =>
             {
+                let mut temp_log = String::new();
+
                 // TODO: Gracefully handle errors and check action is valid.
                 let (action, config, ranges) = self
                     .current_player_action_generators
                     .get_mut(&player)
                     .unwrap()
-                    .update_hero(&self.game)?;
+                    .update_hero(&self.game, &mut temp_log)?;
 
                 action.apply_to_game(&mut self.game)?;
 
@@ -186,8 +191,12 @@ impl GameView {
                     }
                 }
 
-                self.current_range_histories
-                    .insert(self.game.actions().len(), ranges_history_entry);
+                let current_log_offset = self.write_generator_log(player, "Hero", &temp_log);
+
+                self.current_range_histories.insert(
+                    self.game.actions().len(),
+                    (ranges_history_entry, current_log_offset),
+                );
 
                 self.apply_action_to_villains()?;
             }
@@ -226,15 +235,26 @@ impl GameView {
             return Ok(());
         };
 
-        for (player, action_generator) in &mut self.current_player_action_generators {
+        let mut generators = mem::take(&mut self.current_player_action_generators);
+
+        for (player, action_generator) in &mut generators {
             if self.game.folded(*player) || *player == action_player {
                 continue;
             }
 
-            // TODO: Handle errors gracefully.
-            action_generator.update_villain(&self.game)?;
+            let mut temp_log = String::new();
+
+            // TODO: Handle errors gracefully and don't forget to restore the generator hashmap.
+            action_generator.update_villain(&self.game, &mut temp_log)?;
+
+            self.write_generator_log(
+                *player,
+                &format!("Villain {}", self.game.player_name(action_player)),
+                &temp_log,
+            );
         }
 
+        self.current_player_action_generators = generators;
         self.last_applied_action_index = self.game.actions().len();
 
         Ok(())
@@ -744,6 +764,9 @@ impl GameView {
         self.set_pick_community_cards(config.pick_community_cards);
 
         self.current_range_histories = HashMap::new();
+        self.current_generator_logs
+            .iter_mut()
+            .for_each(String::clear);
         self.last_applied_action_index = 2; // Skip initial posts.
         self.current_player_action_generators.clear();
         self.range_viewer = RangeViewer::new();
@@ -762,13 +785,17 @@ impl GameView {
     }
 
     fn view_ranges(&mut self, ctx: &Context) {
-        let Some(ranges) = self.current_range_histories.get(&self.game.actions().len()) else {
+        let Some((ranges, log_offset)) =
+            self.current_range_histories.get(&self.game.actions().len())
+        else {
             return;
         };
 
-        self.range_viewer.replace_ranges(ranges.clone());
-
         let player = self.game.actions().last().unwrap().player().unwrap();
+
+        self.range_viewer.replace_ranges(ranges.clone());
+        self.range_viewer
+            .set_details(self.current_generator_logs[player][..*log_offset].to_owned());
 
         let villain_title = if self.range_viewer.selected() != 0 {
             // TODO: A little hacky that this depends on the concrete insertion order in the array.
@@ -787,6 +814,29 @@ impl GameView {
         let title = format!("Range - {}{}", self.game.player_name(player), villain_title);
         // TODO: Nicer rendering and default position of window.
         self.range_viewer.window(ctx, Id::new("Range"), title);
+    }
+
+    fn write_generator_log(&mut self, player: usize, name: &str, log: &str) -> usize {
+        let out = &mut self.current_generator_logs[player];
+
+        if log.is_empty() {
+            out.len()
+        } else {
+            write!(
+                out,
+                "{name} at {} - {}:\n\n{log}",
+                self.game.board().street(),
+                self.game
+                    .actions_in_street()
+                    .iter()
+                    .filter_map(|action| action.player_char())
+                    .collect::<String>(),
+            )
+            .unwrap();
+            let offset = out.trim_end().len();
+            out.push_str("\n---------\n\n");
+            offset
+        }
     }
 
     fn visible_hand(&self, player: usize) -> Option<Hand> {

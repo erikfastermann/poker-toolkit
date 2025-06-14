@@ -127,6 +127,20 @@ impl Action {
         }
     }
 
+    pub fn player_char(self) -> Option<char> {
+        let ch = match self {
+            Action::Post { .. } => 'p',
+            Action::Straddle { .. } => 's',
+            Action::Fold(_) => 'f',
+            Action::Check(_) => 'x',
+            Action::Call { .. } => 'c',
+            Action::Bet { .. } => 'b',
+            Action::Raise { .. } => 'r',
+            _ => return None,
+        };
+        Some(ch)
+    }
+
     pub fn is_street(self) -> bool {
         self.street().is_some()
     }

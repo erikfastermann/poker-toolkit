@@ -1,4 +1,8 @@
-use std::{error::Error, fmt, sync::Arc};
+use std::{
+    error::Error,
+    fmt::{self, Write},
+    sync::Arc,
+};
 
 use rand::{rngs::StdRng, SeedableRng};
 
@@ -11,8 +15,6 @@ use crate::{
     rank::Rank,
     result::Result,
 };
-
-// TODO: Remove dbg's.
 
 #[derive(Debug)]
 pub struct ErrorRangeUnimplemented;
@@ -156,13 +158,15 @@ impl AiAction {
 }
 
 pub trait PlayerActionGenerator {
-    fn update_villain(&mut self, _game: &Game) -> Result<()> {
+    fn update_villain(&mut self, _game: &Game, log: &mut String) -> Result<()> {
+        writeln!(log, "Not implemented")?;
         Ok(())
     }
 
     fn update_hero(
         &mut self,
-        _game: &Game,
+        game: &Game,
+        log: &mut String,
     ) -> Result<(AiAction, RangeConfigEntry, Option<&[RangeTableWith<u16>]>)>;
 }
 
@@ -172,6 +176,7 @@ impl PlayerActionGenerator for AlwaysFold {
     fn update_hero(
         &mut self,
         _game: &Game,
+        _log: &mut String,
     ) -> Result<(AiAction, RangeConfigEntry, Option<&[RangeTableWith<u16>]>)> {
         let total_range = RangeTable::FULL.to_frequencies(MAX_FREQUENCY);
         let config = RangeConfigEntry::distribute_action(total_range, RangeActionKind::Fold)?;
@@ -185,6 +190,7 @@ impl PlayerActionGenerator for AlwaysCheckCall {
     fn update_hero(
         &mut self,
         game: &Game,
+        _log: &mut String,
     ) -> Result<(AiAction, RangeConfigEntry, Option<&[RangeTableWith<u16>]>)> {
         let total_range = RangeTable::FULL.to_frequencies(MAX_FREQUENCY);
         let action = AiAction::CheckCall.to_range(game)?;
@@ -199,6 +205,7 @@ impl PlayerActionGenerator for AlwaysAllIn {
     fn update_hero(
         &mut self,
         game: &Game,
+        _log: &mut String,
     ) -> Result<(AiAction, RangeConfigEntry, Option<&[RangeTableWith<u16>]>)> {
         let total_range = RangeTable::FULL.to_frequencies(MAX_FREQUENCY);
         let action = AiAction::AllIn.to_range(game)?;
@@ -214,7 +221,7 @@ pub struct SimpleStrategy {
 }
 
 impl PlayerActionGenerator for SimpleStrategy {
-    fn update_villain(&mut self, game: &Game) -> Result<()> {
+    fn update_villain(&mut self, game: &Game, log: &mut String) -> Result<()> {
         // Using self range calculation for enemy.
 
         let action = game.actions().last().copied().unwrap();
@@ -223,7 +230,7 @@ impl PlayerActionGenerator for SimpleStrategy {
         let mut game = game.clone();
         assert!(game.previous());
 
-        let range = self.player(&game)?;
+        let range = self.player(&game, log)?;
         self.current_ranges[game.current_player().unwrap()] = range.action_range(action).unwrap();
 
         Ok(())
@@ -232,9 +239,9 @@ impl PlayerActionGenerator for SimpleStrategy {
     fn update_hero(
         &mut self,
         game: &Game,
+        log: &mut String,
     ) -> Result<(AiAction, RangeConfigEntry, Option<&[RangeTableWith<u16>]>)> {
-        let range = self.player(game)?;
-        // TODO: Check that this works correctly regarding folds etc..
+        let range = self.player(game, log)?;
         let action = range.pick(&mut self.rng, game.current_hand().unwrap());
         self.current_ranges[game.current_player().unwrap()] = range.action_range(action).unwrap();
 
@@ -252,16 +259,16 @@ impl SimpleStrategy {
         }
     }
 
-    fn player(&self, game: &Game) -> Result<RangeConfigEntry> {
+    fn player(&self, game: &Game, log: &mut String) -> Result<RangeConfigEntry> {
         if game.board().street() == Street::PreFlop {
-            self.pre_flop_single(game)
+            self.pre_flop(game, log)
         } else {
-            self.post_flop_single(game)
+            self.post_flop(game, log)
         }
     }
 
-    fn pre_flop_single(&self, game: &Game) -> Result<RangeConfigEntry> {
-        let mut config = self.pre_flop_inner(game)?;
+    fn pre_flop(&self, game: &Game, log: &mut String) -> Result<RangeConfigEntry> {
+        let mut config = self.pre_flop_inner(game, log)?;
 
         let aces_kings = [
             RangeEntry::paired(Rank::Ace),
@@ -277,7 +284,6 @@ impl SimpleStrategy {
                 // Might not be the best choice,
                 // should want to call after 3-betting often etc.
 
-                dbg!(entry);
                 let action = if let Some((_, to)) = game.can_raise() {
                     AiAction::BetRaise(to)
                 } else {
@@ -285,13 +291,14 @@ impl SimpleStrategy {
                 };
 
                 config.update_entry_only_action(entry, action.to_range(game)?)?;
+                writeln!(log, "Pre Flop: Changed action for {entry}: {action:?}")?;
             }
         }
 
         Ok(config)
     }
 
-    fn pre_flop_inner(&self, game: &Game) -> Result<RangeConfigEntry> {
+    fn pre_flop_inner(&self, game: &Game, log: &mut String) -> Result<RangeConfigEntry> {
         // TODO:
         // Custom pre flop logic and adaptation for things like limping,
         // unexpected calls, crazy sizings.
@@ -307,14 +314,20 @@ impl SimpleStrategy {
                 // Ranges might have random holes that can totally happen in real life.
                 // Also stuff like limping. Use custom logic here.
                 Err(err) => {
-                    dbg!(err, game.actions());
+                    writeln!(
+                        log,
+                        "Pre Flop: An error occurred while calculating range best fit: {err}"
+                    )?;
                     return self.current_range_check_fold(game);
                 }
             };
 
         if diff_milli_big_blinds >= 15_000 {
-            // Arbitrary choice, in reality this might be way too large in most situations.
-            dbg!(diff_milli_big_blinds, game.actions());
+            // TODO: Arbitrary choice, in reality this might be way too large in most situations.
+            writeln!(
+                log,
+                "Pre Flop: Diff milli big blinds too big: {diff_milli_big_blinds}"
+            )?;
             return self.current_range_check_fold(game);
         }
 
@@ -328,8 +341,9 @@ impl SimpleStrategy {
         )
     }
 
-    fn post_flop_single(&self, game: &Game) -> Result<RangeConfigEntry> {
+    fn post_flop(&self, game: &Game, log: &mut String) -> Result<RangeConfigEntry> {
         // TODO
+        writeln!(log, "Post Flop: Currently only check/call")?;
 
         let total_range = self.current_ranges[game.current_player().unwrap()].clone();
         let action = AiAction::CheckCall.to_range(game)?;
