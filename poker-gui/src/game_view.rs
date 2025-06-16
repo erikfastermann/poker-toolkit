@@ -820,7 +820,7 @@ impl GameView {
         let out = &mut self.current_generator_logs[player];
 
         if log.is_empty() {
-            out.len()
+            out.len() // TODO: Use last len.
         } else {
             write!(
                 out,

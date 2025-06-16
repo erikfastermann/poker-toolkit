@@ -7,10 +7,11 @@ use std::{
 use rand::{rngs::StdRng, SeedableRng};
 
 use crate::{
-    game::{milli_big_blind_to_amount_rounded, Game, Street},
+    bitset::Bitset,
+    game::{milli_big_blind_to_amount_rounded, Action, Game, Street},
     range::{
-        PreFlopAction, PreFlopRangeConfig, RangeActionKind, RangeConfigEntry, RangeEntry,
-        RangeTable, RangeTableWith, MAX_FREQUENCY,
+        PreFlopAction, PreFlopRangeConfig, PreFlopRangeTable, RangeActionKind, RangeConfigEntry,
+        RangeEntry, RangeTable, RangeTableWith, MAX_FREQUENCY,
     },
     rank::Rank,
     result::Result,
@@ -159,7 +160,7 @@ impl AiAction {
 
 pub trait PlayerActionGenerator {
     fn update_villain(&mut self, _game: &Game, log: &mut String) -> Result<()> {
-        writeln!(log, "Not implemented")?;
+        writeln!(log, "not implemented")?;
         Ok(())
     }
 
@@ -218,6 +219,8 @@ pub struct SimpleStrategy {
     rng: StdRng,
     current_ranges: Vec<RangeTableWith<u16>>,
     pre_flop_ranges: Arc<PreFlopRangeConfig>,
+    // 256 pre flop actions should be enough for anyone.
+    pre_flop_fold_replace: Bitset<32>,
 }
 
 impl PlayerActionGenerator for SimpleStrategy {
@@ -228,10 +231,21 @@ impl PlayerActionGenerator for SimpleStrategy {
         let action = RangeActionKind::from_game_action(game, action)?;
 
         let mut game = game.clone();
-        assert!(game.previous());
+        game.undo()?;
+        let player = game.current_player().unwrap();
 
         let range = self.player(&game, log)?;
-        self.current_ranges[game.current_player().unwrap()] = range.action_range(action).unwrap();
+
+        let range = if let Some(range) = range.action_range(action) {
+            range
+        } else if game.board().street() == Street::PreFlop {
+            // Player action not in configured pre flop chart.
+            self.villain_unexpected_pre_flop_action(game, action, &range, log)?
+        } else {
+            return Err("unexpected post flop action".into()); // TODO
+        };
+
+        self.current_ranges[player] = range;
 
         Ok(())
     }
@@ -256,6 +270,7 @@ impl SimpleStrategy {
             rng: StdRng::from_entropy(),
             pre_flop_ranges,
             current_ranges: vec![RangeTable::FULL.to_frequencies(MAX_FREQUENCY); Game::MAX_PLAYERS],
+            pre_flop_fold_replace: Bitset::EMPTY,
         }
     }
 
@@ -291,7 +306,7 @@ impl SimpleStrategy {
                 };
 
                 config.update_entry_only_action(entry, action.to_range(game)?)?;
-                writeln!(log, "Pre Flop: Changed action for {entry}: {action:?}")?;
+                writeln!(log, "changed action for {entry}: {action:?}")?;
             }
         }
 
@@ -299,39 +314,65 @@ impl SimpleStrategy {
     }
 
     fn pre_flop_inner(&self, game: &Game, log: &mut String) -> Result<RangeConfigEntry> {
-        // TODO:
-        // Custom pre flop logic and adaptation for things like limping,
-        // unexpected calls, crazy sizings.
+        // TODO: Handle unexpected sizings.
 
-        let (range, diff_milli_big_blinds) =
-            match self.pre_flop_ranges.by_game_best_fit_raise_simple(game) {
-                Ok(range_diff) => range_diff,
-                // Just fold if the config does not match or another error occurred.
-                // Might be confusing, if the errors are just eaten by this function
-                // without any feedback.
+        if game.actions().len() > self.pre_flop_fold_replace.cap() {
+            return Err("pre flop actions would overflow fold replace bitset".into());
+        }
 
-                // TODO:
-                // Ranges might have random holes that can totally happen in real life.
-                // Also stuff like limping. Use custom logic here.
-                Err(err) => {
-                    writeln!(
-                        log,
-                        "Pre Flop: An error occurred while calculating range best fit: {err}"
-                    )?;
-                    return self.current_range_check_fold(game);
+        // TODO: Handle posts / straddles.
+        let best_fit_result = self
+            .pre_flop_ranges
+            .by_game_best_fit_raise_simple(game, |index| {
+                let action = game.actions()[index];
+                if self.pre_flop_fold_replace.has(index) {
+                    // Replace unexpected calls with folds for limpers etc.,
+                    // pretty crude but works for now.
+                    let player = u8::try_from(action.player().unwrap()).unwrap();
+                    Action::Fold(player)
+                } else {
+                    action
                 }
-            };
+            });
 
-        if diff_milli_big_blinds >= 15_000 {
-            // TODO: Arbitrary choice, in reality this might be way too large in most situations.
+        let (range, diff_milli_big_blinds) = match best_fit_result {
+            Ok(range) => range,
+            Err(err) => {
+                // Can also happen if all other players limped and we are in the big blind.
+                //
+                // TODO: Custom range in this case.
+
+                // TODO: Totally breaks when calling 3-bets+.
+
+                writeln!(
+                    log,
+                    "an error occurred while calculating range best fit: {err}"
+                )?;
+
+                // Just check/fold otherwise if the config does not match or another error occurred.
+                let range = self.current_range_check_fold(game)?;
+                return Ok(range);
+            }
+        };
+
+        if diff_milli_big_blinds >= 10_000 {
+            // TODO: Arbitrary choice, in reality this is way too large in most situations.
             writeln!(
                 log,
-                "Pre Flop: Diff milli big blinds too big: {diff_milli_big_blinds}"
+                "diff milli big blinds too big: {diff_milli_big_blinds}"
             )?;
             return self.current_range_check_fold(game);
         }
 
-        Ok(range.to_full_range())
+        // TODO: Increase size when using fold replace.
+        let mut range = range.to_full_range();
+
+        if let Some((_, to)) = game.can_raise() {
+            let to = game.amount_to_milli_big_blinds_rounded(to);
+            range.update_min_raise(to)?;
+        }
+
+        Ok(range)
     }
 
     fn current_range_check_fold(&self, game: &Game) -> Result<RangeConfigEntry> {
@@ -341,9 +382,124 @@ impl SimpleStrategy {
         )
     }
 
+    fn villain_unexpected_pre_flop_action(
+        &mut self,
+        game: Game,
+        action: RangeActionKind,
+        current_range: &RangeConfigEntry,
+        log: &mut String,
+    ) -> Result<RangeTableWith<u16>> {
+        // Implementation of this function is really confusing when using weird
+        // pre flop ranges.
+
+        if let RangeActionKind::Raise(to) = action {
+            let best_raise_to = current_range
+                .action_kinds()
+                .filter_map(|action| match action {
+                    RangeActionKind::Raise(current_to) => Some(current_to),
+                    _ => None,
+                })
+                .min_by_key(|current_to| current_to.abs_diff(to));
+
+            let Some(best_raise_to) = best_raise_to else {
+                return Err("villain unexpected pre flop action: raise action \
+                    but current range does not contain raises"
+                    .into());
+            };
+
+            let range = current_range
+                .action_range(RangeActionKind::Raise(best_raise_to))
+                .unwrap();
+            return Ok(range);
+        }
+
+        let action_index = game.actions().len();
+        let range = self.villain_unexpected_pre_flop_call(game, action, current_range, log)?;
+        self.pre_flop_fold_replace.set(action_index);
+        Ok(range)
+    }
+
+    fn villain_unexpected_pre_flop_call(
+        &mut self,
+        mut game: Game,
+        action: RangeActionKind,
+        current_range: &RangeConfigEntry,
+        log: &mut String,
+    ) -> Result<RangeTableWith<u16>> {
+        if action != RangeActionKind::Call {
+            return Err("villain unexpected pre flop action: only call supported".into());
+        }
+
+        let has_raise = game
+            .actions()
+            .iter()
+            .any(|action| matches!(action, Action::Raise { .. }));
+        if !has_raise {
+            writeln!(log, "unexpected call: using limping range")?;
+
+            // Default arbitrary limping range for all positions and previous limpers.
+            const PRE_FLOP_LIMPING_RANGE: &str =
+                "22+,A2s+,K2s+,Q2s+,J2s+,T2s+,92s+,82s+,72s+,62s+,52s+,42s+,32s+,\
+                A2o+,K5o+,Q8o+,J8o+,T7o+,97o+,86o+,75o+,64o+,53o+,42o+,32o+";
+            let range = PreFlopRangeTable::parse(PRE_FLOP_LIMPING_RANGE).unwrap();
+            let range = RangeTable::from_range_table(&range).to_frequencies(MAX_FREQUENCY);
+            return Ok(range);
+        }
+
+        game.fold()?;
+
+        if game.current_player().is_none() {
+            // Use the smallest raise of the last found range if this action terminates street.
+            writeln!(
+                log,
+                "unexpected call: player terminates street, using raising range"
+            )?;
+
+            return Self::range_smallest_raise(current_range).map_err(|err| {
+                format!("villain unexpected pre flop action: villain fold terminates street: {err}")
+                    .into()
+            });
+        }
+
+        // For other unexpected calls, we try call from the next position.
+        let range = self.pre_flop(&game, log)?;
+        if let Some(next_calling_range) = range.action_range(RangeActionKind::Call) {
+            writeln!(log, "unexpected call: using next player calling range")?;
+
+            Ok(next_calling_range)
+        } else {
+            // If that fails, we use the raising range of the next position.
+
+            writeln!(log, "unexpected call: using next player raising range")?;
+
+            return Self::range_smallest_raise(current_range)
+                .map_err(|err| format!("villain unexpected pre flop action: {err}").into());
+        }
+    }
+
+    fn range_smallest_raise(current_range: &RangeConfigEntry) -> Result<RangeTableWith<u16>> {
+        let smallest_raise = current_range
+            .actions()
+            .iter()
+            .filter(|action| matches!(action.action(), RangeActionKind::Raise(_)))
+            .min_by_key(|action| {
+                if let RangeActionKind::Raise(to) = action.action() {
+                    to
+                } else {
+                    unreachable!()
+                }
+            });
+
+        let Some(smallest_raise) = smallest_raise else {
+            return Err("found range has no raises".into());
+        };
+
+        return Ok(smallest_raise.range().clone());
+    }
+
     fn post_flop(&self, game: &Game, log: &mut String) -> Result<RangeConfigEntry> {
         // TODO
-        writeln!(log, "Post Flop: Currently only check/call")?;
+        writeln!(log, "post flop currently only check/call")?;
 
         let total_range = self.current_ranges[game.current_player().unwrap()].clone();
         let action = AiAction::CheckCall.to_range(game)?;

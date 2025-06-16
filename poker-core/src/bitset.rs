@@ -45,6 +45,10 @@ impl<const SIZE: usize> Bitset<SIZE> {
     pub fn count(&self) -> u32 {
         self.0.iter().map(|n| n.count_ones()).sum::<u32>()
     }
+
+    pub fn cap(&self) -> usize {
+        self.0.len().checked_mul(8).unwrap()
+    }
 }
 
 impl<const SIZE: usize> BitAnd for Bitset<SIZE> {

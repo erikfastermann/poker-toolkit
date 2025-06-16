@@ -373,6 +373,12 @@ impl PreFlopRangeTable {
         hands
     }
 
+    pub fn without(&mut self, other: &Self) {
+        for (our_row, other_row) in self.table.iter_mut().zip(&other.table) {
+            *our_row &= !*other_row;
+        }
+    }
+
     fn parse_pair(&mut self, raw_rank: u8) -> Result<()> {
         let rank = Rank::from_ascii(raw_rank)?;
         self.try_add(RangeEntry {
@@ -1192,14 +1198,19 @@ impl PreFlopRangeConfigEntry {
         }
     }
 
-    fn raise_diff_unchecked(&self, skip_players: usize, game: &Game) -> u64 {
-        let allowed_actions = &game.actions()[2..];
+    fn raise_diff_unchecked(
+        &self,
+        skip_players: usize,
+        game: &Game,
+        action_preprocessor: impl Fn(usize) -> Action,
+    ) -> u64 {
+        let actions = game.actions();
 
         self.previous_actions
             .iter()
             .skip(skip_players)
-            .zip(allowed_actions)
-            .filter_map(|(expected, got)| match (*expected, *got) {
+            .zip((2..actions.len()).map(|index| action_preprocessor(index)))
+            .filter_map(|(expected, got)| match (*expected, got) {
                 // Super simple difference.
                 (PreFlopAction::Raise(current_to), Action::Raise { to, .. }) => {
                     let to = game.amount_to_milli_big_blinds_rounded(to);
@@ -1414,6 +1425,7 @@ impl PreFlopRangeConfig {
     pub fn by_game_action_kinds<'a>(
         &'a self,
         game: &'a Game,
+        action_preprocessor: impl Fn(usize) -> Action + 'a,
     ) -> Result<impl Iterator<Item = &'a PreFlopRangeConfigEntry> + 'a> {
         if game.player_count() > self.max_players {
             return Err("ranges by action kinds: more players than maximally allowed".into());
@@ -1463,8 +1475,8 @@ impl PreFlopRangeConfig {
                     .previous_actions
                     .iter()
                     .skip(skip_players)
-                    .zip(&actions[2..])
-                    .all(|(a, b)| a.is_action_kind(*b));
+                    .zip((2..actions.len()).map(|index| action_preprocessor(index)))
+                    .all(|(a, b)| a.is_action_kind(b));
 
             skipped_players_folded && kinds_match
         });
@@ -1475,18 +1487,20 @@ impl PreFlopRangeConfig {
     pub fn by_game_best_fit_raise_simple<'a>(
         &'a self,
         game: &'a Game,
+        action_preprocessor: impl Fn(usize) -> Action + 'a + Clone,
     ) -> Result<(&'a PreFlopRangeConfigEntry, u64)> {
-        let mut ranges = self.by_game_action_kinds(game)?;
+        let mut ranges = self.by_game_action_kinds(game, action_preprocessor.clone())?;
 
         let Some(mut best_range) = ranges.next() else {
             return Err("range by actions: no range matches".into());
         };
 
         let skip_players = self.max_players.checked_sub(game.player_count()).unwrap();
-        let mut best_diff = best_range.raise_diff_unchecked(skip_players, game);
+        let mut best_diff =
+            best_range.raise_diff_unchecked(skip_players, game, &action_preprocessor);
 
         for range in ranges {
-            let current_diff = range.raise_diff_unchecked(skip_players, game);
+            let current_diff = range.raise_diff_unchecked(skip_players, game, &action_preprocessor);
             if current_diff < best_diff {
                 best_range = range;
                 best_diff = current_diff;
@@ -1681,11 +1695,20 @@ impl RangeConfigEntry {
         total_range: RangeTableWith<u16>,
         action: RangeActionKind,
     ) -> Result<Self> {
-        let action = RangeAction::new(
-            action,
-            &total_range,
-            RangeTable::from_frequencies_not_zero(&total_range).to_frequencies(MAX_FREQUENCY),
-        );
+        let action = if action == RangeActionKind::Fold {
+            RangeAction::new(
+                RangeActionKind::Fold,
+                &total_range,
+                RangeTable::FULL.to_frequencies(MAX_FREQUENCY),
+            )
+        } else {
+            RangeAction::new(
+                action,
+                &total_range,
+                RangeTable::from_frequencies_not_zero(&total_range).to_frequencies(MAX_FREQUENCY),
+            )
+        };
+
         Self::new(total_range, vec![action])
     }
 
@@ -2009,6 +2032,42 @@ impl RangeConfigEntry {
         for hand in entry.iter_hands() {
             self.update_hand_only_action_inner(hand, action)?;
         }
+        self.finalize_update()
+    }
+
+    pub fn update_min_raise(&mut self, min_raise_to: MilliBigBlind) -> Result<()> {
+        for action in &mut self.actions {
+            let RangeActionKind::Raise(to) = action.action else {
+                continue;
+            };
+
+            if to < min_raise_to {
+                action.action = RangeActionKind::Raise(min_raise_to);
+            }
+        }
+
+        let mut min_raises = self
+            .actions
+            .iter()
+            .enumerate()
+            .filter(|(_, action)| action.action == RangeActionKind::Raise(min_raise_to));
+
+        if min_raises.clone().count() >= 2 {
+            let (first_index, min_raise) = min_raises.next().unwrap();
+            let mut min_raise = min_raise.clone();
+
+            for (_, action) in min_raises {
+                for (hand, frequency) in min_raise.range.iter_mut() {
+                    *frequency = frequency.checked_add(action.range[hand]).unwrap();
+                }
+            }
+
+            self.actions
+                .retain_mut(|action| action.action != RangeActionKind::Raise(min_raise_to));
+
+            self.actions.insert(first_index, min_raise);
+        }
+
         self.finalize_update()
     }
 }

@@ -786,6 +786,14 @@ impl BitOrAssign<CardsByRank> for CardsByRank {
     }
 }
 
+impl Not for CardsByRank {
+    type Output = Self;
+
+    fn not(self) -> Self::Output {
+        Self((!self.0) & Self::FULL.0)
+    }
+}
+
 impl Shl<i8> for CardsByRank {
     type Output = CardsByRank;
 
@@ -796,6 +804,7 @@ impl Shl<i8> for CardsByRank {
 
 impl CardsByRank {
     pub const EMPTY: Self = CardsByRank(0);
+    pub const FULL: Self = CardsByRank(0b1_1111_1111_1111);
 
     const WHEEL: Self = Self(0b1_0000_0000_1111);
     const STRAIGHT_SIX_HIGH: Self = Self(0b11111);
