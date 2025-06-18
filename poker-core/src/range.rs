@@ -804,6 +804,14 @@ impl<T: fmt::Debug> fmt::Debug for RangeTableWith<T> {
 }
 
 impl<T> RangeTableWith<T> {
+    pub fn table(&self) -> &[T] {
+        &self.table
+    }
+
+    pub fn table_mut(&mut self) -> &mut [T] {
+        &mut self.table
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = (Hand, &T)> {
         self.table
             .iter()
@@ -2075,6 +2083,14 @@ impl RangeConfigEntry {
 // TODO: Probably better to use a custom type for range frequencies.
 
 pub const MAX_FREQUENCY: u16 = 10_000;
+
+pub fn range_frequencies_valid(range: &RangeTableWith<u16>) -> bool {
+    range.iter().all(|(_, freq)| *freq <= MAX_FREQUENCY)
+}
+
+pub fn range_frequencies_empty(range: &RangeTableWith<u16>) -> bool {
+    range.iter().all(|(_, freq)| *freq == 0)
+}
 
 pub fn range_entry_frequency(range: &RangeTableWith<u16>, entry: RangeEntry) -> f64 {
     let total_frequency: u32 = entry

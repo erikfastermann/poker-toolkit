@@ -1,13 +1,13 @@
 use core::fmt;
 
-use rand::{rngs::SmallRng, seq::SliceRandom, SeedableRng};
+use rand::{rngs::SmallRng, seq::SliceRandom, Rng, SeedableRng};
 
 use crate::{
     card::Card,
     cards::{Cards, Score},
     deck::Deck,
     hand::Hand,
-    range::{RangeTable, RangeTableWith},
+    range::{range_frequencies_empty, range_frequencies_valid, RangeTable, RangeTableWith},
 };
 
 fn try_u64_to_f64(n: u64) -> Option<f64> {
@@ -44,15 +44,27 @@ fn valid_input(community_cards: Cards, ranges: &[impl AsRef<RangeTable>]) -> boo
         && ranges.iter().all(|range| !range.as_ref().is_empty())
 }
 
+fn valid_input_frequencies(community_cards: Cards, ranges: &[RangeTableWith<u16>]) -> bool {
+    community_cards.count() <= 5
+        && ranges.len() >= 2
+        && ranges.len() <= 9
+        && ranges
+            .iter()
+            .all(|range| range_frequencies_valid(range) && !range_frequencies_empty(range))
+}
+
 fn total_combos_upper_bound(community_cards: Cards, ranges: &[impl AsRef<RangeTable>]) -> u128 {
     assert!(ranges.len() <= 9);
     assert!(ranges.iter().all(|range| !range.as_ref().is_empty()));
+
     let community_cards_count = community_cards.count();
     assert!(community_cards_count <= 5);
+
     let mut remaining_cards = {
         let remaining_cards = Card::COUNT - usize::from(community_cards_count);
         u128::try_from(remaining_cards).unwrap()
     };
+
     let mut count = 1u128;
 
     for _ in community_cards_count..5 {
@@ -64,6 +76,39 @@ fn total_combos_upper_bound(community_cards: Cards, ranges: &[impl AsRef<RangeTa
         count = count
             .checked_mul(u128::from(range.as_ref().count()))
             .unwrap();
+    }
+
+    count
+}
+
+fn total_combos_upper_bound_frequencies(
+    community_cards: Cards,
+    ranges: &[RangeTableWith<u16>],
+) -> f64 {
+    assert!(ranges.len() <= 9);
+    assert!(ranges
+        .iter()
+        .all(|range| range_frequencies_valid(range) && !range_frequencies_empty(range)));
+
+    let community_cards_count = community_cards.count();
+    assert!(community_cards_count <= 5);
+
+    let mut remaining_cards = {
+        let remaining_cards = Card::COUNT - usize::from(community_cards_count);
+        remaining_cards as f64
+    };
+
+    let mut count = 1.0;
+
+    for _ in community_cards_count..5 {
+        count *= remaining_cards;
+        remaining_cards -= 1.0;
+    }
+
+    for range in ranges {
+        let range_total: u32 = range.table().iter().map(|n| u32::from(*n)).sum();
+        // We accept that this might loose precision here.
+        count *= f64::from(range_total);
     }
 
     count
@@ -120,6 +165,20 @@ impl Equity {
         let total = simulate(start_community_cards, ranges, rounds, |_, scores, diff| {
             showdown_simulate(scores, &mut wins, &mut ties, diff);
         })?;
+        Some(Self::from_total_wins_ties_simulate(total, &wins, &ties))
+    }
+
+    pub fn simulate_frequencies(
+        start_community_cards: Cards,
+        ranges: &[RangeTableWith<u16>],
+        rounds: u64,
+    ) -> Option<Vec<Equity>> {
+        let mut wins = vec![0.0; ranges.len()];
+        let mut ties = vec![0.0; ranges.len()];
+        let total =
+            simulate_frequencies(start_community_cards, ranges, rounds, |_, scores, diff| {
+                showdown_simulate(scores, &mut wins, &mut ties, diff);
+            })?;
         Some(Self::from_total_wins_ties_simulate(total, &wins, &ties))
     }
 
@@ -201,6 +260,25 @@ impl EquityTable {
         let mut wins = vec![RangeTableWith::default(); ranges.len()];
         let mut ties = vec![RangeTableWith::default(); ranges.len()];
         let total = simulate(
+            start_community_cards,
+            ranges,
+            rounds,
+            |hands, scores, diff| {
+                showdown_table(hands, scores, &mut totals, &mut wins, &mut ties, diff);
+            },
+        )?;
+        Some(Self::from_totals_wins_ties(total, totals, wins, ties))
+    }
+
+    pub fn simulate_frequencies(
+        start_community_cards: Cards,
+        ranges: &[RangeTableWith<u16>],
+        rounds: u64,
+    ) -> Option<Vec<Self>> {
+        let mut totals = vec![RangeTableWith::default(); ranges.len()];
+        let mut wins = vec![RangeTableWith::default(); ranges.len()];
+        let mut ties = vec![RangeTableWith::default(); ranges.len()];
+        let total = simulate_frequencies(
             start_community_cards,
             ranges,
             rounds,
@@ -349,6 +427,108 @@ fn filter_hands<'a>(
         out_index += usize::from(valid);
     }
     &output_range[..out_index]
+}
+
+fn simulate_frequencies(
+    start_community_cards: Cards,
+    ranges: &[RangeTableWith<u16>],
+    rounds: u64,
+    mut f: impl FnMut(&[Hand], &[Score], f64),
+) -> Option<f64> {
+    if !valid_input_frequencies(start_community_cards, ranges) {
+        return None;
+    }
+    if rounds == 0 {
+        return None;
+    }
+
+    let mut rng = SmallRng::from_entropy();
+    let remaining_community_cards = 5 - start_community_cards.count();
+    let player_count = ranges.len();
+    let mut work_ranges = vec![RangeTableWith::<u32>::default(); player_count];
+
+    let mut hands = vec![Hand::UNDEFINED; player_count];
+    let mut scores = vec![Score::ZERO; player_count];
+    let mut deck = Deck::from_cards(&mut rng, start_community_cards);
+    let mut total = 0.0;
+
+    let community_card_factor: u32 = {
+        let x = u32::try_from(Card::COUNT).unwrap() - u32::from((start_community_cards).count());
+        ((x - u32::from(remaining_community_cards)) + 1..=x).product()
+    };
+
+    let upper_bound = total_combos_upper_bound_frequencies(start_community_cards, ranges);
+
+    'outer: for _ in 0..rounds {
+        deck.reset();
+
+        let community_cards = {
+            let mut community_cards = start_community_cards;
+            for _ in 0..remaining_community_cards {
+                community_cards.add(deck.draw(&mut rng).unwrap());
+            }
+            community_cards
+        };
+
+        let mut seen_cards = community_cards;
+        let mut factor = f64::from(community_card_factor);
+        for (i, range) in work_ranges.iter_mut().enumerate() {
+            let range_total = build_ranges_frequencies(&ranges[i], range, seen_cards);
+
+            // We accept that this might loose precision here.
+            factor *= f64::from(range_total);
+
+            if range_total == 0 {
+                continue 'outer;
+            }
+
+            let chosen_weight = rng.gen_range(0..range_total);
+            let hand_index =
+                range.table()[..Hand::COUNT - 1].partition_point(|w| *w <= chosen_weight);
+
+            let hand = Hand::from_index(hand_index);
+
+            hands[i] = hand;
+
+            scores[i] = community_cards
+                .with_unchecked(hand.high())
+                .with_unchecked(hand.low())
+                .score_fast();
+
+            seen_cards.try_add(hand.high());
+            seen_cards.try_add(hand.low());
+        }
+
+        // We accept that this might loose precision here.
+        let diff = factor / upper_bound;
+        f(&hands, &scores, diff);
+        total += diff;
+    }
+
+    if total == 0.0 {
+        None
+    } else {
+        Some(total)
+    }
+}
+
+fn build_ranges_frequencies<'a>(
+    range: &RangeTableWith<u16>,
+    work_range: &mut RangeTableWith<u32>,
+    seen_cards: Cards,
+) -> u32 {
+    let mut total = 0u32;
+
+    for index in 0..Hand::COUNT {
+        let hand = Hand::from_index(index);
+        let valid = !seen_cards.has(hand.high()) & !seen_cards.has(hand.low());
+
+        total += u32::from(range.table()[index]) * u32::from(valid);
+
+        work_range.table_mut()[index] = total;
+    }
+
+    total
 }
 
 struct EquityCalculator<'a, RT: AsRef<RangeTable>, F: FnMut(&[Hand], &[Score])> {
