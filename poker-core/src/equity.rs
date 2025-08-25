@@ -173,12 +173,27 @@ impl Equity {
         ranges: &[RangeTableWith<u16>],
         rounds: u64,
     ) -> Option<Vec<Equity>> {
+        let mut rng = SmallRng::from_entropy();
+        Self::simulate_frequencies_with(start_community_cards, ranges, rounds, &mut rng)
+    }
+
+    pub fn simulate_frequencies_with(
+        start_community_cards: Cards,
+        ranges: &[RangeTableWith<u16>],
+        rounds: u64,
+        rng: &mut impl Rng,
+    ) -> Option<Vec<Equity>> {
         let mut wins = vec![0.0; ranges.len()];
         let mut ties = vec![0.0; ranges.len()];
-        let total =
-            simulate_frequencies(start_community_cards, ranges, rounds, |_, scores, diff| {
+        let total = simulate_frequencies(
+            start_community_cards,
+            ranges,
+            rounds,
+            rng,
+            |_, scores, diff| {
                 showdown_simulate(scores, &mut wins, &mut ties, diff);
-            })?;
+            },
+        )?;
         Some(Self::from_total_wins_ties_simulate(total, &wins, &ties))
     }
 
@@ -275,6 +290,16 @@ impl EquityTable {
         ranges: &[RangeTableWith<u16>],
         rounds: u64,
     ) -> Option<Vec<Self>> {
+        let mut rng = SmallRng::from_entropy();
+        Self::simulate_frequencies_with(start_community_cards, ranges, rounds, &mut rng)
+    }
+
+    pub fn simulate_frequencies_with(
+        start_community_cards: Cards,
+        ranges: &[RangeTableWith<u16>],
+        rounds: u64,
+        rng: &mut impl Rng,
+    ) -> Option<Vec<Self>> {
         let mut totals = vec![RangeTableWith::default(); ranges.len()];
         let mut wins = vec![RangeTableWith::default(); ranges.len()];
         let mut ties = vec![RangeTableWith::default(); ranges.len()];
@@ -282,6 +307,7 @@ impl EquityTable {
             start_community_cards,
             ranges,
             rounds,
+            rng,
             |hands, scores, diff| {
                 showdown_table(hands, scores, &mut totals, &mut wins, &mut ties, diff);
             },
@@ -433,6 +459,7 @@ fn simulate_frequencies(
     start_community_cards: Cards,
     ranges: &[RangeTableWith<u16>],
     rounds: u64,
+    rng: &mut impl Rng,
     mut f: impl FnMut(&[Hand], &[Score], f64),
 ) -> Option<f64> {
     if !valid_input_frequencies(start_community_cards, ranges) {
@@ -442,14 +469,13 @@ fn simulate_frequencies(
         return None;
     }
 
-    let mut rng = SmallRng::from_entropy();
     let remaining_community_cards = 5 - start_community_cards.count();
     let player_count = ranges.len();
     let mut work_ranges = vec![RangeTableWith::<u32>::default(); player_count];
 
     let mut hands = vec![Hand::UNDEFINED; player_count];
     let mut scores = vec![Score::ZERO; player_count];
-    let mut deck = Deck::from_cards(&mut rng, start_community_cards);
+    let mut deck = Deck::from_cards(rng, start_community_cards);
     let mut total = 0.0;
 
     let community_card_factor: u32 = {
@@ -465,7 +491,7 @@ fn simulate_frequencies(
         let community_cards = {
             let mut community_cards = start_community_cards;
             for _ in 0..remaining_community_cards {
-                community_cards.add(deck.draw(&mut rng).unwrap());
+                community_cards.add(deck.draw(rng).unwrap());
             }
             community_cards
         };

@@ -1,17 +1,23 @@
 use std::{
+    cmp::{self, Ordering},
     error::Error,
     fmt::{self, Write},
     sync::Arc,
 };
 
-use rand::{rngs::StdRng, SeedableRng};
+use rand::{
+    rngs::{SmallRng, StdRng},
+    SeedableRng,
+};
 
 use crate::{
     bitset::Bitset,
+    equity::EquityTable,
     game::{milli_big_blind_to_amount_rounded, Action, Game, Street},
+    hand::Hand,
     range::{
-        PreFlopAction, PreFlopRangeConfig, PreFlopRangeTable, RangeActionKind, RangeConfigEntry,
-        RangeEntry, RangeTable, RangeTableWith, MAX_FREQUENCY,
+        range_remove_cards, PreFlopAction, PreFlopRangeConfig, PreFlopRangeTable, RangeAction,
+        RangeActionKind, RangeConfigEntry, RangeEntry, RangeTable, RangeTableWith, MAX_FREQUENCY,
     },
     rank::Rank,
     result::Result,
@@ -498,12 +504,259 @@ impl SimpleStrategy {
     }
 
     fn post_flop(&self, game: &Game, log: &mut String) -> Result<RangeConfigEntry> {
-        // TODO
-        writeln!(log, "post flop currently only check/call")?;
+        let current_player = game.current_player().unwrap();
+        let current_stack = game.current_stack().unwrap();
+        let previous_street_stack = game.previous_street_stack().unwrap();
+        let community_cards = game.board().cards_set();
 
-        let total_range = self.current_ranges[game.current_player().unwrap()].clone();
-        let action = AiAction::CheckCall.to_range(game)?;
-        let config = RangeConfigEntry::distribute_action(total_range, action)?;
-        Ok(config)
+        let (players, ranges): (Vec<_>, Vec<_>) = game
+            .players_not_folded()
+            .map(|player| {
+                let mut range = self.current_ranges[player].clone();
+                range_remove_cards(&mut range, community_cards);
+                (player, range)
+            })
+            .unzip();
+
+        let current_player_range_position =
+            players.iter().position(|p| *p == current_player).unwrap();
+
+        let simulate_rounds = 10_000 * u64::try_from(game.players_not_folded().count()).unwrap();
+
+        // Use this rng to get deterministic results.
+        let mut rng = SmallRng::seed_from_u64(42);
+
+        let equities = EquityTable::simulate_frequencies_with(
+            community_cards,
+            &ranges,
+            simulate_rounds,
+            &mut rng,
+        );
+
+        let Some(equities) = equities else {
+            writeln!(log, "equity simulation returned none")?;
+
+            return self.current_range_check_fold(game);
+        };
+
+        for (player, equity) in players.iter().copied().zip(equities.iter()) {
+            writeln!(
+                log,
+                "player {}: {}",
+                game.player_name(player),
+                equity.total_equity()
+            )?;
+        }
+
+        let current_range = &ranges[current_player_range_position];
+        let current_equities = &equities[current_player_range_position];
+
+        let mut hands: Vec<_> = RangeTable::from_frequencies_not_zero(current_range)
+            .into_iter()
+            // Exclude blocked hands.
+            .filter(|hand| !community_cards.has(hand.high()) && !community_cards.has(hand.low()))
+            .collect();
+
+        hands.sort_by(|a, b| {
+            let a = current_equities.equity(*a);
+            let b = current_equities.equity(*b);
+
+            a.equity_percent()
+                .partial_cmp(&b.equity_percent())
+                .unwrap_or(Ordering::Less)
+                .then_with(|| {
+                    a.win_percent()
+                        .partial_cmp(&b.win_percent())
+                        .unwrap_or(Ordering::Less)
+                })
+        });
+
+        // TODO: Round if all-in size is close.
+
+        // TODO: Bet/raise draws more as a bluff.
+
+        // TODO: Mixed strategy
+
+        // TODO: Villain modelling
+
+        if let Some(call_amount) = game.can_call() {
+            if let Some((_, min_raise_to)) = game.can_raise() {
+                let raise_size = (f64::from(game.total_pot()) * 0.7) as u32;
+                let raise_size =
+                    cmp::min(cmp::max(raise_size, min_raise_to), previous_street_stack);
+
+                // Super simple equity based calculation.
+                // TODO: Not correct with to.
+                let raise_pot_odds =
+                    f64::from(raise_size) / f64::from(raise_size + game.total_pot());
+
+                let (range_bottom, range_middle, range_top) =
+                    Self::range_bottom_middle_top(&hands, current_equities, current_range, 0.85);
+
+                writeln!(
+                    log,
+                    "raise: size={raise_size} pot_odds={raise_pot_odds} bottom={} middle={} top={}",
+                    range_bottom.len(),
+                    range_middle.len(),
+                    range_top.len()
+                )?;
+
+                let raise_size = game.amount_to_milli_big_blinds_rounded(raise_size);
+
+                let raising_hands = range_top
+                    .iter()
+                    .copied()
+                    .chain(range_bottom.iter().copied());
+                let raising_range =
+                    RangeTable::from_hands(raising_hands)?.to_frequencies(MAX_FREQUENCY);
+                let raising_action = RangeAction::new(
+                    RangeActionKind::Raise(raise_size),
+                    current_range,
+                    raising_range,
+                );
+
+                // Does not consider multi-way spots or future actions.
+                let pot_odds = f64::from(call_amount) / f64::from(call_amount + game.total_pot());
+
+                let equity_cutoff = range_middle
+                    .iter()
+                    .position(|hand| current_equities.equity_percent(*hand) >= pot_odds)
+                    .unwrap_or(range_middle.len());
+
+                writeln!(
+                    log,
+                    "raise: call: pot_odds={pot_odds} ratio={}/{}",
+                    range_middle.len() - equity_cutoff,
+                    range_middle.len()
+                )?;
+
+                let calling_range =
+                    RangeTable::from_hands(range_middle[equity_cutoff..].iter().copied())?
+                        .to_frequencies(MAX_FREQUENCY);
+                let calling_action =
+                    RangeAction::new(RangeActionKind::Call, current_range, calling_range);
+
+                RangeConfigEntry::new(current_range.clone(), vec![calling_action, raising_action])
+            } else {
+                // Terminates hand for us, only use pot odds.
+
+                // Does not consider multi-way spots.
+                let pot_odds = f64::from(call_amount) / f64::from(call_amount + game.total_pot());
+
+                let equity_cutoff = hands
+                    .iter()
+                    .position(|hand| current_equities.equity_percent(*hand) >= pot_odds)
+                    .unwrap_or(hands.len());
+
+                writeln!(
+                    log,
+                    "raise: call only: pot_odds={pot_odds} ratio={}/{}",
+                    hands.len() - equity_cutoff,
+                    hands.len()
+                )?;
+
+                let calling_range = RangeTable::from_hands(hands[equity_cutoff..].iter().copied())?
+                    .to_frequencies(MAX_FREQUENCY);
+                let calling_action =
+                    RangeAction::new(RangeActionKind::Call, current_range, calling_range);
+
+                RangeConfigEntry::new(current_range.clone(), vec![calling_action])
+            }
+        } else if game.can_check() {
+            if game.can_bet().is_none() {
+                return Err("ai: post flop: invalid game state: cannot check and bet".into());
+            }
+
+            let (bet_size_percent, required_equity) = match game.board().street() {
+                Street::PreFlop => unreachable!(),
+                Street::Flop => (0.3, 0.5),
+                Street::Turn => (0.7, 0.8),
+                Street::River => (0.5, 0.6),
+            };
+
+            let bet_size = (f64::from(game.total_pot()) * bet_size_percent) as u32;
+            let bet_size = cmp::min(cmp::max(bet_size, game.big_blind()), current_stack);
+
+            // Super simple equity based calculation.
+            let pot_odds = f64::from(bet_size) / f64::from(bet_size + game.total_pot());
+
+            let (range_bottom, range_middle, range_top) = Self::range_bottom_middle_top(
+                &hands,
+                current_equities,
+                current_range,
+                required_equity,
+            );
+
+            writeln!(
+                log,
+                "bet: size={bet_size} pot_odds={pot_odds} bottom={} middle={} top={}",
+                range_bottom.len(),
+                range_middle.len(),
+                range_top.len()
+            )?;
+
+            let bet_size = game.amount_to_milli_big_blinds_rounded(bet_size);
+
+            let betting_hands = range_top
+                .iter()
+                .copied()
+                .chain(range_bottom.iter().copied());
+            let betting_range =
+                RangeTable::from_hands(betting_hands)?.to_frequencies(MAX_FREQUENCY);
+            let betting_action =
+                RangeAction::new(RangeActionKind::Bet(bet_size), current_range, betting_range);
+
+            let checking_range =
+                RangeTable::from_hands(range_middle.iter().copied())?.to_frequencies(MAX_FREQUENCY);
+            let checking_action =
+                RangeAction::new(RangeActionKind::Check, current_range, checking_range);
+
+            RangeConfigEntry::new(current_range.clone(), vec![checking_action, betting_action])
+        } else {
+            return Err("ai: post flop: invalid game state".into());
+        }
+    }
+
+    fn range_bottom_middle_top<'a>(
+        hands_sorted_by_equity: &'a [Hand],
+        equities: &EquityTable,
+        range: &RangeTableWith<u16>,
+        required_equity: f64,
+    ) -> (&'a [Hand], &'a [Hand], &'a [Hand]) {
+        assert!(required_equity >= 0.0 && required_equity <= 1.0);
+
+        let mut range_top_end_sum = 0u32;
+        let mut range_top_end = 0usize;
+
+        for (index, hand) in hands_sorted_by_equity.iter().copied().enumerate().rev() {
+            if equities.equity_percent(hand) < required_equity {
+                range_top_end = index + 1;
+                break;
+            }
+
+            range_top_end_sum += u32::from(range[hand]);
+        }
+
+        let mut current_range_sum = 0u32;
+        let mut range_bottom_end = hands_sorted_by_equity.len();
+
+        for (index, hand) in hands_sorted_by_equity.iter().copied().enumerate() {
+            current_range_sum += u32::from(range[hand]);
+
+            if current_range_sum >= range_top_end_sum {
+                range_bottom_end = index;
+                break;
+            }
+        }
+
+        if range_bottom_end > range_top_end {
+            range_bottom_end = range_top_end;
+        }
+
+        let range_bottom = &hands_sorted_by_equity[..range_bottom_end];
+        let range_middle = &hands_sorted_by_equity[range_bottom_end..range_top_end];
+        let range_top = &hands_sorted_by_equity[range_top_end..];
+
+        (range_bottom, range_middle, range_top)
     }
 }

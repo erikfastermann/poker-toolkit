@@ -287,6 +287,10 @@ impl Board {
         &self.cards[..self.street.community_card_count()]
     }
 
+    pub fn cards_set(&self) -> Cards {
+        Cards::from_slice(self.cards()).unwrap()
+    }
+
     pub fn street(&self) -> Street {
         self.street
     }
@@ -967,6 +971,11 @@ impl Game {
             Some(street) => &self.stacks_in_street[street.to_usize()][..self.player_count()],
             None => &self.reference_stacks[..self.player_count()],
         }
+    }
+
+    pub fn previous_street_stack(&self) -> Option<u32> {
+        self.current_player()
+            .map(|player| self.previous_street_stacks()[player])
     }
 
     pub fn total_pot(&self) -> u32 {

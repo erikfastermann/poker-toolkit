@@ -571,6 +571,20 @@ impl RangeTable {
         out
     }
 
+    pub fn from_hands(hands: impl IntoIterator<Item = Hand>) -> Result<Self> {
+        let mut out = RangeTable::EMPTY;
+
+        for hand in hands {
+            if out.has_hand(hand) {
+                return Err("range table from hands: duplicate hand".into());
+            }
+
+            out.add_hand(hand);
+        }
+
+        Ok(out)
+    }
+
     pub fn parse(range_str: &str) -> Result<Self> {
         let range_str = range_str.trim();
         if range_str == "full" {
@@ -2098,6 +2112,14 @@ pub fn range_entry_frequency(range: &RangeTableWith<u16>, entry: RangeEntry) -> 
         .map(|hand| u32::from(cmp::min(range[hand], MAX_FREQUENCY)))
         .sum();
     f64::from(total_frequency) / f64::from(entry.combo_count()) / f64::from(MAX_FREQUENCY)
+}
+
+pub fn range_remove_cards(range: &mut RangeTableWith<u16>, cards: Cards) {
+    for (hand, frequency) in range.iter_mut() {
+        if cards.has(hand.high()) || cards.has(hand.low()) {
+            *frequency = 0;
+        }
+    }
 }
 
 pub fn frequency_to_f64(n: u16) -> f64 {
