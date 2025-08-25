@@ -5,7 +5,7 @@ use rusqlite::{
     functions::{Context, FunctionFlags},
     params,
     types::{FromSql, FromSqlError, FromSqlResult, Type, Value, ValueRef},
-    Connection, Params, Row, RowIndex, Transaction,
+    Connection, OpenFlags, Params, Row, RowIndex, Transaction,
 };
 
 use crate::{
@@ -28,15 +28,33 @@ pub struct DB {
 const SCHEMA: &str = include_str!("schema.sql");
 
 impl DB {
+    pub fn open_and_create(path: impl AsRef<Path>) -> Result<Self> {
+        Self::open_internal(path, true)
+    }
+
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        // TODO: Extra open when not creating db.
+        Self::open_internal(path, false)
+    }
+
+    fn open_internal(path: impl AsRef<Path>, create: bool) -> Result<Self> {
+        let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
+            | OpenFlags::SQLITE_OPEN_URI
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+
+        let flags = if create {
+            flags | OpenFlags::SQLITE_OPEN_CREATE
+        } else {
+            flags
+        };
 
         let db = Self {
-            conn: Connection::open(path)?,
+            conn: Connection::open_with_flags(path, flags)?,
         };
+
         db.init_schema()?;
         db.create_scalars()?;
         db.check_schema()?;
+
         Ok(db)
     }
 

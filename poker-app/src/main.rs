@@ -147,15 +147,14 @@ fn print_equity_tables(ranges: &[impl AsRef<RangeTable>], equity_tables: &[Equit
 }
 
 fn parse_gg(args: &[String]) -> Result<()> {
-    let [path] = args else {
+    let [db_path, hand_history_path] = args else {
         return Err(INVALID_COMMAND_ERROR.into());
     };
 
-    // TODO
-    let mut db = DB::open("hands.db")?;
+    let mut db = DB::open_and_create(&db_path)?;
 
     let read_time = Instant::now();
-    let content = read_to_string(path)?;
+    let content = read_to_string(hand_history_path)?;
     eprintln!(
         "--- took {:?} to read the hand history file ---",
         read_time.elapsed(),
@@ -244,8 +243,6 @@ fn query(args: &[String]) -> Result<()> {
 }
 
 fn history_gui(args: &[String]) -> Result<()> {
-    // TODO
-
     const DEFAULT_QUERY: &str =
         "SELECT * FROM hands LEFT JOIN hands_players ON id = hand_id AND hero_index = player";
 
@@ -352,7 +349,6 @@ impl eframe::App for App {
     }
 }
 
-// TODO
 struct HandHistory {
     history: HistoryView,
 }
