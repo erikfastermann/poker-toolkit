@@ -273,7 +273,7 @@ fn parse_phhs_file(path: &Path, db: &mut DB) -> (u64, u64) {
         }
     };
 
-    let entries = match parse_phhs_str(&content) {
+    let entries = match parse_phhs_str(&content, true) {
         Ok(entries) => entries,
         Err(err) => {
             eprintln!("parsing of phhs file from path {path:?} failed: {err}");

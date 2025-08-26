@@ -244,6 +244,15 @@ impl Street {
             Street::River => 5,
         }
     }
+
+    pub fn new_community_card_count(self) -> usize {
+        match self {
+            Street::PreFlop => 0,
+            Street::Flop => 3,
+            Street::Turn => 1,
+            Street::River => 1,
+        }
+    }
 }
 
 impl fmt::Display for Street {
