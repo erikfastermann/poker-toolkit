@@ -18,3 +18,7 @@ eframe = { version = "0.31.1", features = ["default"] }
 egui_extras = { version = "0.31.1", features = ["default", "image"] }
 env_logger = "0.11.7"
 rusqlite = { version = "0.35.0", features = ["bundled", "chrono", "functions"] }
+toml = { version = "0.9.5", features = ["preserve_order"] }
+bigdecimal =  { version = "0.4.8", features = ["serde"] } 
+indexmap = { version = "2.11.0", features = ["serde"] }
+walkdir = "2.5.0"

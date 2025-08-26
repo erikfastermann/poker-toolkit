@@ -16,6 +16,7 @@ pub mod game;
 pub mod hand;
 pub mod init;
 pub mod parser;
+pub mod phh_parser;
 pub mod range;
 pub mod rank;
 pub mod result;
