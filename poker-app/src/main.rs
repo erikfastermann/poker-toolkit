@@ -286,7 +286,10 @@ fn parse_phhs_file(path: &Path, db: &mut DB) -> (u64, u64) {
 
     for entry in entries {
         match entry {
-            Ok(game) => games.push(game),
+            Ok(game) => {
+                game.internal_asserts_full(); // TODO
+                games.push(game);
+            }
             Err(err) => {
                 eprintln!("error parsing phh entry from path {path:?}:\n{err}\n");
                 error_count += 1;

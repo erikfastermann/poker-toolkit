@@ -6,12 +6,13 @@ use toml::value::Time;
 use toml_edit::{Document, Item, Value};
 
 use crate::{
+    bitset::Bitset,
     cards::Cards,
     game::{Game, Player, State, Street},
     result::Result,
 };
 
-pub fn parse_phhs_str(phhs: &str, skip_non_zero_ante: bool) -> Result<Vec<Result<Game>>> {
+pub fn parse_phhs_str(phhs: &str, skip_unsupported: bool) -> Result<Vec<Result<Game>>> {
     // TODO: As Iterator.
 
     // Somewhat specific to the handhq dataset,
@@ -29,7 +30,7 @@ pub fn parse_phhs_str(phhs: &str, skip_non_zero_ante: bool) -> Result<Vec<Result
     let out: Vec<_> = doc
         .as_table()
         .iter()
-        .filter_map(|(_, item)| item_to_game(&doc, item, skip_non_zero_ante))
+        .filter_map(|(_, item)| item_to_game(&doc, item, skip_unsupported))
         .collect();
 
     Ok(out)
@@ -59,18 +60,44 @@ struct Entry {
 fn item_to_game(
     doc: &Document<String>,
     item: &Item,
-    skip_non_zero_ante: bool,
+    skip_unsupported: bool,
 ) -> Option<Result<Game>> {
-    let antes = item.get("antes").and_then(|antes| antes.as_array());
+    if skip_unsupported {
+        let antes = item.get("antes").and_then(|antes| antes.as_array());
 
-    if let Some(antes) = antes {
-        let all_antes_zero = antes
-            .iter()
-            .filter_map(|value| value.as_float())
-            .all(|n| n == 0.0);
+        if let Some(antes) = antes {
+            let all_antes_zero = antes
+                .iter()
+                .filter_map(|value| value.as_float())
+                .all(|n| n == 0.0);
 
-        if skip_non_zero_ante && !all_antes_zero {
-            return None;
+            if !all_antes_zero {
+                // Game currently does not support antes.
+
+                return None;
+            }
+        }
+
+        let blinds_and_straddles = item
+            .get("blinds_or_straddles")
+            .and_then(|item| item.as_array());
+
+        if let Some(blinds_and_straddles) = blinds_and_straddles {
+            if let (Some(small_blind), Some(big_blind)) =
+                (blinds_and_straddles.get(0), blinds_and_straddles.get(1))
+            {
+                if is_float_or_int_zero(small_blind) || is_float_or_int_zero(big_blind) {
+                    // Game currently only supports small and big blind,
+                    // not single blind.
+
+                    return None;
+                }
+            }
+
+            // TODO: Support heads up.
+            if blinds_and_straddles.len() == 2 {
+                return None;
+            }
         }
     }
 
@@ -83,6 +110,10 @@ fn item_to_game(
         .into()
     });
     Some(result)
+}
+
+fn is_float_or_int_zero(v: &Value) -> bool {
+    v.as_integer().is_some_and(|n| n == 0) || v.as_float().is_some_and(|n| n == 0.0)
 }
 
 fn item_to_game_inner(doc: &Document<String>, item: &Item) -> Result<Game> {
@@ -237,6 +268,8 @@ fn item_to_game_inner(doc: &Document<String>, item: &Item) -> Result<Game> {
         }
     }
 
+    let mut show_muck = Bitset::<2>::EMPTY;
+
     for action in entry.actions {
         let comment_start_index = action.find('#');
 
@@ -259,6 +292,8 @@ fn item_to_game_inner(doc: &Document<String>, item: &Item) -> Result<Game> {
 
         match (actor, action_kind) {
             ("d", "db") => {
+                handle_show_muck(&mut game, show_muck)?;
+
                 let Some(community_cards) = split.next() else {
                     return Err("missing community cards in deal".into());
                 };
@@ -269,7 +304,10 @@ fn item_to_game_inner(doc: &Document<String>, item: &Item) -> Result<Game> {
                 // Does PHH support multiple board runouts?
                 // How are they represented?
                 let State::Street(street) = game.state() else {
-                    return Err("game state does expect a new street".into());
+                    return Err(
+                        "unexpected community card deal: game state does not expect new street"
+                            .into(),
+                    );
                 };
 
                 if usize::from(community_cards.count()) != street.new_community_card_count() {
@@ -337,16 +375,15 @@ fn item_to_game_inner(doc: &Document<String>, item: &Item) -> Result<Game> {
             (_, "sm") => {
                 split.next();
 
-                let player = parse_action_player(actor)?;
+                let player = usize::from(parse_action_player(actor)?);
 
-                if game.state() == State::ShowOrMuck(usize::from(player)) {
-                    if game.get_hand(usize::from(player)).is_some() {
-                        // We assume shows if we know the player hand.
-                        game.show_hand()?;
-                    } else {
-                        game.muck_hand()?;
-                    }
+                if player >= player_count {
+                    return Err("invalid player index in show/muck".into());
                 }
+
+                // Order does not always match what we expect,
+                // save for later usage.
+                show_muck.set(player);
             }
             _ => return Err(format!("unsupported action kind {action_kind}").into()),
         }
@@ -354,11 +391,13 @@ fn item_to_game_inner(doc: &Document<String>, item: &Item) -> Result<Game> {
         if split.next().is_some() {
             return Err("invalid action format: unexpected data at end".into());
         }
+
+        if matches!(game.state(), State::UncalledBet { .. }) {
+            game.uncalled_bet()?;
+        }
     }
 
-    if matches!(game.state(), State::UncalledBet { .. }) {
-        game.uncalled_bet()?;
-    }
+    handle_show_muck(&mut game, show_muck)?;
 
     // TODO:
     // Winnings are not always provided and even if they are,
@@ -502,6 +541,27 @@ fn parse_chips_str(chips: &str) -> Result<u32> {
     int.checked_mul(100)
         .and_then(|n| n.checked_add(frac))
         .ok_or_else(|| format!("chips {chips} too large").into())
+}
+
+fn handle_show_muck(game: &mut Game, show_muck: Bitset<2>) -> Result<()> {
+    for _ in 0..Game::MAX_PLAYERS {
+        let State::ShowOrMuck(player) = game.state() else {
+            break;
+        };
+
+        if !show_muck.has(player) {
+            return Err("expected show/muck for player".into());
+        }
+
+        if game.get_hand(usize::from(player)).is_some() {
+            // We assume shows if we know the player hand.
+            game.show_hand()?;
+        } else {
+            game.muck_hand()?;
+        }
+    }
+
+    Ok(())
 }
 
 fn string_or_int<'de, D>(deserializer: D) -> std::result::Result<Option<String>, D::Error>
