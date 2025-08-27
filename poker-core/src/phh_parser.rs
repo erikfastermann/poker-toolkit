@@ -47,10 +47,12 @@ struct Entry {
     day: Option<u8>,
     month: Option<u8>,
     year: Option<i32>,
+    #[serde(default)]
     #[serde(deserialize_with = "string_or_int")]
     hand: Option<String>,
     seats: Option<Vec<u8>>,
     seat_count: Option<u8>,
+    #[serde(default)]
     #[serde(deserialize_with = "string_or_int")]
     table: Option<String>,
     players: Option<Vec<String>>,
@@ -83,10 +85,10 @@ fn item_to_game(
             .and_then(|item| item.as_array());
 
         if let Some(blinds_and_straddles) = blinds_and_straddles {
-            if let (Some(small_blind), Some(big_blind)) =
+            if let (Some(blind_1), Some(blind_2)) =
                 (blinds_and_straddles.get(0), blinds_and_straddles.get(1))
             {
-                if is_float_or_int_zero(small_blind) || is_float_or_int_zero(big_blind) {
+                if is_float_or_int_zero(blind_1) || is_float_or_int_zero(blind_2) {
                     // Game currently only supports small and big blind,
                     // not single blind.
 
@@ -94,8 +96,29 @@ fn item_to_game(
                 }
             }
 
-            // TODO: Support heads up.
-            if blinds_and_straddles.len() == 2 {
+            let negative_blind_or_straddle = blinds_and_straddles.iter().any(|v| {
+                v.as_integer().is_some_and(|n| n < 0) || v.as_float().is_some_and(|n| n < 0.0)
+            });
+            if negative_blind_or_straddle {
+                // TODO:
+                // Appears often in handhq pty histories,
+                // should we handle this?
+                // What is the meaning?
+
+                return None;
+            }
+        }
+
+        let starting_stacks = item.get("starting_stacks").and_then(|item| item.as_array());
+
+        if let Some(starting_stacks) = starting_stacks {
+            let contains_unknown_stack = starting_stacks
+                .iter()
+                .any(|n| n.as_float().is_some_and(|n| n.is_infinite()));
+
+            if contains_unknown_stack {
+                // Our game implementation currently requires a starting stack.
+
                 return None;
             }
         }
@@ -141,7 +164,8 @@ fn item_to_game_inner(doc: &Document<String>, item: &Item) -> Result<Game> {
         return Err("expected currency symbol dollar".into());
     }
 
-    let Some(blinds_or_straddles) = parse_chips_array(doc, item.get("blinds_or_straddles"))? else {
+    let Some(mut blinds_or_straddles) = parse_chips_array(doc, item.get("blinds_or_straddles"))?
+    else {
         return Err("missing blinds_or_straddles field".into());
     };
 
@@ -150,15 +174,20 @@ fn item_to_game_inner(doc: &Document<String>, item: &Item) -> Result<Game> {
         return Err("bad player count".into());
     }
 
-    let button_index = if player_count == 2 {
-        0
-    } else {
-        player_count - 1
-    };
+    if player_count == 2 {
+        blinds_or_straddles.reverse();
+    }
 
-    // TODO: What if someone straddles from the blinds?
-    let small_blind = blinds_or_straddles[0];
-    let big_blind = blinds_or_straddles[1];
+    let button_index = player_count - 1;
+
+    // TODO:
+    // What if someone straddles from the blinds
+    // or some other blind structure is used?
+    let (small_blind, big_blind) = if player_count == 2 {
+        (blinds_or_straddles[1], blinds_or_straddles[0])
+    } else {
+        (blinds_or_straddles[0], blinds_or_straddles[1])
+    };
 
     let max_players = entry
         .seat_count
@@ -215,7 +244,7 @@ fn item_to_game_inner(doc: &Document<String>, item: &Item) -> Result<Game> {
 
     parse_player_hands(&mut game, &entry.actions)?;
 
-    game.set_unit(Arc::new(entry.currency_symbol.unwrap()));
+    game.set_unit(Arc::new("ct".to_owned()));
 
     if let Some(seat_count) = entry.seat_count {
         game.set_max_players(usize::from(seat_count))?;
@@ -257,7 +286,7 @@ fn item_to_game_inner(doc: &Document<String>, item: &Item) -> Result<Game> {
     // The PHH format does not differentiate between posts and straddles.
 
     for (player, post) in blinds_or_straddles.iter().copied().enumerate().skip(2) {
-        if post <= big_blind {
+        if post != 0 && post <= big_blind {
             game.additional_post(player, post, false)?;
         }
     }

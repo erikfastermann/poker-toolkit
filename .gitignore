@@ -2,8 +2,11 @@
 .vscode
 
 *.db
-*.err
+*.db-journal
+
 *.log
+*.err
 dump*
 out*
+
 config.json

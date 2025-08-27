@@ -238,10 +238,16 @@ fn parse_phhs(args: &[String]) -> Result<()> {
         for entry in entries {
             let path = entry.path();
             if path.is_file() && path.extension().is_some_and(|e| e == "phhs") {
+                eprintln!("--- parsing file {path:?} ---");
+
                 let (current_new_hands, current_errors) = parse_phhs_file(path, &mut db);
 
                 new_hands_count = new_hands_count.saturating_add(current_new_hands);
                 error_count = error_count.saturating_add(current_errors);
+
+                eprintln!(
+                    "--- added {current_new_hands} new hand(s) with {current_errors} error(s) ---"
+                );
             }
         }
 

@@ -1429,6 +1429,9 @@ impl Game {
         if player >= self.player_count() {
             return Err("additional post: invalid player index".into());
         }
+        if amount == 0 {
+            return Err("additional post: cannot post an amount of zero".into());
+        }
         if self.at_start() || self.board().street() != Street::PreFlop {
             return Err("additional post: only allowed pre flop after small/big blind post".into());
         }
