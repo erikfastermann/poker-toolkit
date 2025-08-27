@@ -288,7 +288,7 @@ fn parse_phhs_file(path: &Path, db: &mut DB) -> (u64, u64) {
         match entry {
             Ok(game) => games.push(game),
             Err(err) => {
-                println!("error parsing phh entry from path {path:?}: {err}");
+                eprintln!("error parsing phh entry from path {path:?}:\n{err}\n");
                 error_count += 1;
             }
         }

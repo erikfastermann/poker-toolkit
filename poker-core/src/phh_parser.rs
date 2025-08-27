@@ -14,6 +14,9 @@ use crate::{
 pub fn parse_phhs_str(phhs: &str, skip_non_zero_ante: bool) -> Result<Vec<Result<Game>>> {
     // TODO: As Iterator.
 
+    // Somewhat specific to the handhq dataset,
+    // the actual format allows more variety in some cases.
+
     // Have to use toml_edit, because the normal toml parser
     // always uses f64 for floats, which looses precision.
 
@@ -71,7 +74,15 @@ fn item_to_game(
         }
     }
 
-    Some(item_to_game_inner(doc, item))
+    let result = item_to_game_inner(doc, item).map_err(|err| {
+        format!(
+            "{}\nerror: {}\nThis can be caused by an internal parser error or an invalid hand history.",
+            item.to_string(),
+            err
+        )
+        .into()
+    });
+    Some(result)
 }
 
 fn item_to_game_inner(doc: &Document<String>, item: &Item) -> Result<Game> {
@@ -121,7 +132,7 @@ fn item_to_game_inner(doc: &Document<String>, item: &Item) -> Result<Game> {
     let max_players = entry
         .seat_count
         .map(|n| usize::from(n))
-        .unwrap_or(player_count);
+        .unwrap_or(Game::MAX_PLAYERS);
 
     let Some(min_bet_raw) = item.get("min_bet").and_then(|item| item.as_value()) else {
         return Err("missing required min_bet value".into());
@@ -171,9 +182,13 @@ fn item_to_game_inner(doc: &Document<String>, item: &Item) -> Result<Game> {
 
     let mut game = Game::new(&players, button_index, small_blind, big_blind)?;
 
+    parse_player_hands(&mut game, &entry.actions)?;
+
     game.set_unit(Arc::new(entry.currency_symbol.unwrap()));
 
-    game.set_max_players(max_players)?;
+    if let Some(seat_count) = entry.seat_count {
+        game.set_max_players(usize::from(seat_count))?;
+    }
 
     if let Some(venue) = entry.venue {
         game.set_location(Arc::new(venue));
@@ -270,23 +285,9 @@ fn item_to_game_inner(doc: &Document<String>, item: &Item) -> Result<Game> {
                 }
             }
             ("d", "dh") => {
-                let Some(player) = split.next() else {
-                    return Err("missing player in hole card deal".into());
-                };
-
-                let player = parse_action_player(player)?;
-
-                let Some(hand) = split.next() else {
-                    return Err("missing hand in hole card deal".into());
-                };
-
-                if hand != "????" {
-                    let Some(hand) = Cards::from_str(hand)?.to_hand() else {
-                        return Err("could not convert dealt hole cards to player hand".into());
-                    };
-
-                    game.set_hand(usize::from(player), hand)?;
-                }
+                split.next();
+                split.next();
+                ()
             }
             (_, "cbr") => {
                 let player = parse_action_player(actor)?;
@@ -334,24 +335,17 @@ fn item_to_game_inner(doc: &Document<String>, item: &Item) -> Result<Game> {
                 game.fold()?;
             }
             (_, "sm") => {
+                split.next();
+
                 let player = parse_action_player(actor)?;
 
-                if game.state() != State::ShowOrMuck(usize::from(player)) {
-                    return Err("unexpected player in show or muck".into());
-                }
-
-                if let Some(hand) = split.next() {
-                    if hand != "-" && hand != "????" {
-                        let Some(hand) = Cards::from_str(hand)?.to_hand() else {
-                            return Err("could not convert shown hand to player hand".into());
-                        };
-
-                        game.set_hand(usize::from(player), hand)?;
+                if game.state() == State::ShowOrMuck(usize::from(player)) {
+                    if game.get_hand(usize::from(player)).is_some() {
+                        // We assume shows if we know the player hand.
+                        game.show_hand()?;
+                    } else {
+                        game.muck_hand()?;
                     }
-
-                    game.show_hand()?;
-                } else {
-                    game.muck_hand()?;
                 }
             }
             _ => return Err(format!("unsupported action kind {action_kind}").into()),
@@ -362,40 +356,77 @@ fn item_to_game_inner(doc: &Document<String>, item: &Item) -> Result<Game> {
         }
     }
 
-    // Workaround, because winnings are not always provided.
-    // TODO: Could also check finishing_stacks.
-
-    if let Some(winnings) = parse_chips_array(doc, item.get("winnings"))? {
-        let total_winnings = winnings
-            .iter()
-            .copied()
-            .fold(Some(0u32), |acc, n| acc.and_then(|acc| acc.checked_add(n)));
-
-        let Some(total_winnings) = total_winnings else {
-            return Err("winnings sum overflowed an u32".into());
-        };
-
-        let Some(total_rake) = game.total_pot().checked_sub(total_winnings) else {
-            return Err("total winnings is greater than total pot".into());
-        };
-
-        let player_pot_share = winnings
-            .iter()
-            .copied()
-            .enumerate()
-            .filter(|(_, winning)| *winning != 0);
-
-        game.showdown_custom(total_rake, player_pot_share)?;
-    } else {
-        game.showdown_simple()?;
+    if matches!(game.state(), State::UncalledBet { .. }) {
+        game.uncalled_bet()?;
     }
+
+    // TODO:
+    // Winnings are not always provided and even if they are,
+    // the reported winnings are sometimes not correct.
+    // The data seems inconsistent, so I currently don't see a clear fix for this.
+    // Just use our own simple showdown routine.
+    // Could also check finishing_stacks in the future,
+    // but they don't seem to be used often.
+
+    game.showdown_simple()?;
 
     Ok(game)
 }
 
+fn parse_player_hands(game: &mut Game, actions: &[String]) -> Result<()> {
+    // Don't validate or report some parsing errors, just skip.
+    // The actual parsing happens later anyway.
+
+    for action in actions {
+        let mut split = action.split(' ');
+
+        let (Some(actor), Some(action_kind)) = (split.next(), split.next()) else {
+            continue;
+        };
+
+        let player_hand = match (actor, action_kind) {
+            ("d", "dh") => {
+                let Some(player) = split.next() else {
+                    return Err("missing player in hole card deal".into());
+                };
+
+                let Some(hand) = split.next() else {
+                    return Err("missing hand in hole card deal".into());
+                };
+
+                Some((player, hand))
+            }
+            (player, "sm") => {
+                if let Some(hand) = split.next() {
+                    Some((player, hand))
+                } else {
+                    None
+                }
+            }
+            _ => continue,
+        };
+
+        let Some((player, hand)) = player_hand else {
+            continue;
+        };
+
+        let player = parse_action_player(player)?;
+
+        if hand != "-" && hand != "????" {
+            let Some(hand) = Cards::from_str(hand)?.to_hand() else {
+                return Err("could not convert cards to player hand".into());
+            };
+
+            game.set_hand(usize::from(player), hand)?;
+        }
+    }
+
+    Ok(())
+}
+
 fn parse_action_player(player: &str) -> Result<u8> {
-    if player.len() <= 2 {
-        return Err("invalid action player format: not long enough".into());
+    if player.len() < 2 {
+        return Err(format!("invalid action player format '{player}': not long enough").into());
     }
 
     if player.as_bytes()[0].to_ascii_lowercase() != b'p' {
@@ -434,10 +465,6 @@ fn parse_chips_array(doc: &Document<String>, item: Option<&Item>) -> Result<Opti
 }
 
 fn parse_chips(doc: &Document<String>, value: &Value) -> Result<u32> {
-    if !value.is_float() {
-        return Err("chips value must be a float".into());
-    }
-
     let Some(span) = value.span() else {
         return Err("unknown error while parsing chips".into());
     };

@@ -3,5 +3,7 @@
 
 *.db
 *.err
+*.log
+dump*
 out*
 config.json
