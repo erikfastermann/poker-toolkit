@@ -12,7 +12,7 @@ use poker_core::db::{self, DB};
 use poker_core::equity::{Equity, EquityTable};
 use poker_core::game::Game;
 use poker_core::parser::GGHandHistoryParser;
-use poker_core::phh_parser::parse_phhs_str;
+use poker_core::phh_parser::{parse_phhs_str, SkipReasons};
 use poker_core::range::RangeTable;
 use poker_core::result::Result;
 use poker_gui::game_view::GameView;
@@ -227,6 +227,8 @@ fn parse_phhs(args: &[String]) -> Result<()> {
 
     let hand_history_path = Path::new(hand_history_path);
 
+    let mut skip_reasons = SkipReasons::new();
+
     let (new_hands_count, error_count) = if hand_history_path.is_dir() {
         let mut new_hands_count = 0u64;
         let mut error_count = 0u64;
@@ -240,7 +242,8 @@ fn parse_phhs(args: &[String]) -> Result<()> {
             if path.is_file() && path.extension().is_some_and(|e| e == "phhs") {
                 eprintln!("--- parsing file {path:?} ---");
 
-                let (current_new_hands, current_errors) = parse_phhs_file(path, &mut db);
+                let (current_new_hands, current_errors) =
+                    parse_phhs_file(path, &mut db, &mut skip_reasons);
 
                 new_hands_count = new_hands_count.saturating_add(current_new_hands);
                 error_count = error_count.saturating_add(current_errors);
@@ -253,13 +256,15 @@ fn parse_phhs(args: &[String]) -> Result<()> {
 
         (new_hands_count, error_count)
     } else {
-        parse_phhs_file(hand_history_path, &mut db)
+        parse_phhs_file(hand_history_path, &mut db, &mut skip_reasons)
     };
 
     eprintln!(
         "--- took {:?} to parse and write {new_hands_count} new hand(s) to the database ---",
         start_time.elapsed(),
     );
+
+    eprintln!("{skip_reasons:#?}");
 
     if error_count > 0 {
         let message =
@@ -270,7 +275,7 @@ fn parse_phhs(args: &[String]) -> Result<()> {
     }
 }
 
-fn parse_phhs_file(path: &Path, db: &mut DB) -> (u64, u64) {
+fn parse_phhs_file(path: &Path, db: &mut DB, skip_reasons: &mut SkipReasons) -> (u64, u64) {
     let content = match read_to_string(path) {
         Ok(content) => content,
         Err(err) => {
@@ -279,7 +284,7 @@ fn parse_phhs_file(path: &Path, db: &mut DB) -> (u64, u64) {
         }
     };
 
-    let entries = match parse_phhs_str(&content, true) {
+    let entries = match parse_phhs_str(&content, Some(skip_reasons)) {
         Ok(entries) => entries,
         Err(err) => {
             eprintln!("parsing of phhs file from path {path:?} failed: {err}");

@@ -376,7 +376,8 @@ impl Game {
     const MAX_RUNOUTS: usize = 4;
 
     pub const MIN_PLAYERS: usize = 2;
-    pub const MAX_PLAYERS: usize = 9;
+    // TODO: Check that nothing is broken with 10 players.
+    pub const MAX_PLAYERS: usize = 10;
 
     pub const TOTAL_CARDS: usize = 5;
 
@@ -434,6 +435,18 @@ impl Game {
             ("UTG", "Under the Gun"),
             ("UTG+1", "Under the Gun +1"),
             ("UTG+2", "Under the Gun +2"),
+            ("LJ", "Lowjack"),
+            ("HJ", "Hijack"),
+            ("CO", "Cutoff"),
+        ],
+        &[
+            ("BTN", "Button"),
+            ("SB", "Small Blind"),
+            ("BB", "Big Blind"),
+            ("UTG", "Under the Gun"),
+            ("UTG+1", "Under the Gun +1"),
+            ("UTG+2", "Under the Gun +2"),
+            ("UTG+3", "Under the Gun +3"),
             ("LJ", "Lowjack"),
             ("HJ", "Hijack"),
             ("CO", "Cutoff"),
@@ -2057,7 +2070,6 @@ impl Game {
         for index in 0..Self::MAX_PLAYERS {
             let eligible_players = (0..self.player_count())
                 .filter(|player| !self.folded(*player))
-                .filter(|player| !self.hand_mucked(*player))
                 .filter(|player| investments[*player] > 0)
                 .fold(Bitset::<2>::EMPTY, |s, p| s.with(p));
 

@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use serde::{Deserialize, Deserializer};
@@ -12,7 +12,10 @@ use crate::{
     result::Result,
 };
 
-pub fn parse_phhs_str(phhs: &str, skip_unsupported: bool) -> Result<Vec<Result<Game>>> {
+pub fn parse_phhs_str(
+    phhs: &str,
+    mut skip_unsupported: Option<&mut SkipReasons>,
+) -> Result<Vec<Result<Game>>> {
     // TODO: As Iterator.
 
     // Somewhat specific to the handhq dataset,
@@ -27,14 +30,18 @@ pub fn parse_phhs_str(phhs: &str, skip_unsupported: bool) -> Result<Vec<Result<G
         return Err("root of phhs must be a table".into());
     }
 
-    let out: Vec<_> = doc
-        .as_table()
-        .iter()
-        .filter_map(|(_, item)| item_to_game(&doc, item, skip_unsupported))
-        .collect();
+    let mut out = Vec::new();
+
+    for (_, item) in doc.as_table().iter() {
+        if let Some(result) = item_to_game(&doc, item, skip_unsupported.as_deref_mut()) {
+            out.push(result);
+        }
+    }
 
     Ok(out)
 }
+
+pub type SkipReasons = HashMap<&'static str, u64>;
 
 #[derive(Debug, Deserialize)]
 struct Entry {
@@ -62,65 +69,11 @@ struct Entry {
 fn item_to_game(
     doc: &Document<String>,
     item: &Item,
-    skip_unsupported: bool,
+    skip_unsupported: Option<&mut SkipReasons>,
 ) -> Option<Result<Game>> {
-    if skip_unsupported {
-        let antes = item.get("antes").and_then(|antes| antes.as_array());
-
-        if let Some(antes) = antes {
-            let all_antes_zero = antes
-                .iter()
-                .filter_map(|value| value.as_float())
-                .all(|n| n == 0.0);
-
-            if !all_antes_zero {
-                // Game currently does not support antes.
-
-                return None;
-            }
-        }
-
-        let blinds_and_straddles = item
-            .get("blinds_or_straddles")
-            .and_then(|item| item.as_array());
-
-        if let Some(blinds_and_straddles) = blinds_and_straddles {
-            if let (Some(blind_1), Some(blind_2)) =
-                (blinds_and_straddles.get(0), blinds_and_straddles.get(1))
-            {
-                if is_float_or_int_zero(blind_1) || is_float_or_int_zero(blind_2) {
-                    // Game currently only supports small and big blind,
-                    // not single blind.
-
-                    return None;
-                }
-            }
-
-            let negative_blind_or_straddle = blinds_and_straddles.iter().any(|v| {
-                v.as_integer().is_some_and(|n| n < 0) || v.as_float().is_some_and(|n| n < 0.0)
-            });
-            if negative_blind_or_straddle {
-                // TODO:
-                // Appears often in handhq pty histories,
-                // should we handle this?
-                // What is the meaning?
-
-                return None;
-            }
-        }
-
-        let starting_stacks = item.get("starting_stacks").and_then(|item| item.as_array());
-
-        if let Some(starting_stacks) = starting_stacks {
-            let contains_unknown_stack = starting_stacks
-                .iter()
-                .any(|n| n.as_float().is_some_and(|n| n.is_infinite()));
-
-            if contains_unknown_stack {
-                // Our game implementation currently requires a starting stack.
-
-                return None;
-            }
+    if let Some(skip_reasons) = skip_unsupported {
+        if unsupported_item(item, skip_reasons) {
+            return None;
         }
     }
 
@@ -133,6 +86,68 @@ fn item_to_game(
         .into()
     });
     Some(result)
+}
+
+fn unsupported_item(item: &Item, reasons: &mut SkipReasons) -> bool {
+    let mut not_all_antes_zero = false;
+    let mut not_two_blinds = false;
+    let mut negative_blind_or_straddle = false;
+    let mut contains_unknown_starting_stack = false;
+
+    let antes = item.get("antes").and_then(|antes| antes.as_array());
+
+    if let Some(antes) = antes {
+        // Game currently does not support antes.
+        not_all_antes_zero = !antes.iter().all(|value| is_float_or_int_zero(value));
+    }
+
+    let blinds_and_straddles = item
+        .get("blinds_or_straddles")
+        .and_then(|item| item.as_array());
+
+    if let Some(blinds_and_straddles) = blinds_and_straddles {
+        if let (Some(blind_1), Some(blind_2)) =
+            (blinds_and_straddles.get(0), blinds_and_straddles.get(1))
+        {
+            // Game currently only supports small and big blind,
+            // not single blind.
+            not_two_blinds = is_float_or_int_zero(blind_1) || is_float_or_int_zero(blind_2);
+        }
+
+        // TODO:
+        // Appears often in handhq pty histories, should we handle this?
+        // What is the meaning?
+        negative_blind_or_straddle = blinds_and_straddles.iter().any(|v| {
+            v.as_integer().is_some_and(|n| n < 0) || v.as_float().is_some_and(|n| n < 0.0)
+        });
+    }
+
+    let starting_stacks = item.get("starting_stacks").and_then(|item| item.as_array());
+
+    if let Some(starting_stacks) = starting_stacks {
+        // Game currently requires a starting stack.
+        contains_unknown_starting_stack = starting_stacks
+            .iter()
+            .any(|n| n.as_float().is_some_and(|n| n.is_infinite()));
+    }
+
+    *reasons.entry("not_all_antes_zero").or_insert(0) += u64::from(not_all_antes_zero);
+    *reasons.entry("not_two_blinds").or_insert(0) += u64::from(not_two_blinds);
+    *reasons.entry("negative_blind_or_straddle").or_insert(0) +=
+        u64::from(negative_blind_or_straddle);
+    *reasons
+        .entry("contains_unknown_starting_stack")
+        .or_insert(0) += u64::from(contains_unknown_starting_stack);
+
+    let skip = not_all_antes_zero
+        || not_two_blinds
+        || negative_blind_or_straddle
+        || contains_unknown_starting_stack;
+
+    *reasons.entry("total").or_insert(0) += 1;
+    *reasons.entry("total_skipped").or_insert(0) += u64::from(skip);
+
+    skip
 }
 
 fn is_float_or_int_zero(v: &Value) -> bool {
