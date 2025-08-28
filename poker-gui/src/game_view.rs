@@ -578,7 +578,7 @@ impl GameView {
     fn draw_player(&self, painter: &Painter, player: usize, center: Pos2, size: Vec2) -> Vec2 {
         let bounding_rect = Rect::from_center_size(center, size);
 
-        let mut name_stack_rect = bounding_rect.with_min_y(bounding_rect.bottom() - size.y / 3.2);
+        let name_stack_rect = bounding_rect.with_min_y(bounding_rect.bottom() - size.y / 3.2);
         let name_stack_shape = Shape::rect_filled(
             name_stack_rect,
             name_stack_rect.width() / 50.0,
@@ -592,7 +592,6 @@ impl GameView {
             let button_center = name_stack_rect.center()
                 + (name_stack_rect.right_center() - name_stack_rect.center()) * 0.75;
             painter.circle_filled(button_center, button_radius, Color32::from_rgb(200, 200, 0));
-            name_stack_rect.set_right(button_center.x - button_radius);
         }
 
         let name_rect = name_stack_rect.with_max_y(name_stack_rect.center().y);
@@ -600,7 +599,7 @@ impl GameView {
             name_rect.center(),
             Align2::CENTER_CENTER,
             self.game.player_name(player),
-            FontId::new(name_rect.height() * 0.9, FontFamily::Proportional),
+            FontId::new(name_rect.height() * 0.6, FontFamily::Proportional),
             Color32::WHITE,
         );
 
@@ -609,7 +608,7 @@ impl GameView {
             stack_rect.center(),
             Align2::CENTER_CENTER,
             self.stack_text(player),
-            FontId::new(stack_rect.height() * 0.9, FontFamily::Proportional),
+            FontId::new(stack_rect.height() * 0.8, FontFamily::Proportional),
             Color32::WHITE,
         );
 
@@ -842,7 +841,8 @@ impl GameView {
     fn visible_hand(&self, player: usize) -> Option<Hand> {
         if self.show_all_hands
             || self.game.hand_shown(player)
-            || !self.current_player_action_generators.contains_key(&player)
+            || (self.enable_game_builder
+                && !self.current_player_action_generators.contains_key(&player))
         {
             self.game.get_hand(player)
         } else {

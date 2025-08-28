@@ -179,6 +179,25 @@ fn item_to_game_inner(doc: &Document<String>, item: &Item) -> Result<Game> {
         return Err("expected currency symbol dollar".into());
     }
 
+    let mut game = new_game_from_item(doc, item, &entry)?;
+
+    game_update_metadata(&mut game, &entry)?;
+    parse_player_hands(&mut game, &entry.actions)?;
+    parse_actions(&mut game, &entry.actions)?;
+
+    // TODO:
+    // Winnings are not always provided and even if they are,
+    // the reported winnings are sometimes not correct.
+    // The data seems inconsistent, so I currently don't see a clear fix for this.
+    // Just use our own simple showdown routine.
+    // Could also check finishing_stacks in the future,
+    // but they don't seem to be used often.
+    game.showdown_simple()?;
+
+    Ok(game)
+}
+
+fn new_game_from_item(doc: &Document<String>, item: &Item, entry: &Entry) -> Result<Game> {
     let Some(mut blinds_or_straddles) = parse_chips_array(doc, item.get("blinds_or_straddles"))?
     else {
         return Err("missing blinds_or_straddles field".into());
@@ -257,15 +276,33 @@ fn item_to_game_inner(doc: &Document<String>, item: &Item) -> Result<Game> {
 
     let mut game = Game::new(&players, button_index, small_blind, big_blind)?;
 
-    parse_player_hands(&mut game, &entry.actions)?;
+    game.post_small_and_big_blind()?;
 
+    // The PHH format does not differentiate between posts and straddles.
+
+    for (player, post) in blinds_or_straddles.iter().copied().enumerate().skip(2) {
+        if post != 0 && post <= big_blind {
+            game.additional_post(player, post, false)?;
+        }
+    }
+
+    for (player, straddle) in blinds_or_straddles.iter().copied().enumerate().skip(2) {
+        if straddle > big_blind {
+            game.straddle(player, straddle)?;
+        }
+    }
+
+    Ok(game)
+}
+
+fn game_update_metadata(game: &mut Game, entry: &Entry) -> Result<()> {
     game.set_unit(Arc::new("ct".to_owned()));
 
     if let Some(seat_count) = entry.seat_count {
         game.set_max_players(usize::from(seat_count))?;
     }
 
-    if let Some(venue) = entry.venue {
+    if let Some(venue) = entry.venue.clone() {
         game.set_location(Arc::new(venue));
     }
 
@@ -288,33 +325,72 @@ fn item_to_game_inner(doc: &Document<String>, item: &Item) -> Result<Game> {
         _ => return Err("year, month, day and time all have to be set or none of them".into()),
     }
 
-    if let Some(table) = entry.table {
+    if let Some(table) = entry.table.clone() {
         game.set_table_name(Arc::new(table));
     }
 
-    if let Some(hand) = entry.hand {
+    if let Some(hand) = entry.hand.clone() {
         game.set_hand_name(Arc::new(hand));
     }
 
-    game.post_small_and_big_blind()?;
+    Ok(())
+}
 
-    // The PHH format does not differentiate between posts and straddles.
+fn parse_player_hands(game: &mut Game, actions: &[String]) -> Result<()> {
+    // Don't validate or report some parsing errors, just skip.
+    // The actual parsing happens later anyway.
 
-    for (player, post) in blinds_or_straddles.iter().copied().enumerate().skip(2) {
-        if post != 0 && post <= big_blind {
-            game.additional_post(player, post, false)?;
+    for action in actions {
+        let mut split = action.split(' ');
+
+        let (Some(actor), Some(action_kind)) = (split.next(), split.next()) else {
+            continue;
+        };
+
+        let player_hand = match (actor, action_kind) {
+            ("d", "dh") => {
+                let Some(player) = split.next() else {
+                    return Err("missing player in hole card deal".into());
+                };
+
+                let Some(hand) = split.next() else {
+                    return Err("missing hand in hole card deal".into());
+                };
+
+                Some((player, hand))
+            }
+            (player, "sm") => {
+                if let Some(hand) = split.next() {
+                    Some((player, hand))
+                } else {
+                    None
+                }
+            }
+            _ => continue,
+        };
+
+        let Some((player, hand)) = player_hand else {
+            continue;
+        };
+
+        let player = parse_action_player(player)?;
+
+        if hand != "-" && hand != "????" {
+            let Some(hand) = Cards::from_str(hand)?.to_hand() else {
+                return Err("could not convert cards to player hand".into());
+            };
+
+            game.set_hand(usize::from(player), hand)?;
         }
     }
 
-    for (player, straddle) in blinds_or_straddles.iter().copied().enumerate().skip(2) {
-        if straddle > big_blind {
-            game.straddle(player, straddle)?;
-        }
-    }
+    Ok(())
+}
 
+fn parse_actions(game: &mut Game, actions: &[String]) -> Result<()> {
     let mut show_muck = Bitset::<2>::EMPTY;
 
-    for action in entry.actions {
+    for action in actions {
         let comment_start_index = action.find('#');
 
         let action = &action[..comment_start_index.unwrap_or_else(|| action.len())];
@@ -336,7 +412,7 @@ fn item_to_game_inner(doc: &Document<String>, item: &Item) -> Result<Game> {
 
         match (actor, action_kind) {
             ("d", "db") => {
-                handle_show_muck(&mut game, show_muck)?;
+                handle_show_muck(game, show_muck)?;
 
                 let Some(community_cards) = split.next() else {
                     return Err("missing community cards in deal".into());
@@ -421,7 +497,7 @@ fn item_to_game_inner(doc: &Document<String>, item: &Item) -> Result<Game> {
 
                 let player = usize::from(parse_action_player(actor)?);
 
-                if player >= player_count {
+                if player >= game.player_count() {
                     return Err("invalid player index in show/muck".into());
                 }
 
@@ -441,68 +517,7 @@ fn item_to_game_inner(doc: &Document<String>, item: &Item) -> Result<Game> {
         }
     }
 
-    handle_show_muck(&mut game, show_muck)?;
-
-    // TODO:
-    // Winnings are not always provided and even if they are,
-    // the reported winnings are sometimes not correct.
-    // The data seems inconsistent, so I currently don't see a clear fix for this.
-    // Just use our own simple showdown routine.
-    // Could also check finishing_stacks in the future,
-    // but they don't seem to be used often.
-
-    game.showdown_simple()?;
-
-    Ok(game)
-}
-
-fn parse_player_hands(game: &mut Game, actions: &[String]) -> Result<()> {
-    // Don't validate or report some parsing errors, just skip.
-    // The actual parsing happens later anyway.
-
-    for action in actions {
-        let mut split = action.split(' ');
-
-        let (Some(actor), Some(action_kind)) = (split.next(), split.next()) else {
-            continue;
-        };
-
-        let player_hand = match (actor, action_kind) {
-            ("d", "dh") => {
-                let Some(player) = split.next() else {
-                    return Err("missing player in hole card deal".into());
-                };
-
-                let Some(hand) = split.next() else {
-                    return Err("missing hand in hole card deal".into());
-                };
-
-                Some((player, hand))
-            }
-            (player, "sm") => {
-                if let Some(hand) = split.next() {
-                    Some((player, hand))
-                } else {
-                    None
-                }
-            }
-            _ => continue,
-        };
-
-        let Some((player, hand)) = player_hand else {
-            continue;
-        };
-
-        let player = parse_action_player(player)?;
-
-        if hand != "-" && hand != "????" {
-            let Some(hand) = Cards::from_str(hand)?.to_hand() else {
-                return Err("could not convert cards to player hand".into());
-            };
-
-            game.set_hand(usize::from(player), hand)?;
-        }
-    }
+    handle_show_muck(game, show_muck)?;
 
     Ok(())
 }
