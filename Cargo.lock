@@ -163,6 +163,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "analyze_sizings"
+version = "0.1.0"
+dependencies = [
+ "poker-core",
+]
+
+[[package]]
 name = "android-activity"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

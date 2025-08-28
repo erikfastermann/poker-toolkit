@@ -4,6 +4,7 @@ members = [
     "poker-gui",
     "poker-app",
     "gto-wizard-crawler",
+    "poker-ai/analyze_sizings",
 ]
 resolver = "2"
 

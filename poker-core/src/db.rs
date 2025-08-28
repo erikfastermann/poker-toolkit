@@ -297,6 +297,28 @@ impl DB {
         Ok(())
     }
 
+    pub fn hand_data_for_each(
+        &self,
+        query: &str,
+        params: impl Params,
+        mut f: impl FnMut(HandData) -> Result<bool>,
+    ) -> Result<()> {
+        let mut stmt = self.conn.prepare(query)?;
+
+        // TODO: Can still potentially modify the database.
+        if !stmt.readonly() {
+            return Err("db: running non readonly query to get hand data".into());
+        }
+
+        for result in stmt.query_map(params, HandData::from_row)? {
+            if !f(result?)? {
+                return Ok(());
+            }
+        }
+
+        Ok(())
+    }
+
     pub fn load_hands_from_query(
         &self,
         query: &str,
@@ -761,6 +783,30 @@ impl Actions {
 pub struct HandData {
     pub id: Option<u64>,
     pub data: GameData,
+}
+
+impl HandData {
+    fn from_row(row: &Row<'_>) -> rusqlite::Result<Self> {
+        let id: Option<u64> = match row.get("id") {
+            Ok(id) => Some(id),
+            Err(rusqlite::Error::InvalidColumnName(_)) => None,
+            Err(rusqlite::Error::InvalidColumnType(_, _, Type::Null)) => None,
+            Err(err) => return Err(err),
+        };
+
+        let game_data_raw: String = row.get("hand_data")?;
+        let game_data: GameData = match serde_json::from_str(&game_data_raw) {
+            Ok(game_data) => game_data,
+            Err(err) => return Err(FromSqlError::Other(Box::new(err)).into()),
+        };
+
+        let hand_data = Self {
+            id,
+            data: game_data,
+        };
+
+        Ok(hand_data)
+    }
 }
 
 pub struct HandBundle {
