@@ -5,3 +5,4 @@ edition = "2021"
 
 [dependencies]
 poker-core = { path = "../../poker-core" }
+serde_json = { workspace = true }

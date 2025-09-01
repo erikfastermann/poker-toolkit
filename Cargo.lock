@@ -167,6 +167,7 @@ name = "analyze_sizings"
 version = "0.1.0"
 dependencies = [
  "poker-core",
+ "serde_json",
 ]
 
 [[package]]

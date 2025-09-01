@@ -6,7 +6,7 @@ use poker_core::{
     result::Result,
 };
 
-const DB_PATH: &'static str = "../../poker-app/phh.db";
+const DB_PATH: &'static str = "../../poker-app/phh_full.db";
 
 fn main() -> Result<()> {
     let db = DB::open(DB_PATH)?;
@@ -17,7 +17,7 @@ fn main() -> Result<()> {
 
     db.hand_data_for_each("SELECT * FROM hands_data", (), |hand_data| {
         if count % 10_000 == 0 {
-            println!("{count}");
+            eprintln!("{count}");
         }
 
         let game = Game::from_game_data(&hand_data.data)?;
@@ -27,7 +27,7 @@ fn main() -> Result<()> {
         Ok(true)
     })?;
 
-    println!("{dist:#?}");
+    println!("{}", serde_json::to_string(&dist)?);
 
     Ok(())
 }
@@ -53,12 +53,17 @@ fn process_game(mut game: Game, dist: &mut Dist) -> Result<()> {
     // TODO: Check how many posters / straddlers appear in the handhq data.
 
     // Skip blinds/straddles.
-    while game.next() {
-        let action = game.actions().last().unwrap();
+    while game.can_next() {
+        let pot = game.total_pot();
+        let call_amount = game.can_call().unwrap_or(0);
 
-        let amount = match action {
-            Action::Bet { amount, .. } => *amount,
-            Action::Raise { amount, .. } => *amount,
+        assert!(game.next());
+
+        let action = game.actions().last().copied().unwrap();
+
+        let (player, amount) = match action {
+            Action::Bet { player, amount, .. } => (player, amount),
+            Action::Raise { player, amount, .. } => (player, amount),
             Action::Flop(_) | Action::Turn(_) | Action::River(_) => {
                 street_bet_counter = 0;
                 continue;
@@ -66,8 +71,13 @@ fn process_game(mut game: Game, dist: &mut Dist) -> Result<()> {
             _ => continue,
         };
 
-        let pot = game.total_pot();
-        let percent_pot = percent_pot(pot, amount);
+        let is_all_in = game.current_stacks()[usize::from(player)] == 0;
+
+        let percent_pot = if is_all_in {
+            u32::MAX
+        } else {
+            percent_pot(pot, call_amount, amount)
+        };
 
         let dist_street = &mut dist[game.board().street().to_usize()];
 
@@ -87,13 +97,16 @@ fn process_game(mut game: Game, dist: &mut Dist) -> Result<()> {
     Ok(())
 }
 
-fn percent_pot(pot: u32, amount: u32) -> u32 {
-    // TODO:
-    // Is this calculation sensible?
-    // Raises are typically calculated differently.
+fn percent_pot(pot: u32, call_amount: u32, amount: u32) -> u32 {
+    // We use the calculation for bets/raises, giving the percentage of the pot.
+    // This is typically used to give the caller specific pot odds.
+    // Often poker software implements them with configurable percent buttons,
+    // although sometimes the calculation is different.
+    // But I think this is the best solution to abstract the sizes.
 
     assert_ne!(pot, 0);
-    let percent = f64::from(amount) / f64::from(pot);
+    let pot_with_call = pot.checked_add(call_amount).unwrap();
+    let percent = f64::from(amount) / f64::from(pot_with_call);
     let percent = (percent * 100.0).round();
     assert!(percent >= 0.0 && percent <= f64::from(u32::MAX));
     let percent = percent as u32;
