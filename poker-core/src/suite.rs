@@ -67,11 +67,11 @@ impl Suite {
         Ok(suite)
     }
 
-    const fn to_i8(self) -> i8 {
+    pub const fn to_i8(self) -> i8 {
         self as i8
     }
 
-    fn to_u8(self) -> u8 {
+    pub const fn to_u8(self) -> u8 {
         self as u8
     }
 

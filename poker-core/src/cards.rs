@@ -691,7 +691,7 @@ impl Cards {
         CardsIter(self)
     }
 
-    pub fn unify_suites(self) -> Self {
+    pub fn unify_suites_mapping(self) -> [Suite; Suite::COUNT] {
         let mut suite_relevance = Suite::SUITES;
         suite_relevance.sort_by_key(|suite| {
             let by_rank = CardsByRank::from_cards_suite(self, *suite);
@@ -703,12 +703,23 @@ impl Cards {
             suite_mapping[suite.to_usize()] = Suite::SUITES[index];
         }
 
+        suite_mapping
+    }
+
+    pub fn transform_suites(self, suite_mapping: [Suite; Suite::COUNT]) -> Self {
         let mut out = Self::EMPTY;
+
         for card in self.iter() {
             let card = Card::of(card.rank(), suite_mapping[card.suite().to_usize()]);
             out.add(card);
         }
+
         out
+    }
+
+    pub fn unify_suites(self) -> Self {
+        let suite_mapping = self.unify_suites_mapping();
+        self.transform_suites(suite_mapping)
     }
 
     pub fn suite_count(self) -> u8 {

@@ -1,0 +1,12 @@
+[package]
+name = "poker-human"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "poker_human"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = "0.25.0"
+poker-core = { path = "../../poker-core" }
