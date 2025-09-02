@@ -38,13 +38,15 @@ impl Dataset {
 
     #[new]
     #[pyo3(signature = (db_path, limit=None))]
-    fn new(db_path: &str, limit: Option<usize>) -> PyResult<Self> {
+    fn new(py: Python<'_>, db_path: &str, limit: Option<usize>) -> PyResult<Self> {
         let db = DB::open(db_path).py()?;
 
         let mut games = Vec::new();
         let mut total_count = 0;
 
         let push_game = |hand_data: HandData| {
+            py.check_signals()?;
+
             let mut game = Game::from_game_data(&hand_data.data)?;
             let current_count = Self::count_actions_of_interest(&mut game);
 
@@ -77,8 +79,16 @@ impl Dataset {
     fn get_item(&mut self, index: usize) -> (Vec<f32>, Vec<i8>, Vec<f32>) {
         let game = self.get_index_game(index);
 
-        let (legal_mask, target) = Self::encode_legal_mask_target(game);
-        (Self::encode_game(game), legal_mask, target)
+        let target_index = Self::encode_target_index(game);
+
+        assert!(game.previous());
+
+        let x = Self::encode_game(game);
+        let legal_mask = Self::encode_legal_mask(game);
+
+        assert_eq!(legal_mask[target_index], 1);
+
+        (x, legal_mask, Self::create_target(target_index))
     }
 }
 
@@ -207,48 +217,131 @@ impl Dataset {
         panic!("too many actions in single game");
     }
 
-    fn encode_legal_mask_target(game: &mut Game) -> (Vec<i8>, Vec<f32>) {
+    fn encode_legal_mask(game: &Game) -> Vec<i8> {
         assert!(game.small_blind() <= game.big_blind());
 
-        let current_action = game.actions().last().copied().unwrap();
-        let player = current_action.player().unwrap();
+        let player = game.current_player().unwrap();
 
-        assert!(game.previous());
-        assert!(game.current_player().is_some());
+        let stack = game.current_stacks()[player];
 
-        let old_stack = game.current_stacks()[player];
-
-        let can_check = game.can_check();
         let can_call = game.can_call();
-        assert!(can_check || can_call.is_some());
+        assert!(game.can_check() || can_call.is_some());
 
-        let can_bet = game.can_bet();
-        let can_raise = game.can_raise();
-        let min_amount = can_bet.or_else(|| can_raise.map(|(amount, _)| amount));
+        let min_amount = game
+            .can_bet()
+            .or_else(|| game.can_raise().map(|(amount, _)| amount));
 
         let pot = game.total_pot();
         let call_amount = can_call.unwrap_or(0);
 
-        assert!(game.next());
-
-        let previous_actions = &game.actions()[..game.actions().len().checked_sub(1).unwrap()];
-
-        let is_open = game.board().street() == Street::PreFlop
-            && matches!(current_action, Action::Raise { .. })
-            && previous_actions
-                .iter()
-                .all(|action| !matches!(action, Action::Raise { .. }));
+        let can_open = Self::can_open(game);
 
         if DEBUG {
             dbg!(
                 game.big_blind(),
                 game.actions(),
                 pot,
-                is_open,
+                can_open,
                 min_amount,
-                old_stack
+                stack
             );
         }
+
+        // Fold, Check/Call is always allowed.
+        let mut legal_mask = vec![1; Self::TARGET_LEN];
+
+        if min_amount.is_none() {
+            if DEBUG {
+                eprintln!("legal: all-in not allowed");
+            }
+
+            legal_mask[Self::ALL_IN_INDEX] = 0;
+        }
+
+        if can_open {
+            let previous_street_stack = game.previous_street_stacks()[player];
+            let previous_street_stack_bb =
+                game.amount_to_milli_big_blinds_rounded(previous_street_stack);
+
+            let open_class = Self::class_index(&Self::OPEN_SIZES, previous_street_stack_bb);
+
+            if DEBUG {
+                eprintln!("legal: max open is {}", Self::OPEN_SIZES[open_class]);
+            }
+
+            for index in (open_class + 1)..Self::BET_RAISE_COUNT {
+                legal_mask[Self::BET_RAISE_INDEX + index] = 0;
+            }
+
+            if min_amount.is_none() {
+                legal_mask[Self::BET_RAISE_INDEX] = 0;
+            }
+        } else if let Some(min_amount) = min_amount {
+            // This allows all-in and a specific bet size to overlap.
+
+            let min_percent_pot = Self::percent_pot(pot, call_amount, min_amount);
+            let max_amount = stack.checked_sub(call_amount).unwrap();
+            let max_percent_pot = Self::percent_pot(pot, call_amount, max_amount);
+
+            let min_class =
+                Self::class_index(&Self::BET_RAISE_PERCENTAGES, i64::from(min_percent_pot));
+            let max_class =
+                Self::class_index(&Self::BET_RAISE_PERCENTAGES, i64::from(max_percent_pot));
+
+            if DEBUG {
+                eprintln!(
+                    "legal: bet/raise: min={}% max={}%",
+                    Self::BET_RAISE_PERCENTAGES[min_class],
+                    Self::BET_RAISE_PERCENTAGES[max_class]
+                );
+            }
+
+            for index in 0..min_class {
+                legal_mask[Self::BET_RAISE_INDEX + index] = 0;
+            }
+
+            for index in (max_class + 1)..Self::BET_RAISE_COUNT {
+                legal_mask[Self::BET_RAISE_INDEX + index] = 0;
+            }
+        } else {
+            if DEBUG {
+                eprintln!("legal: no bet/raise allowed");
+            }
+
+            for index in 0..Self::BET_RAISE_COUNT {
+                legal_mask[Self::BET_RAISE_INDEX + index] = 0;
+            }
+        }
+
+        if min_amount.is_none() {
+            assert!(legal_mask
+                [Self::BET_RAISE_INDEX..Self::BET_RAISE_INDEX + Self::BET_RAISE_COUNT]
+                .iter()
+                .copied()
+                .all(|flag| flag == 0))
+        }
+
+        legal_mask
+    }
+
+    fn encode_target_index(game: &mut Game) -> usize {
+        assert!(game.small_blind() <= game.big_blind());
+
+        let current_action = game.actions().last().copied().unwrap();
+        let player = current_action.player().unwrap();
+
+        assert!(game.previous());
+        assert_eq!(game.current_player(), Some(player));
+
+        let can_call = game.can_call();
+        assert!(game.can_check() || can_call.is_some());
+
+        let pot = game.total_pot();
+        let call_amount = can_call.unwrap_or(0);
+
+        let can_open = Self::can_open(game);
+
+        assert!(game.next());
 
         let target_action_index = match current_action {
             Action::Fold(_) => Self::FOLD_INDEX,
@@ -262,7 +355,7 @@ impl Dataset {
                     }
 
                     Self::ALL_IN_INDEX
-                } else if is_open {
+                } else if can_open {
                     let to = match current_action {
                         Action::Raise { to, .. } => to,
                         _ => unreachable!(),
@@ -297,92 +390,21 @@ impl Dataset {
             _ => unreachable!(),
         };
 
-        let legal_mask = {
-            // Fold, Check/Call is always allowed.
-            let mut legal_mask = vec![1; Self::TARGET_LEN];
+        target_action_index
+    }
 
-            if min_amount.is_none() {
-                if DEBUG {
-                    eprintln!("legal: all-in not allowed");
-                }
+    fn create_target(index: usize) -> Vec<f32> {
+        let mut target = vec![0.0; Self::TARGET_LEN];
+        target[index] = 1.0;
+        target
+    }
 
-                legal_mask[Self::ALL_IN_INDEX] = 0;
-            }
-
-            if is_open {
-                let previous_street_stack = game.previous_street_stacks()[player];
-                let previous_street_stack_bb =
-                    game.amount_to_milli_big_blinds_rounded(previous_street_stack);
-
-                let open_class = Self::class_index(&Self::OPEN_SIZES, previous_street_stack_bb);
-
-                if DEBUG {
-                    eprintln!("legal: max open is {}", Self::OPEN_SIZES[open_class]);
-                }
-
-                for index in (open_class + 1)..Self::BET_RAISE_COUNT {
-                    legal_mask[Self::BET_RAISE_INDEX + index] = 0;
-                }
-
-                if min_amount.is_none() {
-                    legal_mask[Self::BET_RAISE_INDEX] = 0;
-                }
-            } else if let Some(min_amount) = min_amount {
-                // This allows all-in and a specific bet size to overlap.
-
-                let min_percent_pot = Self::percent_pot(pot, call_amount, min_amount);
-                let max_percent_pot = Self::percent_pot(pot, call_amount, old_stack); // TODO: Probably not correct.
-
-                let min_class =
-                    Self::class_index(&Self::BET_RAISE_PERCENTAGES, i64::from(min_percent_pot));
-                let max_class =
-                    Self::class_index(&Self::BET_RAISE_PERCENTAGES, i64::from(max_percent_pot));
-
-                if DEBUG {
-                    eprintln!(
-                        "legal: bet/raise: min={}% max={}%",
-                        Self::BET_RAISE_PERCENTAGES[min_class],
-                        Self::BET_RAISE_PERCENTAGES[max_class]
-                    );
-                }
-
-                for index in 0..min_class {
-                    legal_mask[Self::BET_RAISE_INDEX + index] = 0;
-                }
-
-                for index in (max_class + 1)..Self::BET_RAISE_COUNT {
-                    legal_mask[Self::BET_RAISE_INDEX + index] = 0;
-                }
-            } else {
-                if DEBUG {
-                    eprintln!("legal: no bet/raise allowed");
-                }
-
-                for index in 0..Self::BET_RAISE_COUNT {
-                    legal_mask[Self::BET_RAISE_INDEX + index] = 0;
-                }
-            }
-
-            if min_amount.is_none() {
-                assert!(legal_mask
-                    [Self::BET_RAISE_INDEX..Self::BET_RAISE_INDEX + Self::BET_RAISE_COUNT]
-                    .iter()
-                    .copied()
-                    .all(|flag| flag == 0))
-            }
-
-            legal_mask
-        };
-
-        assert_eq!(legal_mask[target_action_index], 1);
-
-        let target = {
-            let mut target = vec![0.0; Self::TARGET_LEN];
-            target[target_action_index] = 1.0;
-            target
-        };
-
-        (legal_mask, target)
+    fn can_open(game: &Game) -> bool {
+        game.board().street() == Street::PreFlop
+            && game
+                .actions()
+                .iter()
+                .all(|action| !matches!(action, Action::Raise { .. }))
     }
 
     fn class_index(classes: &[i64], value: i64) -> usize {
@@ -412,12 +434,10 @@ impl Dataset {
         }
     }
 
-    fn encode_game(game: &mut Game) -> Vec<f32> {
+    fn encode_game(game: &Game) -> Vec<f32> {
         assert_eq!(game.runouts().len(), 1);
 
         let mut out = vec![0.0; Self::INPUT_LEN];
-
-        assert!(game.previous());
 
         let stacks = game.current_stacks();
 
@@ -427,8 +447,6 @@ impl Dataset {
             // We accept the potential loss of precision here.
             out[Self::STACK_SIZES_INDEX + index] = stacks[player] as f32 / game.big_blind() as f32;
         }
-
-        assert!(game.next());
 
         let board = game.board();
 
@@ -484,9 +502,7 @@ impl Dataset {
         let mut street = Street::PreFlop;
         let mut street_index = 0usize;
 
-        let previous_actions = &game.actions()[..game.actions().len().checked_sub(1).unwrap()];
-
-        for action in previous_actions.iter().copied() {
+        for action in game.actions().iter().copied() {
             let (action_kind, player, amount) = match action {
                 Action::Post {
                     player,

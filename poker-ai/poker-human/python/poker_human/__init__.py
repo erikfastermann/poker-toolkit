@@ -1,6 +1,4 @@
-from .poker_human import *
+from .dataset import Dataset
+from .model import ActionHead, CEWithMask
 
-
-__doc__ = poker_human.__doc__
-if hasattr(poker_human, "__all__"):
-    __all__ = poker_human.__all__
+__all__ = ["Dataset", "ActionHead", "CEWithMask"]

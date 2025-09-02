@@ -7,6 +7,8 @@ __pycache__
 *.db
 *.db-journal
 
+*.pt
+
 *.log
 *.err
 dump*
