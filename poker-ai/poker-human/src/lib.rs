@@ -3,6 +3,7 @@ use poker_core::{
     cards::Cards,
     db::{HandData, DB},
     game::{Action, Game, MilliBigBlind, Street},
+    hand::Hand,
     result::Result,
     suite::Suite,
 };
@@ -26,33 +27,51 @@ struct Dataset {
     /// useful for binary search.
     games: Vec<(Game, usize)>,
     total_actions_of_interest: usize,
+
+    /// Game index and sum of showdowns until this point.
+    showdowns: Vec<(usize, usize)>,
+    total_showdowns_of_interest: usize,
 }
 
 #[pymethods]
 impl Dataset {
     #[classattr]
-    const INPUT_LEN: usize = 380;
+    const ACTION_INPUT_LEN: usize = 380;
 
     #[classattr]
-    const TARGET_LEN: usize = 14;
+    const SHOWDOWN_INPUT_LEN: usize = 381;
+
+    #[classattr]
+    const ACTION_TARGET_LEN: usize = 14;
+
+    #[classattr]
+    const SHOWDOWN_TARGET_LEN: usize = Hand::COUNT;
 
     #[new]
     #[pyo3(signature = (db_path, limit=None))]
     fn new(py: Python<'_>, db_path: &str, limit: Option<usize>) -> PyResult<Self> {
         let db = DB::open(db_path).py()?;
 
+        let mut showdowns = Vec::new();
+        let mut total_showdown_count = 0;
+
         let mut games = Vec::new();
-        let mut total_count = 0;
+        let mut total_action_count = 0;
 
         let push_game = |hand_data: HandData| {
             py.check_signals()?;
 
             let mut game = Game::from_game_data(&hand_data.data)?;
-            let current_count = Self::count_actions_of_interest(&mut game);
+            let current_action_count = Self::count_actions_of_interest(&mut game);
 
-            games.push((game, total_count));
+            let current_showdown_count = Self::showdowns_of_interest(&mut game);
+            if current_showdown_count != 0 {
+                showdowns.push((games.len(), total_showdown_count));
+                total_showdown_count += current_showdown_count;
+            }
 
-            total_count += current_count;
+            games.push((game, total_action_count));
+            total_action_count += current_action_count;
 
             Ok(true)
         };
@@ -68,7 +87,9 @@ impl Dataset {
 
         Ok(Self {
             games,
-            total_actions_of_interest: total_count,
+            total_actions_of_interest: total_action_count,
+            showdowns,
+            total_showdowns_of_interest: total_showdown_count,
         })
     }
 
@@ -76,8 +97,12 @@ impl Dataset {
         self.total_actions_of_interest
     }
 
-    fn get_item(&mut self, index: usize) -> (Vec<f32>, Vec<i8>, Vec<f32>) {
-        let game = self.get_index_game(index);
+    fn total_showdowns_of_interest(&self) -> usize {
+        self.showdowns.len()
+    }
+
+    fn get_action_item(&mut self, index: usize) -> (Vec<f32>, Vec<i8>, Vec<f32>) {
+        let game = self.get_action_index_game(index);
 
         let target_index = Self::encode_target_index(game);
 
@@ -89,6 +114,66 @@ impl Dataset {
         assert_eq!(legal_mask[target_index], 1);
 
         (x, legal_mask, Self::create_target(target_index))
+    }
+
+    fn get_showdown_item(&mut self, index: usize) -> (Vec<f32>, Vec<f32>) {
+        let (game, player) = self.get_showdown_index_game(index);
+
+        let player = Game::player_to_button_offset(
+            game.player_count(),
+            game.button_index(),
+            usize::from(player),
+        )
+        .unwrap();
+        let player = u8::try_from(player).unwrap();
+
+        let mut x = Self::encode_game(game);
+        x.push(f32::from(player) + 1.0);
+        assert_eq!(x.len(), Self::SHOWDOWN_INPUT_LEN);
+
+        // TODO:
+        // Equity of each hand at showdown
+        // from perspective of this player against all
+        // other players?
+        //
+        // We don't know what we have,
+        // but we store how well it would do against other players
+        // in this scenario.
+        //
+        // The big advantage is, that bluff / value ratios
+        // should be constructed more or less automatically,
+        // without bucketing or other tricks.
+        //
+        // Can be used to reward / punish a reinforcement learner
+        // or similar.
+        //
+        // Can we reconstruct likely hands of other players
+        // this way? We could calculate equity for every hand
+        // (scales quickly with number of villains)
+        // and compare with the equity we got.
+        // Closest hand is chosen for the opponent.
+        // But this doesn't model what is going on.
+        // We always have a probability distribution,
+        // so we need to choose from a range of hands.
+        // So the information is lost.
+        //
+        // Important: Need to keep in mind that we unified the
+        // community card suites, which is tricky here.
+        // Maybe we cannot do that.
+        //
+        // Mucked hands can and should be
+        // considered in the calculation.
+        // We can make the conservative assumption
+        // that a mucked hand is worse than any known hand,
+        // and construct the range accordingly.
+        // The order cannot be used,
+        // because our showdown order might not match
+        // the order of the source.
+        //
+        // Can handle nut high and low with masking.
+        // Extra features should also help the model a lot.
+
+        todo!()
     }
 }
 
@@ -190,7 +275,66 @@ impl Dataset {
         count
     }
 
-    fn get_index_game(&mut self, index: usize) -> &mut Game {
+    fn showdowns_of_interest(game: &mut Game) -> usize {
+        game.forward();
+
+        game.actions()
+            .iter()
+            .filter(|action| matches!(action, Action::Shows { .. } | Action::MucksOrUnknown(_)))
+            .count()
+    }
+
+    fn get_showdown_index_game(&mut self, index: usize) -> (&mut Game, u8) {
+        assert!(index < self.total_showdowns_of_interest);
+
+        let search_result = self
+            .showdowns
+            .binary_search_by_key(&index, |(_, count)| *count);
+
+        let showdown_index = match search_result {
+            Ok(index) => index,
+            Err(index) => index.checked_sub(1).unwrap(),
+        };
+
+        let (game_index, showdowns) = self.showdowns[showdown_index];
+
+        let (game, _) = &mut self.games[game_index];
+
+        Self::first_shows_mucks(game);
+
+        for i in 0..Game::MAX_PLAYERS {
+            if showdowns + i != index {
+                assert!(game.next());
+                continue;
+            }
+
+            let action = game.actions().last().copied().unwrap();
+
+            match action {
+                Action::Shows { player, .. } => return (game, player),
+                Action::MucksOrUnknown(player) => return (game, player),
+                _ => unreachable!(),
+            }
+        }
+
+        unreachable!();
+    }
+
+    fn first_shows_mucks(game: &mut Game) {
+        game.rewind();
+
+        while game.next() {
+            let action = game.actions().last().copied().unwrap();
+
+            if matches!(action, Action::Shows { .. } | Action::MucksOrUnknown(_)) {
+                return;
+            }
+        }
+
+        panic!("game has no show or muck action");
+    }
+
+    fn get_action_index_game(&mut self, index: usize) -> &mut Game {
         assert!(index < self.total_actions_of_interest);
 
         let search_result = self.games.binary_search_by_key(&index, |(_, count)| *count);
@@ -248,7 +392,7 @@ impl Dataset {
         }
 
         // Fold, Check/Call is always allowed.
-        let mut legal_mask = vec![1; Self::TARGET_LEN];
+        let mut legal_mask = vec![1; Self::ACTION_TARGET_LEN];
 
         if min_amount.is_none() {
             if DEBUG {
@@ -394,7 +538,7 @@ impl Dataset {
     }
 
     fn create_target(index: usize) -> Vec<f32> {
-        let mut target = vec![0.0; Self::TARGET_LEN];
+        let mut target = vec![0.0; Self::ACTION_TARGET_LEN];
         target[index] = 1.0;
         target
     }
@@ -437,7 +581,7 @@ impl Dataset {
     fn encode_game(game: &Game) -> Vec<f32> {
         assert_eq!(game.runouts().len(), 1);
 
-        let mut out = vec![0.0; Self::INPUT_LEN];
+        let mut out = vec![0.0; Self::ACTION_INPUT_LEN];
 
         let stacks = game.current_stacks();
 
