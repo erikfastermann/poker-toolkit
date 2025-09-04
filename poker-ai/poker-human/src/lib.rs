@@ -116,7 +116,7 @@ impl Dataset {
         (x, legal_mask, Self::create_target(target_index))
     }
 
-    fn get_showdown_item(&mut self, index: usize) -> (Vec<f32>, Vec<f32>) {
+    fn get_showdown_item(&mut self, index: usize) -> (Vec<f32>, Vec<i8>, Vec<f32>) {
         let (game, player) = self.get_showdown_index_game(index);
 
         let player = Game::player_to_button_offset(
@@ -169,9 +169,27 @@ impl Dataset {
         // The order cannot be used,
         // because our showdown order might not match
         // the order of the source.
+        // The problem is that if the showdown does not occur
+        // after the river, we don't know how much equity
+        // a person has in this case.
+        // Even if we consider the cards that were dealt after
+        // the point terminating the hand,
+        // we still cannot make conclusions about the equity
+        // the person has. So the data will always be biased.
+        // Even at the river this probably holds,
+        // because we wan't the equity against all hands,
+        // not a single hand that is one pip worse
+        // or a range of all worse hands.
         //
         // Can handle nut high and low with masking.
         // Extra features should also help the model a lot.
+        //
+        // What about blocker effects?
+        // If a hand is not possible, because it is blocked by
+        // villain cards, what value do we assign this hand?
+        // Could use a random value for now.
+        //
+        // Also need a legal mask for the community cards.
 
         todo!()
     }
