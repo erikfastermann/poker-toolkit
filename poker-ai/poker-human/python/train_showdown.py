@@ -2,7 +2,11 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from poker_human import ShowdownDataset, ShowdownHead, masked_bce_with_logits_loss
+from poker_human import (
+    ShowdownPreprocessedDataset,
+    ShowdownHead,
+    masked_bce_with_logits_loss,
+)
 
 
 def train_one_epoch(model, dataloader, optimizer, device):
@@ -43,15 +47,14 @@ def evaluate(model, dataloader, device):
 
 
 if __name__ == "__main__":
-    db_path = "../../poker-app/phh_full.db"
-    limit = 10_000
+    dataset_preprocessed_path = "showdown.pkl"
     out_model_path = "showdown.pt"
 
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    dataset = ShowdownDataset(db_path, limit=limit)
-    dataloader = DataLoader(dataset, batch_size=32, shuffle=True, num_workers=10)
+    dataset = ShowdownPreprocessedDataset(dataset_preprocessed_path)
+    dataloader = DataLoader(dataset, batch_size=64, shuffle=True)
 
     model = ShowdownHead().to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)

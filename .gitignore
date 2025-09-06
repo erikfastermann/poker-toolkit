@@ -8,6 +8,7 @@ __pycache__
 *.db-journal
 
 *.pt
+*.pkl
 
 *.log
 *.err

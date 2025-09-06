@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use poker_core::{
     card::Card,
     cards::{Cards, Score},
@@ -111,22 +113,22 @@ impl Dataset {
     }
 
     fn total_showdowns_of_interest(&self) -> usize {
-        self.showdowns.len()
+        self.total_showdowns_of_interest
     }
 
     fn get_action_item(&mut self, index: usize) -> (Vec<f32>, Vec<i8>, Vec<f32>) {
         let game = self.get_action_index_game(index);
 
-        let target_index = Self::encode_target_index(game);
+        let target_index = Self::encode_action_target_index(game);
 
         assert!(game.previous());
 
         let x = Self::encode_game(game);
-        let legal_mask = Self::encode_legal_mask(game);
+        let legal_mask = Self::encode_action_legal_mask(game);
 
         assert_eq!(legal_mask[target_index], 1);
 
-        (x, legal_mask, Self::create_target(target_index))
+        (x, legal_mask, Self::create_action_target(target_index))
     }
 
     fn get_showdown_item(&mut self, index: usize) -> (Vec<f32>, Vec<i8>, Vec<f32>) {
@@ -137,169 +139,25 @@ impl Dataset {
         // community card suites, which is tricky here.
         // Maybe we cannot do that.
 
-        let (game_index, hero_player) = self.get_showdown_index_game(index);
+        let game_index = self.get_showdown_index_game(index);
 
         let game = &mut self.games[game_index].0;
 
-        let player_button_offset = Game::player_to_button_offset(
-            game.player_count(),
-            game.button_index(),
-            usize::from(hero_player),
-        )
-        .unwrap();
-        let player_button_offset = u8::try_from(player_button_offset).unwrap();
-
-        let mut x = Self::encode_game(game);
-        x.push(f32::from(player_button_offset) + 1.0);
-        assert_eq!(x.len(), Self::SHOWDOWN_INPUT_LEN);
-
-        let current_board = game.board();
-
-        // Show / muck always happens at the point,
-        // where no player can act anymore.
-        // If it's not on the river,
-        // we have cards to come, so forward.
-        game.forward();
-        assert_eq!(game.runouts().len(), 1);
-        let final_board = game.board();
-        let final_board_cards = final_board.cards_set();
-
-        if DEBUG {
-            eprintln!(
-                "current_board: {:?}, final_board: {:?}, hero: {}",
-                current_board.cards(),
-                final_board.cards(),
-                hero_player,
-            )
-        }
-
-        let showdown_players = (0..game.player_count())
-            .filter(|player| game.hand_shown(*player) || game.hand_mucked(*player));
-
-        let mucked_hands = (0..game.player_count())
-            .filter(|player| game.hand_mucked(*player))
-            .count();
-
-        let mut worse_hands = if mucked_hands != 0 {
-            let mut worst_score = Score::MAX;
-
-            for player in showdown_players.clone() {
-                let Some(hand) = game.get_hand(player) else {
-                    continue;
-                };
-
-                // Need to be conservative. Using final board,
-                // because we don't know how the data source handles
-                // show / muck. Also easier to implement.
-                let player_cards = final_board_cards | hand.to_cards();
-                let score = player_cards.score_fast();
-
-                if score <= worst_score {
-                    worst_score = score;
-                }
-            }
-
-            // One shows is required in the dataset construction.
-            assert_ne!(worst_score, Score::MAX);
-
-            let known_cards = game.known_cards();
-
-            let worse_hands: Vec<_> = Hand::all()
-                .filter(|hand| !final_board_cards.overlaps(hand.to_cards()))
-                .filter(|hand| (hand.to_cards() | final_board_cards).score_fast() < worst_score)
-                .filter(|hand| !hand.to_cards().overlaps(known_cards))
-                .collect();
-
-            worse_hands
-        } else {
-            Vec::new()
-        };
-
-        let ranges: Vec<_> = showdown_players
-            .clone()
-            .map(|player| {
-                if player == usize::from(hero_player) {
-                    Box::new(RangeTable::FULL)
-                } else {
-                    let hand = game.get_hand(player).unwrap_or_else(|| {
-                        // Using a random worse hand for every player than the one we found.
-                        // This is misleading, but currently I don't see another option
-                        // to still use most showdown data.
-                        // TODO: Can optimize distribution.
-
-                        // For every player who mucked,
-                        // we should have one hand that is worse.
-                        // This is not guaranteed.
-                        let player_hand = worse_hands.choose(&mut self.rng).copied().unwrap();
-                        worse_hands
-                            .retain(|hand| !hand.to_cards().overlaps(player_hand.to_cards()));
-                        player_hand
-                    });
-
-                    if DEBUG {
-                        eprintln!(
-                            "player {} hand: {} (known: {})",
-                            player,
-                            hand,
-                            game.get_hand(player).is_some()
-                        );
-                    }
-
-                    Box::new(RangeTable::from_hands([hand]).unwrap())
-                }
-            })
-            .collect();
-
-        let community_cards = current_board.cards_set();
-
-        // Should always succeed, non hero ranges have size of one,
-        // so the total is small.
-        let equity = if total_combos_upper_bound(community_cards, &ranges) <= 100_000 {
-            // TODO
-            let Some(equity) = EquityTable::enumerate(community_cards, &ranges) else {
-                dbg!(&ranges, community_cards, game.hand_name());
-                panic!();
-            };
-            equity
-        } else {
-            EquityTable::simulate(community_cards, &ranges, 300_000).unwrap()
-        };
-
-        let hero_range_index = showdown_players
-            .clone()
-            .position(|player| player == usize::from(hero_player))
-            .unwrap();
-
-        let hand_cards = ranges
-            .iter()
-            .enumerate()
-            .filter(|(index, _)| *index != hero_range_index)
-            .flat_map(|(_, range)| range.into_iter())
-            .fold(Cards::EMPTY, |acc, hand| acc | hand.to_cards());
-
-        let equity = &equity[hero_range_index];
-
-        let mut legal_mask = vec![1i8; Self::SHOWDOWN_TARGET_LEN];
-        let mut target = vec![0.0f32; Self::SHOWDOWN_TARGET_LEN];
-
-        for hand in Hand::all() {
-            let index = hand.to_index();
-
-            if community_cards.overlaps(hand.to_cards()) {
-                legal_mask[index] = 0;
-                target[index] = 0.0;
-            } else if hand_cards.overlaps(hand.to_cards()) {
-                // Another players hand overlaps.
-                // Also using a random value here,
-                // because what else to do?
-
-                target[index] = self.rng.gen_range(0.0..=1.0);
-            } else {
-                target[index] = equity.equity(hand).equity_percent() as f32;
-            }
-        }
+        let x = Self::encode_showdown_input(game);
+        let legal_mask = Self::encode_showdown_legal_mask(game);
+        let target = self.encode_showdown_target(game_index);
 
         (x, legal_mask, target)
+    }
+
+    fn showdown_info(&mut self, index: usize) -> (String, String) {
+        let game_index = self.get_showdown_index_game(index);
+        let game = &self.games[game_index].0;
+
+        let hand_name = Arc::unwrap_or_clone(game.hand_name().unwrap_or_default());
+        let info = format!("{:?}", game.actions().last().unwrap());
+
+        (hand_name, info)
     }
 }
 
@@ -420,7 +278,7 @@ impl Dataset {
             .count()
     }
 
-    fn get_showdown_index_game(&mut self, index: usize) -> (usize, u8) {
+    fn get_showdown_index_game(&mut self, index: usize) -> usize {
         assert!(index < self.total_showdowns_of_interest);
 
         let search_result = self
@@ -447,8 +305,7 @@ impl Dataset {
             let action = game.actions().last().copied().unwrap();
 
             match action {
-                Action::Shows { player, .. } => return (game_index, player),
-                Action::MucksOrUnknown(player) => return (game_index, player),
+                Action::Shows { .. } | Action::MucksOrUnknown(_) => return game_index,
                 _ => unreachable!(),
             }
         }
@@ -497,7 +354,7 @@ impl Dataset {
         panic!("too many actions in single game");
     }
 
-    fn encode_legal_mask(game: &Game) -> Vec<i8> {
+    fn encode_action_legal_mask(game: &Game) -> Vec<i8> {
         assert!(game.small_blind() <= game.big_blind());
 
         let player = game.current_player().unwrap();
@@ -604,7 +461,7 @@ impl Dataset {
         legal_mask
     }
 
-    fn encode_target_index(game: &mut Game) -> usize {
+    fn encode_action_target_index(game: &mut Game) -> usize {
         assert!(game.small_blind() <= game.big_blind());
 
         let current_action = game.actions().last().copied().unwrap();
@@ -673,7 +530,7 @@ impl Dataset {
         target_action_index
     }
 
-    fn create_target(index: usize) -> Vec<f32> {
+    fn create_action_target(index: usize) -> Vec<f32> {
         let mut target = vec![0.0; Self::ACTION_TARGET_LEN];
         target[index] = 1.0;
         target
@@ -864,6 +721,199 @@ impl Dataset {
         let percent = percent as u32;
 
         percent
+    }
+
+    fn encode_showdown_input(game: &Game) -> Vec<f32> {
+        let action = game.actions().last().copied().unwrap();
+
+        let hero_player = match action {
+            Action::Shows { player, .. } | Action::MucksOrUnknown(player) => player,
+            _ => unreachable!(),
+        };
+
+        let player_button_offset = Game::player_to_button_offset(
+            game.player_count(),
+            game.button_index(),
+            usize::from(hero_player),
+        )
+        .unwrap();
+        let player_button_offset = u8::try_from(player_button_offset).unwrap();
+
+        let mut x = Self::encode_game(game);
+        x.push(f32::from(player_button_offset) + 1.0);
+        assert_eq!(x.len(), Self::SHOWDOWN_INPUT_LEN);
+
+        x
+    }
+
+    fn encode_showdown_legal_mask(game: &Game) -> Vec<i8> {
+        let community_cards = game.board().cards_set();
+
+        let mut legal_mask = vec![0i8; Self::SHOWDOWN_TARGET_LEN];
+
+        for hand in Hand::all() {
+            let index = hand.to_index();
+
+            if community_cards.overlaps(hand.to_cards()) {
+                legal_mask[index] = 0;
+            } else {
+                legal_mask[index] = 1;
+            }
+        }
+
+        legal_mask
+    }
+
+    fn encode_showdown_target(&mut self, game_index: usize) -> Vec<f32> {
+        let game = &mut self.games[game_index].0;
+
+        let action = game.actions().last().copied().unwrap();
+
+        let hero_player = match action {
+            Action::Shows { player, .. } | Action::MucksOrUnknown(player) => player,
+            _ => unreachable!(),
+        };
+
+        let current_board = game.board();
+
+        // Show / muck always happens at the point,
+        // where no player can act anymore.
+        // If it's not on the river,
+        // we have cards to come, so forward.
+        game.forward();
+        assert_eq!(game.runouts().len(), 1);
+        let final_board = game.board();
+        let final_board_cards = final_board.cards_set();
+
+        if DEBUG {
+            eprintln!(
+                "current_board: {:?}, final_board: {:?}, hero: {}",
+                current_board.cards(),
+                final_board.cards(),
+                hero_player,
+            )
+        }
+
+        let showdown_players = (0..game.player_count())
+            .filter(|player| game.hand_shown(*player) || game.hand_mucked(*player));
+
+        let mucked_hands = (0..game.player_count())
+            .filter(|player| game.hand_mucked(*player))
+            .count();
+
+        let mut worse_hands = if mucked_hands != 0 {
+            let mut worst_score = Score::MAX;
+
+            for player in showdown_players.clone() {
+                let Some(hand) = game.get_hand(player) else {
+                    continue;
+                };
+
+                // Need to be conservative. Using final board,
+                // because we don't know how the data source handles
+                // show / muck. Also easier to implement.
+                let player_cards = final_board_cards | hand.to_cards();
+                let score = player_cards.score_fast();
+
+                if score <= worst_score {
+                    worst_score = score;
+                }
+            }
+
+            // One shows is required in the dataset construction.
+            assert_ne!(worst_score, Score::MAX);
+
+            let known_cards = game.known_cards();
+
+            let worse_hands: Vec<_> = Hand::all()
+                .filter(|hand| !final_board_cards.overlaps(hand.to_cards()))
+                .filter(|hand| (hand.to_cards() | final_board_cards).score_fast() < worst_score)
+                .filter(|hand| !hand.to_cards().overlaps(known_cards))
+                .collect();
+
+            worse_hands
+        } else {
+            Vec::new()
+        };
+
+        let ranges: Vec<_> = showdown_players
+            .clone()
+            .map(|player| {
+                if player == usize::from(hero_player) {
+                    Box::new(RangeTable::FULL)
+                } else {
+                    let hand = game.get_hand(player).unwrap_or_else(|| {
+                        // Using a random worse hand for every player than the one we found.
+                        // This is misleading, but currently I don't see another option
+                        // to still use most showdown data.
+                        // TODO: Can optimize distribution.
+
+                        // For every player who mucked,
+                        // we should have one hand that is worse.
+                        // This is not guaranteed.
+                        let player_hand = worse_hands.choose(&mut self.rng).copied().unwrap();
+                        worse_hands
+                            .retain(|hand| !hand.to_cards().overlaps(player_hand.to_cards()));
+                        player_hand
+                    });
+
+                    if DEBUG {
+                        eprintln!(
+                            "player {} hand: {} (known: {})",
+                            player,
+                            hand,
+                            game.get_hand(player).is_some()
+                        );
+                    }
+
+                    Box::new(RangeTable::from_hands([hand]).unwrap())
+                }
+            })
+            .collect();
+
+        let community_cards = current_board.cards_set();
+
+        // Should always succeed, non hero ranges have size of one,
+        // so the total is small.
+        let equity = if total_combos_upper_bound(community_cards, &ranges) <= 100_000 {
+            EquityTable::enumerate(community_cards, &ranges).unwrap()
+        } else {
+            EquityTable::simulate(community_cards, &ranges, 300_000).unwrap()
+        };
+
+        let hero_range_index = showdown_players
+            .clone()
+            .position(|player| player == usize::from(hero_player))
+            .unwrap();
+
+        let hand_cards = ranges
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index != hero_range_index)
+            .flat_map(|(_, range)| range.into_iter())
+            .fold(Cards::EMPTY, |acc, hand| acc | hand.to_cards());
+
+        let equity = &equity[hero_range_index];
+
+        let mut target = vec![0.0f32; Self::SHOWDOWN_TARGET_LEN];
+
+        for hand in Hand::all() {
+            let index = hand.to_index();
+
+            if community_cards.overlaps(hand.to_cards()) {
+                target[index] = 0.0;
+            } else if hand_cards.overlaps(hand.to_cards()) {
+                // Another players hand overlaps.
+                // Also using a random value here,
+                // because what else to do?
+
+                target[index] = self.rng.gen_range(0.0..=1.0);
+            } else {
+                target[index] = equity.equity(hand).equity_percent() as f32;
+            }
+        }
+
+        target
     }
 }
 
