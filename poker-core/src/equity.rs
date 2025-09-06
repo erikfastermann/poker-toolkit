@@ -38,6 +38,7 @@ impl fmt::Display for Equity {
 }
 
 fn valid_input(community_cards: Cards, ranges: &[impl AsRef<RangeTable>]) -> bool {
+    // TODO: Support 10 players.
     community_cards.count() <= 5
         && ranges.len() >= 2
         && ranges.len() <= 9
@@ -53,7 +54,7 @@ fn valid_input_frequencies(community_cards: Cards, ranges: &[RangeTableWith<u16>
             .all(|range| range_frequencies_valid(range) && !range_frequencies_empty(range))
 }
 
-fn total_combos_upper_bound(community_cards: Cards, ranges: &[impl AsRef<RangeTable>]) -> u128 {
+pub fn total_combos_upper_bound(community_cards: Cards, ranges: &[impl AsRef<RangeTable>]) -> u128 {
     assert!(ranges.len() <= 9);
     assert!(ranges.iter().all(|range| !range.as_ref().is_empty()));
 
@@ -81,7 +82,7 @@ fn total_combos_upper_bound(community_cards: Cards, ranges: &[impl AsRef<RangeTa
     count
 }
 
-fn total_combos_upper_bound_frequencies(
+pub fn total_combos_upper_bound_frequencies(
     community_cards: Cards,
     ranges: &[RangeTableWith<u16>],
 ) -> f64 {

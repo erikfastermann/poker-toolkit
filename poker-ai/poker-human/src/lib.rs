@@ -1,13 +1,17 @@
 use poker_core::{
     card::Card,
-    cards::Cards,
+    cards::{Cards, Score},
     db::{HandData, DB},
+    equity::{total_combos_upper_bound, EquityTable},
     game::{Action, Game, MilliBigBlind, Street},
     hand::Hand,
+    init::init,
+    range::RangeTable,
     result::Result,
     suite::Suite,
 };
 use pyo3::{exceptions::PyValueError, prelude::*};
+use rand::{rngs::SmallRng, seq::SliceRandom, Rng, SeedableRng};
 
 const DEBUG: bool = false;
 
@@ -31,6 +35,8 @@ struct Dataset {
     /// Game index and sum of showdowns until this point.
     showdowns: Vec<(usize, usize)>,
     total_showdowns_of_interest: usize,
+
+    rng: SmallRng,
 }
 
 #[pymethods]
@@ -50,6 +56,12 @@ impl Dataset {
     #[new]
     #[pyo3(signature = (db_path, limit=None))]
     fn new(py: Python<'_>, db_path: &str, limit: Option<usize>) -> PyResult<Self> {
+        // SAFETY:
+        // If this library is only used from Python,
+        // it is not possible to read from another thread
+        // while init runs.
+        unsafe { init() };
+
         let db = DB::open(db_path).py()?;
 
         let mut showdowns = Vec::new();
@@ -90,6 +102,7 @@ impl Dataset {
             total_actions_of_interest: total_action_count,
             showdowns,
             total_showdowns_of_interest: total_showdown_count,
+            rng: SmallRng::seed_from_u64(42), // deterministic
         })
     }
 
@@ -117,81 +130,176 @@ impl Dataset {
     }
 
     fn get_showdown_item(&mut self, index: usize) -> (Vec<f32>, Vec<i8>, Vec<f32>) {
-        let (game, player) = self.get_showdown_index_game(index);
-
-        let player = Game::player_to_button_offset(
-            game.player_count(),
-            game.button_index(),
-            usize::from(player),
-        )
-        .unwrap();
-        let player = u8::try_from(player).unwrap();
-
-        let mut x = Self::encode_game(game);
-        x.push(f32::from(player) + 1.0);
-        assert_eq!(x.len(), Self::SHOWDOWN_INPUT_LEN);
+        // TODO: Could consider hands with revealed cards without showdown.
 
         // TODO:
-        // Equity of each hand at showdown
-        // from perspective of this player against all
-        // other players?
-        //
-        // We don't know what we have,
-        // but we store how well it would do against other players
-        // in this scenario.
-        //
-        // The big advantage is, that bluff / value ratios
-        // should be constructed more or less automatically,
-        // without bucketing or other tricks.
-        //
-        // Can be used to reward / punish a reinforcement learner
-        // or similar.
-        //
-        // Can we reconstruct likely hands of other players
-        // this way? We could calculate equity for every hand
-        // (scales quickly with number of villains)
-        // and compare with the equity we got.
-        // Closest hand is chosen for the opponent.
-        // But this doesn't model what is going on.
-        // We always have a probability distribution,
-        // so we need to choose from a range of hands.
-        // So the information is lost.
-        //
-        // Important: Need to keep in mind that we unified the
+        // Need to keep in mind that we unified the
         // community card suites, which is tricky here.
         // Maybe we cannot do that.
-        //
-        // Mucked hands can and should be
-        // considered in the calculation.
-        // We can make the conservative assumption
-        // that a mucked hand is worse than any known hand,
-        // and construct the range accordingly.
-        // The order cannot be used,
-        // because our showdown order might not match
-        // the order of the source.
-        // The problem is that if the showdown does not occur
-        // after the river, we don't know how much equity
-        // a person has in this case.
-        // Even if we consider the cards that were dealt after
-        // the point terminating the hand,
-        // we still cannot make conclusions about the equity
-        // the person has. So the data will always be biased.
-        // Even at the river this probably holds,
-        // because we wan't the equity against all hands,
-        // not a single hand that is one pip worse
-        // or a range of all worse hands.
-        //
-        // Can handle nut high and low with masking.
-        // Extra features should also help the model a lot.
-        //
-        // What about blocker effects?
-        // If a hand is not possible, because it is blocked by
-        // villain cards, what value do we assign this hand?
-        // Could use a random value for now.
-        //
-        // Also need a legal mask for the community cards.
 
-        todo!()
+        let (game_index, hero_player) = self.get_showdown_index_game(index);
+
+        let game = &mut self.games[game_index].0;
+
+        let player_button_offset = Game::player_to_button_offset(
+            game.player_count(),
+            game.button_index(),
+            usize::from(hero_player),
+        )
+        .unwrap();
+        let player_button_offset = u8::try_from(player_button_offset).unwrap();
+
+        let mut x = Self::encode_game(game);
+        x.push(f32::from(player_button_offset) + 1.0);
+        assert_eq!(x.len(), Self::SHOWDOWN_INPUT_LEN);
+
+        let current_board = game.board();
+
+        // Show / muck always happens at the point,
+        // where no player can act anymore.
+        // If it's not on the river,
+        // we have cards to come, so forward.
+        game.forward();
+        assert_eq!(game.runouts().len(), 1);
+        let final_board = game.board();
+        let final_board_cards = final_board.cards_set();
+
+        if DEBUG {
+            eprintln!(
+                "current_board: {:?}, final_board: {:?}, hero: {}",
+                current_board.cards(),
+                final_board.cards(),
+                hero_player,
+            )
+        }
+
+        let showdown_players = (0..game.player_count())
+            .filter(|player| game.hand_shown(*player) || game.hand_mucked(*player));
+
+        let mucked_hands = (0..game.player_count())
+            .filter(|player| game.hand_mucked(*player))
+            .count();
+
+        let mut worse_hands = if mucked_hands != 0 {
+            let mut worst_score = Score::MAX;
+
+            for player in showdown_players.clone() {
+                let Some(hand) = game.get_hand(player) else {
+                    continue;
+                };
+
+                // Need to be conservative. Using final board,
+                // because we don't know how the data source handles
+                // show / muck. Also easier to implement.
+                let player_cards = final_board_cards | hand.to_cards();
+                let score = player_cards.score_fast();
+
+                if score <= worst_score {
+                    worst_score = score;
+                }
+            }
+
+            // One shows is required in the dataset construction.
+            assert_ne!(worst_score, Score::MAX);
+
+            let known_cards = game.known_cards();
+
+            let worse_hands: Vec<_> = Hand::all()
+                .filter(|hand| !final_board_cards.overlaps(hand.to_cards()))
+                .filter(|hand| (hand.to_cards() | final_board_cards).score_fast() < worst_score)
+                .filter(|hand| !hand.to_cards().overlaps(known_cards))
+                .collect();
+
+            worse_hands
+        } else {
+            Vec::new()
+        };
+
+        let ranges: Vec<_> = showdown_players
+            .clone()
+            .map(|player| {
+                if player == usize::from(hero_player) {
+                    Box::new(RangeTable::FULL)
+                } else {
+                    let hand = game.get_hand(player).unwrap_or_else(|| {
+                        // Using a random worse hand for every player than the one we found.
+                        // This is misleading, but currently I don't see another option
+                        // to still use most showdown data.
+                        // TODO: Can optimize distribution.
+
+                        // For every player who mucked,
+                        // we should have one hand that is worse.
+                        // This is not guaranteed.
+                        let player_hand = worse_hands.choose(&mut self.rng).copied().unwrap();
+                        worse_hands
+                            .retain(|hand| !hand.to_cards().overlaps(player_hand.to_cards()));
+                        player_hand
+                    });
+
+                    if DEBUG {
+                        eprintln!(
+                            "player {} hand: {} (known: {})",
+                            player,
+                            hand,
+                            game.get_hand(player).is_some()
+                        );
+                    }
+
+                    Box::new(RangeTable::from_hands([hand]).unwrap())
+                }
+            })
+            .collect();
+
+        let community_cards = current_board.cards_set();
+
+        // Should always succeed, non hero ranges have size of one,
+        // so the total is small.
+        let equity = if total_combos_upper_bound(community_cards, &ranges) <= 100_000 {
+            // TODO
+            let Some(equity) = EquityTable::enumerate(community_cards, &ranges) else {
+                dbg!(&ranges, community_cards, game.hand_name());
+                panic!();
+            };
+            equity
+        } else {
+            EquityTable::simulate(community_cards, &ranges, 300_000).unwrap()
+        };
+
+        let hero_range_index = showdown_players
+            .clone()
+            .position(|player| player == usize::from(hero_player))
+            .unwrap();
+
+        let hand_cards = ranges
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index != hero_range_index)
+            .flat_map(|(_, range)| range.into_iter())
+            .fold(Cards::EMPTY, |acc, hand| acc | hand.to_cards());
+
+        let equity = &equity[hero_range_index];
+
+        let mut legal_mask = vec![1i8; Self::SHOWDOWN_TARGET_LEN];
+        let mut target = vec![0.0f32; Self::SHOWDOWN_TARGET_LEN];
+
+        for hand in Hand::all() {
+            let index = hand.to_index();
+
+            if community_cards.overlaps(hand.to_cards()) {
+                legal_mask[index] = 0;
+                target[index] = 0.0;
+            } else if hand_cards.overlaps(hand.to_cards()) {
+                // Another players hand overlaps.
+                // Also using a random value here,
+                // because what else to do?
+
+                target[index] = self.rng.gen_range(0.0..=1.0);
+            } else {
+                target[index] = equity.equity(hand).equity_percent() as f32;
+            }
+        }
+
+        (x, legal_mask, target)
     }
 }
 
@@ -296,13 +404,23 @@ impl Dataset {
     fn showdowns_of_interest(game: &mut Game) -> usize {
         game.forward();
 
+        let shows = game
+            .actions()
+            .iter()
+            .filter(|action| matches!(action, Action::Shows { .. }))
+            .count();
+
+        if shows == 0 {
+            return 0;
+        }
+
         game.actions()
             .iter()
             .filter(|action| matches!(action, Action::Shows { .. } | Action::MucksOrUnknown(_)))
             .count()
     }
 
-    fn get_showdown_index_game(&mut self, index: usize) -> (&mut Game, u8) {
+    fn get_showdown_index_game(&mut self, index: usize) -> (usize, u8) {
         assert!(index < self.total_showdowns_of_interest);
 
         let search_result = self
@@ -329,8 +447,8 @@ impl Dataset {
             let action = game.actions().last().copied().unwrap();
 
             match action {
-                Action::Shows { player, .. } => return (game, player),
-                Action::MucksOrUnknown(player) => return (game, player),
+                Action::Shows { player, .. } => return (game_index, player),
+                Action::MucksOrUnknown(player) => return (game_index, player),
                 _ => unreachable!(),
             }
         }

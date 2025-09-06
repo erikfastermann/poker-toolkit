@@ -1,6 +1,6 @@
 use std::cmp::{self, max, min};
 use std::collections::{BTreeMap, HashSet};
-use std::ops::{BitAndAssign, Index, IndexMut};
+use std::ops::{BitAndAssign, BitOrAssign, Index, IndexMut};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::{array, fmt, iter};
@@ -781,6 +781,14 @@ impl BitAndAssign for RangeTable {
     fn bitand_assign(&mut self, rhs: Self) {
         for i in 0..self.table.len() {
             self.table[i] &= rhs.table[i];
+        }
+    }
+}
+
+impl BitOrAssign for RangeTable {
+    fn bitor_assign(&mut self, rhs: Self) {
+        for i in 0..self.table.len() {
+            self.table[i] |= rhs.table[i];
         }
     }
 }

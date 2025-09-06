@@ -2,7 +2,7 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from poker_human import Dataset, ActionHead, CEWithMask
+from poker_human import ActionDataset, ActionHead, CEWithMask
 
 
 def train_one_epoch(model, dataloader, optimizer, criterion, device):
@@ -44,16 +44,16 @@ def evaluate(model, dataloader, criterion, device):
 
 if __name__ == "__main__":
     db_path = "../../poker-app/phh_full.db"
-    limit = 100_000
-    out_model_path = "poker.pt"
+    limit = 10_000
+    out_model_path = "action.pt"
 
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    dataset = Dataset(db_path, limit=limit)
+    dataset = ActionDataset(db_path, limit=limit)
     dataloader = DataLoader(dataset, batch_size=512, shuffle=True, num_workers=4)
 
-    model = ActionHead(in_dim=dataset.in_dim, n_actions=dataset.n_actions).to(device)
+    model = ActionHead().to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
     criterion = CEWithMask()
 

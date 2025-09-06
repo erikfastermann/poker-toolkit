@@ -14,6 +14,9 @@ pub struct Score(u32);
 impl Score {
     pub const ZERO: Score = Score(0);
 
+    // TODO: Could use the true max score (royal flush).
+    pub const MAX: Score = Score(u32::MAX);
+
     fn from_ranking_cards(ranking: HandRanking, cards: Cards) -> Self {
         let hand_ranking = ranking.to_u16();
         debug_assert_eq!(hand_ranking & 0xfff, hand_ranking);
@@ -64,6 +67,8 @@ impl Score {
 
     pub fn to_hand_ranking(self) -> HandRanking {
         assert_ne!(self, Self::ZERO);
+        assert_ne!(self, Self::MAX);
+
         let n = u16::try_from((self.0 >> 20) & 0xfff).unwrap();
         HandRanking::from_u16(n).unwrap()
     }
@@ -375,8 +380,17 @@ impl Cards {
         self & !Self::of_rank(rank)
     }
 
+    pub fn is_empty(self) -> bool {
+        self == Self::EMPTY
+    }
+
     pub fn count(self) -> u8 {
         self.0.count_ones() as u8
+    }
+
+    pub fn overlaps(self, other: Self) -> bool {
+        let disjoint = (self & other).is_empty();
+        !disjoint
     }
 
     pub fn by_rank(self) -> CardsByRank {

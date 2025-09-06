@@ -1,20 +1,20 @@
 import torch
 
-from poker_human import ActionHead, Dataset
+from poker_human import ActionHead, ActionDataset
 
 
 if __name__ == "__main__":
     db_path = "../../poker-app/phh_full.db"
     limit = 10_000
-    model_path = "poker.pt"
+    model_path = "action.pt"
 
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    dataset = Dataset(db_path, limit=limit)
+    dataset = ActionDataset(db_path, limit=limit)
 
     checkpoint = torch.load(model_path, map_location=device)
-    model = ActionHead(in_dim=dataset.in_dim, n_actions=dataset.n_actions).to(device)
+    model = ActionHead().to(device)
     model.load_state_dict(checkpoint)
     model.eval()
 
