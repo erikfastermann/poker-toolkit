@@ -944,6 +944,7 @@ pub struct ActionProbabilities {
     bet_raise: [f32; TARGET_BET_RAISE_COUNT],
     all_in: f32,
     pot_with_call_for_bet_raise: Option<MilliBigBlind>,
+    raise_offset: u32,
     big_blind: u32,
     min_amount: u32,
     max_amount: u32,
@@ -957,9 +958,9 @@ impl fmt::Display for ActionProbabilities {
         for index in 0..TARGET_BET_RAISE_COUNT {
             writeln!(
                 f,
-                "bet/raise {} ({}) = {}",
+                "bet/raise {} ({}BB) = {}",
                 self.bet_raise_size_string(index),
-                self.bet_raise_size(index),
+                self.bet_raise_size(index) as f64 / 1000.0,
                 self.bet_raise(index)
             )?;
         }
@@ -975,7 +976,7 @@ impl ActionProbabilities {
 
         let probs: Vec<f32> = Python::with_gil(|py| {
             action_head
-                .call_method1(py, "predict", (action_input, legal_mask))?
+                .call_method1(py, "predict", (action_input, &legal_mask))?
                 .extract(py)
         })?;
 
@@ -992,6 +993,16 @@ impl ActionProbabilities {
             return Err("model actions not a valid probability distribution".into());
         }
 
+        for (index, b) in legal_mask.iter().copied().enumerate() {
+            if b != 0 && b != 1 {
+                return Err("action model legal mask entry is not zero or one".into());
+            }
+
+            if b == 0 && probs[index] != 0.0 {
+                return Err("action model has illegal action with non zero probability".into());
+            }
+        }
+
         let bet_raise_data =
             &probs[TARGET_BET_RAISE_INDEX..TARGET_BET_RAISE_INDEX + TARGET_BET_RAISE_COUNT];
 
@@ -1003,14 +1014,30 @@ impl ActionProbabilities {
         let pot_with_call = game.total_pot().checked_add(call_amount).unwrap();
         let pot_with_call = game.amount_to_milli_big_blinds_rounded(pot_with_call);
 
+        // TODO: Use amount here with AiAction raise amount.
         let min_amount = game
             .can_bet()
-            .or_else(|| game.can_raise().map(|(amount, _)| amount))
+            .or_else(|| game.can_raise().map(|(_, to)| to))
             .unwrap_or(0);
 
         let player = game.current_player().unwrap();
         let stack = game.current_stacks()[player];
-        let max_amount = stack.checked_sub(call_amount).unwrap();
+
+        // TODO: Use amount here with AiAction raise amount.
+        let max_amount = if game.can_raise().is_some() {
+            game.previous_street_stack().unwrap()
+        } else {
+            stack
+        };
+
+        // TODO: Probably should use raise amount in AiAction.
+        let raise_offset = if game.can_raise().is_some() && !can_open(game) {
+            game.invested_in_street(player)
+                .checked_add(call_amount)
+                .unwrap()
+        } else {
+            0
+        };
 
         Ok(Self {
             fold: probs[TARGET_FOLD_INDEX],
@@ -1022,6 +1049,7 @@ impl ActionProbabilities {
             } else {
                 Some(pot_with_call)
             },
+            raise_offset,
             big_blind: game.big_blind(),
             min_amount,
             max_amount,
@@ -1068,7 +1096,7 @@ impl ActionProbabilities {
         self.all_in
     }
 
-    pub fn choose(&self, rng: &mut impl Rng) -> AiAction {
+    pub fn choose(&self, rng: &mut impl Rng) -> (AiAction, String) {
         let weights = [self.fold, self.check_call, self.all_in]
             .into_iter()
             .chain(self.bet_raise);
@@ -1078,23 +1106,29 @@ impl ActionProbabilities {
 
         const BET_RAISE_END: usize = 3 + TARGET_BET_RAISE_COUNT;
 
-        match index {
+        let mut extra_info = String::new();
+
+        let action = match index {
             0 => AiAction::Fold,
             1 => AiAction::CheckCall,
             2 => AiAction::AllIn,
-            // TODO: Potential precision problems, also rounding with min/max.
             3..BET_RAISE_END => {
                 let index = index - 3;
                 let size = self.bet_raise_size(index);
 
                 let amount = milli_big_blind_to_amount_rounded(size, self.big_blind).unwrap();
+                let amount = amount.checked_add(self.raise_offset).unwrap();
                 let amount = cmp::max(amount, self.min_amount);
                 let amount = cmp::min(amount, self.max_amount);
+
+                extra_info = self.bet_raise_size_string(index);
 
                 AiAction::BetRaise(amount)
             }
             _ => unreachable!(),
-        }
+        };
+
+        (action, extra_info)
     }
 }
 

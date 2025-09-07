@@ -80,8 +80,15 @@ impl PlayerActionGenerator for HumanActionGenerator {
     )> {
         let probs = ActionProbabilities::predict(&self.action_head, game)?;
         writeln!(log, "{probs}")?;
+
         let mut rng = &mut thread_rng(); // TODO: Could use deterministic rng.
-        Ok((probs.choose(&mut rng), None, None))
+        let (action, extra_info) = probs.choose(&mut rng);
+
+        if !extra_info.is_empty() {
+            writeln!(log, "Bet/raise size: {extra_info}")?;
+        }
+
+        Ok((action, None, None))
     }
 
     fn custom_showdown(&self) -> bool {
