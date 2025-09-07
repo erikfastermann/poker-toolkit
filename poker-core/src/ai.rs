@@ -174,7 +174,15 @@ pub trait PlayerActionGenerator {
         &mut self,
         game: &Game,
         log: &mut String,
-    ) -> Result<(AiAction, RangeConfigEntry, Option<&[RangeTableWith<u16>]>)>;
+    ) -> Result<(
+        AiAction,
+        Option<RangeConfigEntry>,
+        Option<&[RangeTableWith<u16>]>,
+    )>;
+
+    fn custom_showdown(&self) -> bool {
+        false
+    }
 }
 
 pub struct AlwaysFold;
@@ -184,10 +192,14 @@ impl PlayerActionGenerator for AlwaysFold {
         &mut self,
         _game: &Game,
         _log: &mut String,
-    ) -> Result<(AiAction, RangeConfigEntry, Option<&[RangeTableWith<u16>]>)> {
+    ) -> Result<(
+        AiAction,
+        Option<RangeConfigEntry>,
+        Option<&[RangeTableWith<u16>]>,
+    )> {
         let total_range = RangeTable::FULL.to_frequencies(MAX_FREQUENCY);
         let config = RangeConfigEntry::distribute_action(total_range, RangeActionKind::Fold)?;
-        Ok((AiAction::Fold, config, None))
+        Ok((AiAction::Fold, Some(config), None))
     }
 }
 
@@ -198,11 +210,15 @@ impl PlayerActionGenerator for AlwaysCheckCall {
         &mut self,
         game: &Game,
         _log: &mut String,
-    ) -> Result<(AiAction, RangeConfigEntry, Option<&[RangeTableWith<u16>]>)> {
+    ) -> Result<(
+        AiAction,
+        Option<RangeConfigEntry>,
+        Option<&[RangeTableWith<u16>]>,
+    )> {
         let total_range = RangeTable::FULL.to_frequencies(MAX_FREQUENCY);
         let action = AiAction::CheckCall.to_range(game)?;
         let config = RangeConfigEntry::distribute_action(total_range, action)?;
-        Ok((AiAction::CheckCall, config, None))
+        Ok((AiAction::CheckCall, Some(config), None))
     }
 }
 
@@ -213,11 +229,15 @@ impl PlayerActionGenerator for AlwaysAllIn {
         &mut self,
         game: &Game,
         _log: &mut String,
-    ) -> Result<(AiAction, RangeConfigEntry, Option<&[RangeTableWith<u16>]>)> {
+    ) -> Result<(
+        AiAction,
+        Option<RangeConfigEntry>,
+        Option<&[RangeTableWith<u16>]>,
+    )> {
         let total_range = RangeTable::FULL.to_frequencies(MAX_FREQUENCY);
         let action = AiAction::AllIn.to_range(game)?;
         let config = RangeConfigEntry::distribute_action(total_range, action)?;
-        Ok((AiAction::AllIn, config, None))
+        Ok((AiAction::AllIn, Some(config), None))
     }
 }
 
@@ -260,13 +280,17 @@ impl PlayerActionGenerator for SimpleStrategy {
         &mut self,
         game: &Game,
         log: &mut String,
-    ) -> Result<(AiAction, RangeConfigEntry, Option<&[RangeTableWith<u16>]>)> {
+    ) -> Result<(
+        AiAction,
+        Option<RangeConfigEntry>,
+        Option<&[RangeTableWith<u16>]>,
+    )> {
         let range = self.player(game, log)?;
         let action = range.pick(&mut self.rng, game.current_hand().unwrap());
         self.current_ranges[game.current_player().unwrap()] = range.action_range(action).unwrap();
 
         let action = AiAction::from_range(action, game.big_blind())?;
-        Ok((action, range, Some(&self.current_ranges)))
+        Ok((action, Some(range), Some(&self.current_ranges)))
     }
 }
 

@@ -1,11 +1,13 @@
-use std::sync::Arc;
+use core::fmt;
+use std::{cmp, sync::Arc};
 
 use poker_core::{
+    ai::AiAction,
     card::Card,
     cards::{Cards, Score},
     db::{HandData, DB},
     equity::{total_combos_upper_bound, EquityTable},
-    game::{Action, Game, MilliBigBlind, Street},
+    game::{milli_big_blind_to_amount_rounded, Action, Game, MilliBigBlind, Street},
     hand::Hand,
     init::init,
     range::RangeTable,
@@ -14,7 +16,10 @@ use poker_core::{
     suite::Suite,
 };
 use pyo3::{exceptions::PyValueError, prelude::*};
-use rand::{rngs::SmallRng, seq::SliceRandom, Rng, SeedableRng};
+use rand::{
+    distributions::WeightedIndex, prelude::Distribution, rngs::SmallRng, seq::SliceRandom, Rng,
+    SeedableRng,
+};
 
 const DEBUG: bool = false;
 
@@ -45,16 +50,16 @@ struct Dataset {
 #[pymethods]
 impl Dataset {
     #[classattr]
-    const ACTION_INPUT_LEN: usize = Self::CURRENT_STACKS_INDEX + Self::STACKS_LEN;
+    const ACTION_INPUT_LEN: usize = ACTION_INPUT_LEN;
 
     #[classattr]
-    const SHOWDOWN_INPUT_LEN: usize = Self::ACTION_INPUT_LEN + Game::MAX_PLAYERS;
+    const SHOWDOWN_INPUT_LEN: usize = SHOWDOWN_INPUT_LEN;
 
     #[classattr]
-    const ACTION_TARGET_LEN: usize = 14;
+    const ACTION_TARGET_LEN: usize = ACTION_TARGET_LEN;
 
     #[classattr]
-    const SHOWDOWN_TARGET_LEN: usize = Hand::COUNT;
+    const SHOWDOWN_TARGET_LEN: usize = SHOWDOWN_TARGET_LEN;
 
     #[new]
     #[pyo3(signature = (db_path, limit=None))]
@@ -124,8 +129,8 @@ impl Dataset {
 
         assert!(game.previous());
 
-        let x = Self::encode_game(game);
-        let legal_mask = Self::encode_action_legal_mask(game);
+        let x = encode_action_input(game);
+        let legal_mask = encode_action_legal_mask(game);
 
         assert_eq!(legal_mask[target_index], 1);
 
@@ -144,8 +149,8 @@ impl Dataset {
 
         let game = &mut self.games[game_index].0;
 
-        let x = Self::encode_showdown_input(game);
-        let legal_mask = Self::encode_showdown_legal_mask(game);
+        let x = encode_showdown_input(game);
+        let legal_mask = encode_showdown_legal_mask(game);
         let target = self.encode_showdown_target(game_index);
 
         (x, legal_mask, target)
@@ -163,49 +168,6 @@ impl Dataset {
 }
 
 impl Dataset {
-    const CARD_LEN: usize = Rank::COUNT + Suite::COUNT;
-
-    const BOARD_INDEX: usize = 0;
-    const BOARD_LEN: usize = Self::CARD_LEN * Street::River.community_card_count();
-
-    const ACTION_POST_INDEX: usize = 0;
-    const ACTION_POST_DEAD_INDEX: usize = 1;
-    const ACTION_STRADDLE_INDEX: usize = 2;
-    const ACTION_FOLD_INDEX: usize = 3;
-    const ACTION_CHECK_CALL_INDEX: usize = 4;
-    const ACTION_BET_RAISE_INDEX: usize = 5;
-    const ACTION_KIND_LEN: usize = 6;
-
-    const ACTION_KIND_OFFSET: usize = 0;
-    const ACTION_PLAYER_OFFSET: usize = Self::ACTION_KIND_LEN;
-    const ACTION_PLAYER_LEN: usize = Game::MAX_PLAYERS;
-    const ACTION_AMOUNT_OFFSET: usize = Self::ACTION_PLAYER_OFFSET + Self::ACTION_PLAYER_LEN;
-    const ACTION_LEN: usize = Self::ACTION_AMOUNT_OFFSET + 1;
-
-    const ACTIONS_PER_STREET: usize = 30; // TODO: Probably too much.
-
-    const ACTIONS_INDEX: usize = Self::BOARD_INDEX + Self::BOARD_LEN;
-    const ACTIONS_LEN: usize = Self::ACTIONS_PER_STREET * Self::ACTION_LEN * Street::COUNT;
-
-    const STACKS_LEN: usize = Game::MAX_PLAYERS;
-    const STARTING_STACKS_INDEX: usize = Self::ACTIONS_INDEX + Self::ACTIONS_LEN;
-    const CURRENT_STACKS_INDEX: usize = Self::STARTING_STACKS_INDEX + Self::STACKS_LEN;
-
-    const FOLD_INDEX: usize = 0;
-    const CHECK_CALL_INDEX: usize = 1;
-    const BET_RAISE_INDEX: usize = 2;
-    const ALL_IN_INDEX: usize = 13;
-    const BET_RAISE_COUNT: usize = Self::ALL_IN_INDEX - Self::BET_RAISE_INDEX;
-
-    /// Last value includes all values afterwards.
-    const OPEN_SIZES: [MilliBigBlind; Self::BET_RAISE_COUNT] = [
-        2000, 2200, 2500, 3000, 3500, 4000, 4500, 5000, 7500, 10_000, 20_000,
-    ];
-
-    /// Last value includes all values afterwards.
-    const BET_RAISE_PERCENTAGES: [i64; Self::BET_RAISE_COUNT] =
-        [10, 25, 33, 50, 67, 80, 100, 125, 150, 200, 300];
-
     fn next_action_of_interest(game: &mut Game) -> bool {
         // Assumes finalized game.
 
@@ -354,113 +316,6 @@ impl Dataset {
         panic!("too many actions in single game");
     }
 
-    fn encode_action_legal_mask(game: &Game) -> Vec<i8> {
-        assert!(game.small_blind() <= game.big_blind());
-
-        let player = game.current_player().unwrap();
-
-        let stack = game.current_stacks()[player];
-
-        let can_call = game.can_call();
-        assert!(game.can_check() || can_call.is_some());
-
-        let min_amount = game
-            .can_bet()
-            .or_else(|| game.can_raise().map(|(amount, _)| amount));
-
-        let pot = game.total_pot();
-        let call_amount = can_call.unwrap_or(0);
-
-        let can_open = Self::can_open(game);
-
-        if DEBUG {
-            dbg!(
-                game.big_blind(),
-                game.actions(),
-                pot,
-                can_open,
-                min_amount,
-                stack
-            );
-        }
-
-        // Fold, Check/Call is always allowed.
-        let mut legal_mask = vec![1; Self::ACTION_TARGET_LEN];
-
-        if min_amount.is_none() {
-            if DEBUG {
-                eprintln!("legal: all-in not allowed");
-            }
-
-            legal_mask[Self::ALL_IN_INDEX] = 0;
-        }
-
-        if can_open {
-            let previous_street_stack = game.previous_street_stacks()[player];
-            let previous_street_stack_bb =
-                game.amount_to_milli_big_blinds_rounded(previous_street_stack);
-
-            let open_class = Self::class_index(&Self::OPEN_SIZES, previous_street_stack_bb);
-
-            if DEBUG {
-                eprintln!("legal: max open is {}", Self::OPEN_SIZES[open_class]);
-            }
-
-            for index in (open_class + 1)..Self::BET_RAISE_COUNT {
-                legal_mask[Self::BET_RAISE_INDEX + index] = 0;
-            }
-
-            if min_amount.is_none() {
-                legal_mask[Self::BET_RAISE_INDEX] = 0;
-            }
-        } else if let Some(min_amount) = min_amount {
-            // This allows all-in and a specific bet size to overlap.
-
-            let min_percent_pot = Self::percent_pot(pot, call_amount, min_amount);
-            let max_amount = stack.checked_sub(call_amount).unwrap();
-            let max_percent_pot = Self::percent_pot(pot, call_amount, max_amount);
-
-            let min_class =
-                Self::class_index(&Self::BET_RAISE_PERCENTAGES, i64::from(min_percent_pot));
-            let max_class =
-                Self::class_index(&Self::BET_RAISE_PERCENTAGES, i64::from(max_percent_pot));
-
-            if DEBUG {
-                eprintln!(
-                    "legal: bet/raise: min={}% max={}%",
-                    Self::BET_RAISE_PERCENTAGES[min_class],
-                    Self::BET_RAISE_PERCENTAGES[max_class]
-                );
-            }
-
-            for index in 0..min_class {
-                legal_mask[Self::BET_RAISE_INDEX + index] = 0;
-            }
-
-            for index in (max_class + 1)..Self::BET_RAISE_COUNT {
-                legal_mask[Self::BET_RAISE_INDEX + index] = 0;
-            }
-        } else {
-            if DEBUG {
-                eprintln!("legal: no bet/raise allowed");
-            }
-
-            for index in 0..Self::BET_RAISE_COUNT {
-                legal_mask[Self::BET_RAISE_INDEX + index] = 0;
-            }
-        }
-
-        if min_amount.is_none() {
-            assert!(legal_mask
-                [Self::BET_RAISE_INDEX..Self::BET_RAISE_INDEX + Self::BET_RAISE_COUNT]
-                .iter()
-                .copied()
-                .all(|flag| flag == 0))
-        }
-
-        legal_mask
-    }
-
     fn encode_action_target_index(game: &mut Game) -> usize {
         assert!(game.small_blind() <= game.big_blind());
 
@@ -476,13 +331,13 @@ impl Dataset {
         let pot = game.total_pot();
         let call_amount = can_call.unwrap_or(0);
 
-        let can_open = Self::can_open(game);
+        let can_open = can_open(game);
 
         assert!(game.next());
 
         let target_action_index = match current_action {
-            Action::Fold(_) => Self::FOLD_INDEX,
-            Action::Check(_) | Action::Call { .. } => Self::CHECK_CALL_INDEX,
+            Action::Fold(_) => TARGET_FOLD_INDEX,
+            Action::Check(_) | Action::Call { .. } => TARGET_CHECK_CALL_INDEX,
             Action::Bet { amount, .. } | Action::Raise { amount, .. } => {
                 let is_all_in = game.current_stacks()[usize::from(player)] == 0;
 
@@ -491,37 +346,34 @@ impl Dataset {
                         eprintln!("target: all-in");
                     }
 
-                    Self::ALL_IN_INDEX
+                    TARGET_ALL_IN_INDEX
                 } else if can_open {
                     let to = match current_action {
                         Action::Raise { to, .. } => to,
                         _ => unreachable!(),
                     };
 
-                    let class_index = Self::class_index(
-                        &Self::OPEN_SIZES,
-                        game.amount_to_milli_big_blinds_rounded(to),
-                    );
+                    let class_index =
+                        class_index(&OPEN_SIZES, game.amount_to_milli_big_blinds_rounded(to));
 
                     if DEBUG {
-                        eprintln!("target: open raise to {}", Self::OPEN_SIZES[class_index]);
+                        eprintln!("target: open raise to {}", OPEN_SIZES[class_index]);
                     }
 
-                    Self::BET_RAISE_INDEX + class_index
+                    TARGET_BET_RAISE_INDEX + class_index
                 } else {
-                    let percent_pot = Self::percent_pot(pot, call_amount, amount);
+                    let percent_pot = percent_pot(pot, call_amount, amount);
 
-                    let class_index =
-                        Self::class_index(&Self::BET_RAISE_PERCENTAGES, i64::from(percent_pot));
+                    let class_index = class_index(&BET_RAISE_PERCENTAGES, i64::from(percent_pot));
 
                     if DEBUG {
                         eprintln!(
                             "target: bet/raise to {}",
-                            Self::BET_RAISE_PERCENTAGES[class_index]
+                            BET_RAISE_PERCENTAGES[class_index]
                         );
                     }
 
-                    Self::BET_RAISE_INDEX + class_index
+                    TARGET_BET_RAISE_INDEX + class_index
                 }
             }
             _ => unreachable!(),
@@ -534,234 +386,6 @@ impl Dataset {
         let mut target = vec![0.0; Self::ACTION_TARGET_LEN];
         target[index] = 1.0;
         target
-    }
-
-    fn can_open(game: &Game) -> bool {
-        game.board().street() == Street::PreFlop
-            && game
-                .actions()
-                .iter()
-                .all(|action| !matches!(action, Action::Raise { .. }))
-    }
-
-    fn class_index(classes: &[i64], value: i64) -> usize {
-        assert!(!classes.is_empty());
-        debug_assert!(classes.is_sorted());
-
-        match classes.binary_search(&value) {
-            Ok(index) => index,
-            Err(index) => {
-                if index == 0 {
-                    index
-                } else if index == classes.len() {
-                    index - 1
-                } else {
-                    let bottom = classes[index - 1];
-                    let top = classes[index];
-
-                    let mid = bottom + ((top - bottom) / 2);
-
-                    if value <= mid {
-                        index - 1
-                    } else {
-                        index
-                    }
-                }
-            }
-        }
-    }
-
-    fn encode_game(game: &Game) -> Vec<f32> {
-        assert_eq!(game.runouts().len(), 1);
-
-        let mut out = vec![0.0; Self::ACTION_INPUT_LEN];
-
-        let players = (game.button_index()..game.player_count()).chain(0..game.button_index());
-
-        let starting_stacks = game.starting_stacks();
-
-        for (index, player) in players.clone().enumerate() {
-            // We accept the potential loss of precision here.
-            out[Self::STARTING_STACKS_INDEX + index] =
-                starting_stacks[player] as f32 / game.big_blind() as f32;
-        }
-
-        let current_stacks = game.current_stacks();
-
-        for (index, player) in players.enumerate() {
-            // We accept the potential loss of precision here.
-            out[Self::CURRENT_STACKS_INDEX + index] =
-                current_stacks[player] as f32 / game.big_blind() as f32;
-        }
-
-        let board = game.board();
-
-        if DEBUG {
-            eprintln!("board: {:?}", board.cards());
-        }
-
-        let mut cards = Vec::from(board.cards());
-        if board.street() >= Street::Flop {
-            cards[..Street::Flop.community_card_count()].sort_by(|a, b| a.cmp_by_rank(*b));
-        }
-
-        for (index, card) in cards.iter().copied().enumerate() {
-            let offset = Self::BOARD_INDEX + index * Self::CARD_LEN;
-            Self::encode_card(card, &mut out[offset..offset + Self::CARD_LEN]);
-        }
-
-        Self::encode_actions(
-            game,
-            &mut out[Self::ACTIONS_INDEX..Self::ACTIONS_INDEX + Self::ACTIONS_LEN],
-        );
-
-        out
-    }
-
-    fn encode_actions(game: &Game, out: &mut [f32]) {
-        assert_eq!(out.len(), Self::ACTIONS_LEN);
-
-        let mut street = Street::PreFlop;
-        let mut per_street_index = 0usize;
-
-        for action in game.actions().iter().copied() {
-            let (action_kind, player, amount) = match action {
-                Action::Post {
-                    player,
-                    amount,
-                    dead,
-                } if dead => (Self::ACTION_POST_DEAD_INDEX, player, amount),
-                Action::Post { player, amount, .. } => (Self::ACTION_POST_INDEX, player, amount),
-                Action::Straddle { player, amount } => {
-                    (Self::ACTION_STRADDLE_INDEX, player, amount)
-                }
-                Action::Fold(player) => (Self::ACTION_FOLD_INDEX, player, 0),
-                Action::Check(player) => (Self::ACTION_CHECK_CALL_INDEX, player, 0),
-                Action::Call { player, amount } => (Self::ACTION_CHECK_CALL_INDEX, player, amount),
-                Action::Bet { player, amount } => (Self::ACTION_BET_RAISE_INDEX, player, amount),
-                Action::Raise { player, amount, .. } => {
-                    (Self::ACTION_BET_RAISE_INDEX, player, amount)
-                }
-                Action::Flop(_) => {
-                    street = Street::Flop;
-                    per_street_index = 0;
-                    continue;
-                }
-                Action::Turn(_) => {
-                    street = Street::Turn;
-                    per_street_index = 0;
-                    continue;
-                }
-                Action::River(_) => {
-                    street = Street::River;
-                    per_street_index = 0;
-                    continue;
-                }
-                _ => continue,
-            };
-
-            let player = Game::player_to_button_offset(
-                game.player_count(),
-                game.button_index(),
-                usize::from(player),
-            )
-            .unwrap();
-
-            let street_index = street.to_usize() * Self::ACTION_LEN * Self::ACTIONS_PER_STREET;
-
-            assert!(per_street_index < Self::ACTIONS_PER_STREET);
-            let index = street_index + per_street_index * Self::ACTION_LEN;
-
-            let offset = index + Self::ACTION_KIND_OFFSET;
-            Self::one_hot(
-                action_kind,
-                &mut out[offset..offset + Self::ACTION_KIND_LEN],
-            );
-
-            let offset = index + Self::ACTION_PLAYER_OFFSET;
-            Self::one_hot(player, &mut out[offset..offset + Self::ACTION_PLAYER_LEN]);
-
-            // We accept the potential loss of precision here.
-            out[index + Self::ACTION_AMOUNT_OFFSET] = amount as f32 / game.big_blind() as f32;
-
-            per_street_index += 1;
-        }
-    }
-
-    fn encode_card(card: Card, out: &mut [f32]) {
-        assert_eq!(out.len(), Self::CARD_LEN);
-
-        Self::one_hot(card.rank().to_usize(), &mut out[..Rank::COUNT]);
-        Self::one_hot(card.suite().to_usize(), &mut out[Rank::COUNT..]);
-    }
-
-    fn one_hot(index: usize, out: &mut [f32]) {
-        assert!(index < out.len());
-
-        for (i, v) in out.iter_mut().enumerate() {
-            *v = if i == index { 1.0 } else { 0.0 };
-        }
-    }
-
-    fn percent_pot(pot: u32, call_amount: u32, amount: u32) -> u32 {
-        // We use the calculation for bets/raises, giving the percentage of the pot.
-        // This is typically used to give the caller specific pot odds.
-        // Often poker software implements them with configurable percent buttons,
-        // although sometimes the calculation is different.
-        // But I think this is the best solution to abstract the sizes.
-
-        assert_ne!(pot, 0);
-        let pot_with_call = pot.checked_add(call_amount).unwrap();
-        let percent = f64::from(amount) / f64::from(pot_with_call);
-        let percent = (percent * 100.0).round();
-        assert!(percent >= 0.0 && percent <= f64::from(u32::MAX));
-        let percent = percent as u32;
-
-        percent
-    }
-
-    fn encode_showdown_input(game: &Game) -> Vec<f32> {
-        let action = game.actions().last().copied().unwrap();
-
-        let hero_player = match action {
-            Action::Shows { player, .. } | Action::MucksOrUnknown(player) => player,
-            _ => unreachable!(),
-        };
-
-        let player_button_offset = Game::player_to_button_offset(
-            game.player_count(),
-            game.button_index(),
-            usize::from(hero_player),
-        )
-        .unwrap();
-
-        let mut x = Self::encode_game(game);
-
-        let mut player_encoded = [0.0; Game::MAX_PLAYERS];
-        Self::one_hot(player_button_offset, &mut player_encoded);
-
-        x.extend(player_encoded);
-        assert_eq!(x.len(), Self::SHOWDOWN_INPUT_LEN);
-
-        x
-    }
-
-    fn encode_showdown_legal_mask(game: &Game) -> Vec<i8> {
-        let community_cards = game.board().cards_set();
-
-        let mut legal_mask = vec![0i8; Self::SHOWDOWN_TARGET_LEN];
-
-        for hand in Hand::all() {
-            let index = hand.to_index();
-
-            if community_cards.overlaps(hand.to_cards()) {
-                legal_mask[index] = 0;
-            } else {
-                legal_mask[index] = 1;
-            }
-        }
-
-        legal_mask
     }
 
     fn encode_showdown_target(&mut self, game_index: usize) -> Vec<f32> {
@@ -914,6 +538,563 @@ impl Dataset {
         }
 
         target
+    }
+}
+
+const ACTION_INPUT_LEN: usize = CURRENT_STACKS_INDEX + STACKS_LEN;
+
+const SHOWDOWN_INPUT_LEN: usize = ACTION_INPUT_LEN + Game::MAX_PLAYERS;
+
+const ACTION_TARGET_LEN: usize = 14;
+
+const SHOWDOWN_TARGET_LEN: usize = Hand::COUNT;
+
+const CARD_LEN: usize = Rank::COUNT + Suite::COUNT;
+
+const BOARD_INDEX: usize = 0;
+const BOARD_LEN: usize = CARD_LEN * Street::River.community_card_count();
+
+const ACTION_POST_INDEX: usize = 0;
+const ACTION_POST_DEAD_INDEX: usize = 1;
+const ACTION_STRADDLE_INDEX: usize = 2;
+const ACTION_FOLD_INDEX: usize = 3;
+const ACTION_CHECK_CALL_INDEX: usize = 4;
+const ACTION_BET_RAISE_INDEX: usize = 5;
+const ACTION_KIND_LEN: usize = 6;
+
+const ACTION_KIND_OFFSET: usize = 0;
+const ACTION_PLAYER_OFFSET: usize = ACTION_KIND_LEN;
+const ACTION_PLAYER_LEN: usize = Game::MAX_PLAYERS;
+const ACTION_AMOUNT_OFFSET: usize = ACTION_PLAYER_OFFSET + ACTION_PLAYER_LEN;
+const ACTION_LEN: usize = ACTION_AMOUNT_OFFSET + 1;
+
+const ACTIONS_PER_STREET: usize = 30; // TODO: Probably too much.
+
+const ACTIONS_INDEX: usize = BOARD_INDEX + BOARD_LEN;
+const ACTIONS_LEN: usize = ACTIONS_PER_STREET * ACTION_LEN * Street::COUNT;
+
+const STACKS_LEN: usize = Game::MAX_PLAYERS;
+const STARTING_STACKS_INDEX: usize = ACTIONS_INDEX + ACTIONS_LEN;
+const CURRENT_STACKS_INDEX: usize = STARTING_STACKS_INDEX + STACKS_LEN;
+
+const TARGET_FOLD_INDEX: usize = 0;
+const TARGET_CHECK_CALL_INDEX: usize = 1;
+const TARGET_BET_RAISE_INDEX: usize = 2;
+const TARGET_ALL_IN_INDEX: usize = 13;
+const TARGET_BET_RAISE_COUNT: usize = TARGET_ALL_IN_INDEX - TARGET_BET_RAISE_INDEX;
+
+/// Last value includes all values afterwards.
+const OPEN_SIZES: [MilliBigBlind; TARGET_BET_RAISE_COUNT] = [
+    2000, 2200, 2500, 3000, 3500, 4000, 4500, 5000, 7500, 10_000, 20_000,
+];
+
+/// Last value includes all values afterwards.
+const BET_RAISE_PERCENTAGES: [i64; TARGET_BET_RAISE_COUNT] =
+    [10, 25, 33, 50, 67, 80, 100, 125, 150, 200, 300];
+
+pub fn encode_action_input(game: &Game) -> Vec<f32> {
+    assert_eq!(game.runouts().len(), 1);
+
+    let mut out = vec![0.0; ACTION_INPUT_LEN];
+
+    let players = (game.button_index()..game.player_count()).chain(0..game.button_index());
+
+    let starting_stacks = game.starting_stacks();
+
+    for (index, player) in players.clone().enumerate() {
+        // We accept the potential loss of precision here.
+        out[STARTING_STACKS_INDEX + index] =
+            starting_stacks[player] as f32 / game.big_blind() as f32;
+    }
+
+    let current_stacks = game.current_stacks();
+
+    for (index, player) in players.enumerate() {
+        // We accept the potential loss of precision here.
+        out[CURRENT_STACKS_INDEX + index] = current_stacks[player] as f32 / game.big_blind() as f32;
+    }
+
+    let board = game.board();
+
+    if DEBUG {
+        eprintln!("board: {:?}", board.cards());
+    }
+
+    let mut cards = Vec::from(board.cards());
+    if board.street() >= Street::Flop {
+        cards[..Street::Flop.community_card_count()].sort_by(|a, b| a.cmp_by_rank(*b));
+    }
+
+    for (index, card) in cards.iter().copied().enumerate() {
+        let offset = BOARD_INDEX + index * CARD_LEN;
+        encode_card(card, &mut out[offset..offset + CARD_LEN]);
+    }
+
+    encode_actions(game, &mut out[ACTIONS_INDEX..ACTIONS_INDEX + ACTIONS_LEN]);
+
+    out
+}
+
+fn encode_actions(game: &Game, out: &mut [f32]) {
+    assert_eq!(out.len(), ACTIONS_LEN);
+
+    let mut street = Street::PreFlop;
+    let mut per_street_index = 0usize;
+
+    for action in game.actions().iter().copied() {
+        let (action_kind, player, amount) = match action {
+            Action::Post {
+                player,
+                amount,
+                dead,
+            } if dead => (ACTION_POST_DEAD_INDEX, player, amount),
+            Action::Post { player, amount, .. } => (ACTION_POST_INDEX, player, amount),
+            Action::Straddle { player, amount } => (ACTION_STRADDLE_INDEX, player, amount),
+            Action::Fold(player) => (ACTION_FOLD_INDEX, player, 0),
+            Action::Check(player) => (ACTION_CHECK_CALL_INDEX, player, 0),
+            Action::Call { player, amount } => (ACTION_CHECK_CALL_INDEX, player, amount),
+            Action::Bet { player, amount } => (ACTION_BET_RAISE_INDEX, player, amount),
+            Action::Raise { player, amount, .. } => (ACTION_BET_RAISE_INDEX, player, amount),
+            Action::Flop(_) => {
+                street = Street::Flop;
+                per_street_index = 0;
+                continue;
+            }
+            Action::Turn(_) => {
+                street = Street::Turn;
+                per_street_index = 0;
+                continue;
+            }
+            Action::River(_) => {
+                street = Street::River;
+                per_street_index = 0;
+                continue;
+            }
+            _ => continue,
+        };
+
+        let player = Game::player_to_button_offset(
+            game.player_count(),
+            game.button_index(),
+            usize::from(player),
+        )
+        .unwrap();
+
+        let street_index = street.to_usize() * ACTION_LEN * ACTIONS_PER_STREET;
+
+        assert!(per_street_index < ACTIONS_PER_STREET);
+        let index = street_index + per_street_index * ACTION_LEN;
+
+        let offset = index + ACTION_KIND_OFFSET;
+        one_hot(action_kind, &mut out[offset..offset + ACTION_KIND_LEN]);
+
+        let offset = index + ACTION_PLAYER_OFFSET;
+        one_hot(player, &mut out[offset..offset + ACTION_PLAYER_LEN]);
+
+        // We accept the potential loss of precision here.
+        out[index + ACTION_AMOUNT_OFFSET] = amount as f32 / game.big_blind() as f32;
+
+        per_street_index += 1;
+    }
+}
+
+pub fn encode_action_legal_mask(game: &Game) -> Vec<i8> {
+    assert!(game.small_blind() <= game.big_blind());
+
+    let player = game.current_player().unwrap();
+
+    let stack = game.current_stacks()[player];
+
+    let can_call = game.can_call();
+    assert!(game.can_check() || can_call.is_some());
+
+    let min_amount = game
+        .can_bet()
+        .or_else(|| game.can_raise().map(|(amount, _)| amount));
+
+    let pot = game.total_pot();
+    let call_amount = can_call.unwrap_or(0);
+
+    let can_open = can_open(game);
+
+    if DEBUG {
+        dbg!(
+            game.big_blind(),
+            game.actions(),
+            pot,
+            can_open,
+            min_amount,
+            stack
+        );
+    }
+
+    // Fold, Check/Call is always allowed.
+    let mut legal_mask = vec![1; ACTION_TARGET_LEN];
+
+    if min_amount.is_none() {
+        if DEBUG {
+            eprintln!("legal: all-in not allowed");
+        }
+
+        legal_mask[TARGET_ALL_IN_INDEX] = 0;
+    }
+
+    if can_open {
+        let previous_street_stack = game.previous_street_stacks()[player];
+        let previous_street_stack_bb =
+            game.amount_to_milli_big_blinds_rounded(previous_street_stack);
+
+        let open_class = class_index(&OPEN_SIZES, previous_street_stack_bb);
+
+        if DEBUG {
+            eprintln!("legal: max open is {}", OPEN_SIZES[open_class]);
+        }
+
+        for index in (open_class + 1)..TARGET_BET_RAISE_COUNT {
+            legal_mask[TARGET_BET_RAISE_INDEX + index] = 0;
+        }
+
+        if min_amount.is_none() {
+            legal_mask[TARGET_BET_RAISE_INDEX] = 0;
+        }
+    } else if let Some(min_amount) = min_amount {
+        // This allows all-in and a specific bet size to overlap.
+
+        let min_percent_pot = percent_pot(pot, call_amount, min_amount);
+        let max_amount = stack.checked_sub(call_amount).unwrap();
+        let max_percent_pot = percent_pot(pot, call_amount, max_amount);
+
+        let min_class = class_index(&BET_RAISE_PERCENTAGES, i64::from(min_percent_pot));
+        let max_class = class_index(&BET_RAISE_PERCENTAGES, i64::from(max_percent_pot));
+
+        if DEBUG {
+            eprintln!(
+                "legal: bet/raise: min={}% max={}%",
+                BET_RAISE_PERCENTAGES[min_class], BET_RAISE_PERCENTAGES[max_class]
+            );
+        }
+
+        for index in 0..min_class {
+            legal_mask[TARGET_BET_RAISE_INDEX + index] = 0;
+        }
+
+        for index in (max_class + 1)..TARGET_BET_RAISE_COUNT {
+            legal_mask[TARGET_BET_RAISE_INDEX + index] = 0;
+        }
+    } else {
+        if DEBUG {
+            eprintln!("legal: no bet/raise allowed");
+        }
+
+        for index in 0..TARGET_BET_RAISE_COUNT {
+            legal_mask[TARGET_BET_RAISE_INDEX + index] = 0;
+        }
+    }
+
+    if min_amount.is_none() {
+        assert!(
+            legal_mask[TARGET_BET_RAISE_INDEX..TARGET_BET_RAISE_INDEX + TARGET_BET_RAISE_COUNT]
+                .iter()
+                .copied()
+                .all(|flag| flag == 0)
+        )
+    }
+
+    legal_mask
+}
+
+pub fn encode_showdown_input(game: &Game) -> Vec<f32> {
+    let action = game.actions().last().copied().unwrap();
+
+    let hero_player = match action {
+        Action::Shows { player, .. } | Action::MucksOrUnknown(player) => player,
+        _ => unreachable!(),
+    };
+
+    let player_button_offset = Game::player_to_button_offset(
+        game.player_count(),
+        game.button_index(),
+        usize::from(hero_player),
+    )
+    .unwrap();
+
+    let mut x = encode_action_input(game);
+
+    let mut player_encoded = [0.0; Game::MAX_PLAYERS];
+    one_hot(player_button_offset, &mut player_encoded);
+
+    x.extend(player_encoded);
+    assert_eq!(x.len(), SHOWDOWN_INPUT_LEN);
+
+    x
+}
+
+pub fn encode_showdown_legal_mask(game: &Game) -> Vec<i8> {
+    let community_cards = game.board().cards_set();
+
+    let mut legal_mask = vec![0i8; SHOWDOWN_TARGET_LEN];
+
+    for hand in Hand::all() {
+        let index = hand.to_index();
+
+        if community_cards.overlaps(hand.to_cards()) {
+            legal_mask[index] = 0;
+        } else {
+            legal_mask[index] = 1;
+        }
+    }
+
+    legal_mask
+}
+
+fn encode_card(card: Card, out: &mut [f32]) {
+    assert_eq!(out.len(), CARD_LEN);
+
+    one_hot(card.rank().to_usize(), &mut out[..Rank::COUNT]);
+    one_hot(card.suite().to_usize(), &mut out[Rank::COUNT..]);
+}
+
+fn one_hot(index: usize, out: &mut [f32]) {
+    assert!(index < out.len());
+
+    for (i, v) in out.iter_mut().enumerate() {
+        *v = if i == index { 1.0 } else { 0.0 };
+    }
+}
+
+fn can_open(game: &Game) -> bool {
+    game.board().street() == Street::PreFlop
+        && game
+            .actions()
+            .iter()
+            .all(|action| !matches!(action, Action::Raise { .. }))
+}
+
+fn class_index(classes: &[i64], value: i64) -> usize {
+    assert!(!classes.is_empty());
+    debug_assert!(classes.is_sorted());
+
+    match classes.binary_search(&value) {
+        Ok(index) => index,
+        Err(index) => {
+            if index == 0 {
+                index
+            } else if index == classes.len() {
+                index - 1
+            } else {
+                let bottom = classes[index - 1];
+                let top = classes[index];
+
+                let mid = bottom + ((top - bottom) / 2);
+
+                if value <= mid {
+                    index - 1
+                } else {
+                    index
+                }
+            }
+        }
+    }
+}
+
+fn percent_pot(pot: u32, call_amount: u32, amount: u32) -> u32 {
+    // We use the calculation for bets/raises, giving the percentage of the pot.
+    // This is typically used to give the caller specific pot odds.
+    // Often poker software implements them with configurable percent buttons,
+    // although sometimes the calculation is different.
+    // But I think this is the best solution to abstract the sizes.
+
+    assert_ne!(pot, 0);
+    let pot_with_call = pot.checked_add(call_amount).unwrap();
+    let percent = f64::from(amount) / f64::from(pot_with_call);
+    let percent = (percent * 100.0).round();
+    assert!(percent >= 0.0 && percent <= f64::from(u32::MAX));
+    let percent = percent as u32;
+
+    percent
+}
+
+fn percent_pot_to_amount(pot_with_call: MilliBigBlind, percent: i64) -> MilliBigBlind {
+    assert!(percent >= 0);
+
+    // Wee accept the precision loss here.
+    let amount = ((percent as f64) / 100.0) * pot_with_call as f64;
+    amount.round() as MilliBigBlind
+}
+
+pub type ActionHead = Py<PyAny>;
+
+pub fn new_action_head(model_path: &str) -> Result<Py<PyAny>> {
+    Python::with_gil(|py| {
+        // TODO: This is circular and somewhat ugly.
+        let poker_human = PyModule::import(py, "poker_human")?;
+
+        let action_head = poker_human
+            .getattr("ActionHead")?
+            .call_method1("for_predict", (model_path,))?
+            .unbind();
+
+        Ok(action_head)
+    })
+}
+
+pub struct ActionProbabilities {
+    fold: f32,
+    check_call: f32,
+    bet_raise: [f32; TARGET_BET_RAISE_COUNT],
+    all_in: f32,
+    pot_with_call_for_bet_raise: Option<MilliBigBlind>,
+    big_blind: u32,
+    min_amount: u32,
+    max_amount: u32,
+}
+
+impl fmt::Display for ActionProbabilities {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "fold = {}", self.fold)?;
+        writeln!(f, "check/call = {}", self.check_call)?;
+
+        for index in 0..TARGET_BET_RAISE_COUNT {
+            writeln!(
+                f,
+                "bet/raise {} ({}) = {}",
+                self.bet_raise_size_string(index),
+                self.bet_raise_size(index),
+                self.bet_raise(index)
+            )?;
+        }
+
+        writeln!(f, "all_in = {}", self.all_in)
+    }
+}
+
+impl ActionProbabilities {
+    pub fn predict(action_head: &ActionHead, game: &Game) -> Result<ActionProbabilities> {
+        let action_input = encode_action_input(game);
+        let legal_mask = encode_action_legal_mask(game);
+
+        let probs: Vec<f32> = Python::with_gil(|py| {
+            action_head
+                .call_method1(py, "predict", (action_input, legal_mask))?
+                .extract(py)
+        })?;
+
+        if probs.len() != ACTION_TARGET_LEN {
+            return Err("model actions output has bad len".into());
+        }
+
+        let between_zero_and_one = probs.iter().all(|p| *p >= 0.0 && *p <= 1.0);
+
+        let probs_sum: f32 = probs.iter().sum();
+        let sum_to_one = (1.0 - probs_sum).abs() < 0.02;
+
+        if !between_zero_and_one || !sum_to_one {
+            return Err("model actions not a valid probability distribution".into());
+        }
+
+        let bet_raise_data =
+            &probs[TARGET_BET_RAISE_INDEX..TARGET_BET_RAISE_INDEX + TARGET_BET_RAISE_COUNT];
+
+        let mut bet_raise = [0.0f32; TARGET_BET_RAISE_COUNT];
+        bet_raise.copy_from_slice(bet_raise_data);
+
+        let call_amount = game.can_call().unwrap_or(0);
+
+        let pot_with_call = game.total_pot().checked_add(call_amount).unwrap();
+        let pot_with_call = game.amount_to_milli_big_blinds_rounded(pot_with_call);
+
+        let min_amount = game
+            .can_bet()
+            .or_else(|| game.can_raise().map(|(amount, _)| amount))
+            .unwrap_or(0);
+
+        let player = game.current_player().unwrap();
+        let stack = game.current_stacks()[player];
+        let max_amount = stack.checked_sub(call_amount).unwrap();
+
+        Ok(Self {
+            fold: probs[TARGET_FOLD_INDEX],
+            check_call: probs[TARGET_CHECK_CALL_INDEX],
+            bet_raise,
+            all_in: probs[TARGET_ALL_IN_INDEX],
+            pot_with_call_for_bet_raise: if can_open(game) {
+                None
+            } else {
+                Some(pot_with_call)
+            },
+            big_blind: game.big_blind(),
+            min_amount,
+            max_amount,
+        })
+    }
+
+    pub fn fold(&self) -> f32 {
+        self.fold
+    }
+
+    pub fn check_call(&self) -> f32 {
+        self.check_call
+    }
+
+    pub fn can_open(&self) -> bool {
+        self.pot_with_call_for_bet_raise.is_none()
+    }
+
+    pub fn bet_raise(&self, index: usize) -> f32 {
+        assert!(index < TARGET_BET_RAISE_COUNT);
+        self.bet_raise[index]
+    }
+
+    pub fn bet_raise_size(&self, index: usize) -> MilliBigBlind {
+        assert!(index < TARGET_BET_RAISE_COUNT);
+
+        if let Some(pot_with_call) = self.pot_with_call_for_bet_raise {
+            let percent = BET_RAISE_PERCENTAGES[index];
+            percent_pot_to_amount(pot_with_call, percent)
+        } else {
+            OPEN_SIZES[index]
+        }
+    }
+
+    pub fn bet_raise_size_string(&self, index: usize) -> String {
+        if self.can_open() {
+            format!("{}BB", OPEN_SIZES[index] as f64 / 1000.0)
+        } else {
+            format!("{}%", BET_RAISE_PERCENTAGES[index])
+        }
+    }
+
+    pub fn all_in(&self) -> f32 {
+        self.all_in
+    }
+
+    pub fn choose(&self, rng: &mut impl Rng) -> AiAction {
+        let weights = [self.fold, self.check_call, self.all_in]
+            .into_iter()
+            .chain(self.bet_raise);
+
+        let weights = WeightedIndex::new(weights).unwrap();
+        let index = weights.sample(rng);
+
+        const BET_RAISE_END: usize = 3 + TARGET_BET_RAISE_COUNT;
+
+        match index {
+            0 => AiAction::Fold,
+            1 => AiAction::CheckCall,
+            2 => AiAction::AllIn,
+            // TODO: Potential precision problems, also rounding with min/max.
+            3..BET_RAISE_END => {
+                let index = index - 3;
+                let size = self.bet_raise_size(index);
+
+                let amount = milli_big_blind_to_amount_rounded(size, self.big_blind).unwrap();
+                let amount = cmp::max(amount, self.min_amount);
+                let amount = cmp::min(amount, self.max_amount);
+
+                AiAction::BetRaise(amount)
+            }
+            _ => unreachable!(),
+        }
     }
 }
 

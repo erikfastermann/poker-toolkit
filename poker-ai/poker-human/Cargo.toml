@@ -5,9 +5,17 @@ edition = "2021"
 
 [lib]
 name = "poker_human"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "poker-human-cli"
+path = "src/main.rs"
 
 [dependencies]
-pyo3 = "0.25.0"
 poker-core = { path = "../../poker-core" }
+poker-gui = { path = "../../poker-gui" }
+pyo3 = { version = "0.25.0", features = ["auto-initialize"] }
 rand = { workspace = true }
+env_logger = { workspace = true }
+eframe = { workspace = true }
+egui_extras = { workspace = true }

@@ -1,4 +1,9 @@
-use std::{collections::HashMap, fmt::Write, fs, mem, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Write,
+    fs, iter, mem,
+    sync::Arc,
+};
 
 use eframe::egui::{
     Align, Align2, Button, Color32, Context, DragValue, FontFamily, FontId, Id, Layout, Painter,
@@ -7,11 +12,14 @@ use eframe::egui::{
 
 use poker_core::{
     ai::{AlwaysAllIn, AlwaysCheckCall, AlwaysFold, PlayerActionGenerator, SimpleStrategy},
+    bitset::Bitset,
+    deck::Deck,
     game::{Action, Game, GameData, State, Street},
     hand::Hand,
     range::{PreFlopRangeConfig, PreFlopRangeConfigData},
     result::Result,
 };
+use rand::thread_rng;
 
 use crate::{
     card::{draw_card, draw_hidden_card},
@@ -29,10 +37,7 @@ pub struct GameView {
     card_selector: CardSelector,
     enable_game_builder: bool,
     game_builder: GameBuilder,
-    player_action_generators: Vec<(
-        &'static str,
-        Box<dyn FnMut() -> Box<dyn PlayerActionGenerator>>,
-    )>,
+    player_action_generators: Vec<PlayerActionGeneratorEntry>,
 
     // TODO: Offload to background thread.
     current_player_action_generators: HashMap<usize, Box<dyn PlayerActionGenerator>>,
@@ -50,43 +55,53 @@ pub struct GameView {
 
 impl GameView {
     pub fn new() -> Self {
-        Self::new_inner(None).unwrap()
+        Self::new_with_action_generators(iter::empty(), None).unwrap()
     }
 
     pub fn new_with_simple_strategy(pre_flop_ranges_config_path: &str) -> Result<Self> {
-        Self::new_inner(Some(pre_flop_ranges_config_path))
-    }
+        let pre_flop_ranges_raw = fs::read_to_string(pre_flop_ranges_config_path)?;
+        let pre_flop_ranges: PreFlopRangeConfigData = serde_json::from_str(&pre_flop_ranges_raw)?;
+        let pre_flop_ranges = Arc::new(PreFlopRangeConfig::from_data(pre_flop_ranges)?);
 
-    fn new_inner(pre_flop_ranges_config_path: Option<&str>) -> Result<Self> {
-        let mut player_action_generators: Vec<(
-            &'static str,
-            Box<dyn FnMut() -> Box<dyn PlayerActionGenerator>>,
-        )> = vec![
-            ("Fold", Box::new(|| Box::new(AlwaysFold))),
-            ("Check/Call", Box::new(|| Box::new(AlwaysCheckCall))),
-            ("AllIn", Box::new(|| Box::new(AlwaysAllIn))),
-        ];
-
-        let default_player_action = if let Some(path) = pre_flop_ranges_config_path {
-            let pre_flop_ranges_raw = fs::read_to_string(path)?;
-            let pre_flop_ranges: PreFlopRangeConfigData =
-                serde_json::from_str(&pre_flop_ranges_raw)?;
-            let pre_flop_ranges = Arc::new(PreFlopRangeConfig::from_data(pre_flop_ranges)?);
-
-            player_action_generators.push((
-                "Simple",
-                Box::new(move || Box::new(SimpleStrategy::new(pre_flop_ranges.clone()))),
-            ));
-
-            player_action_generators.len() - 1
-        } else {
-            0
+        let action_generator_entry = PlayerActionGeneratorEntry {
+            name: "Simple",
+            constructor: Box::new(move || Box::new(SimpleStrategy::new(pre_flop_ranges.clone()))),
         };
 
-        let player_action_generator_names = player_action_generators
+        Self::new_with_action_generators([action_generator_entry], Some(0))
+    }
+
+    pub fn new_with_action_generators(
+        extra_action_generators: impl IntoIterator<Item = PlayerActionGeneratorEntry>,
+        default_player_action: Option<usize>,
+    ) -> Result<Self> {
+        let mut player_action_generators = vec![
+            PlayerActionGeneratorEntry::new("Fold", Box::new(|| Box::new(AlwaysFold))),
+            PlayerActionGeneratorEntry::new("Check/Call", Box::new(|| Box::new(AlwaysCheckCall))),
+            PlayerActionGeneratorEntry::new("AllIn", Box::new(|| Box::new(AlwaysAllIn))),
+        ];
+
+        let initial_action_generators = player_action_generators.len();
+
+        player_action_generators.extend(extra_action_generators);
+
+        let default_player_action = default_player_action
+            .and_then(|index| initial_action_generators.checked_add(index))
+            .filter(|index| *index < player_action_generators.len())
+            .unwrap_or(0);
+
+        let player_action_generator_names: Vec<_> = player_action_generators
             .iter()
-            .map(|(name, _)| *name)
+            .map(|entry| entry.name)
             .collect();
+
+        let unique_names = player_action_generator_names
+            .iter()
+            .collect::<HashSet<_>>()
+            .len();
+        if unique_names != player_action_generator_names.len() {
+            return Err("duplicate action generator name".into());
+        }
 
         let mut game_view = Self {
             game: Game::from_game_data(&GameData::default()).unwrap(),
@@ -163,6 +178,10 @@ impl GameView {
 
         self.apply_action_to_villains()?;
 
+        // TODO: Custom showdown.
+        let skip_showdown =
+            (0..self.game.player_count()).any(|player| self.game.get_hand(player).is_none());
+
         match self.game.state() {
             State::Player(player)
                 if self.current_player_action_generators.contains_key(&player) =>
@@ -178,7 +197,11 @@ impl GameView {
 
                 action.apply_to_game(&mut self.game)?;
 
-                let mut ranges_history_entry = vec![RangeValue::Full(config)];
+                let range_value = config
+                    .map(|config| RangeValue::Full(config))
+                    .unwrap_or(RangeValue::None);
+
+                let mut ranges_history_entry = vec![range_value];
                 if let Some(ranges) = ranges {
                     for current_player in self.game.players_not_folded() {
                         if current_player == player {
@@ -207,10 +230,10 @@ impl GameView {
             State::UncalledBet { .. } => {
                 self.game.uncalled_bet()?;
             }
-            State::ShowOrMuck(_) => {
+            State::ShowOrMuck(_) if !skip_showdown => {
                 self.game.show_hand()?;
             }
-            State::ShowdownOrNextRunout => self.game.showdown_simple()?,
+            State::ShowdownOrNextRunout if !skip_showdown => self.game.showdown_simple()?,
             _ => return Ok(()),
         }
 
@@ -759,7 +782,6 @@ impl GameView {
         };
 
         self.with_game_mut(|game| *game = config.game)?;
-        self.game.draw_unset_hands(&mut rand::thread_rng());
         self.set_pick_community_cards(config.pick_community_cards);
 
         self.current_range_histories = HashMap::new();
@@ -770,13 +792,30 @@ impl GameView {
         self.current_player_action_generators.clear();
         self.range_viewer = RangeViewer::new();
 
+        let mut skip_hands = Bitset::<2>::EMPTY;
+
         for (player_index, player) in config.players.into_iter().enumerate() {
             let Some(ai_index) = player.action_generator else {
                 continue;
             };
-            let action_generator = (self.player_action_generators[ai_index].1)();
+            let action_generator = (self.player_action_generators[ai_index].constructor)();
+
+            if action_generator.custom_showdown() {
+                skip_hands.set(player_index);
+            }
+
             self.current_player_action_generators
                 .insert(player_index, action_generator);
+        }
+
+        let mut rng = thread_rng();
+        let mut deck = Deck::from_cards(&mut rng, self.game.known_cards());
+
+        for player in 0..self.game.player_count() {
+            if self.game.get_hand(player).is_none() && !skip_hands.has(player) {
+                let hand = deck.hand(&mut rng).unwrap();
+                self.game.set_hand(player, hand)?;
+            }
         }
 
         ctx.request_repaint();
@@ -872,4 +911,18 @@ fn draw_text_with_background(
     );
     painter.galley(background_rect.left_top() + space, galley, Color32::WHITE);
     background_rect
+}
+
+pub struct PlayerActionGeneratorEntry {
+    name: &'static str,
+    constructor: Box<dyn FnMut() -> Box<dyn PlayerActionGenerator>>,
+}
+
+impl PlayerActionGeneratorEntry {
+    pub fn new(
+        name: &'static str,
+        constructor: Box<dyn FnMut() -> Box<dyn PlayerActionGenerator>>,
+    ) -> Self {
+        Self { name, constructor }
+    }
 }

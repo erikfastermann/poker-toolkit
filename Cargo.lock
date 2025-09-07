@@ -2945,7 +2945,11 @@ dependencies = [
 name = "poker-human"
 version = "0.1.0"
 dependencies = [
+ "eframe",
+ "egui_extras",
+ "env_logger",
  "poker-core",
+ "poker-gui",
  "pyo3",
  "rand",
 ]

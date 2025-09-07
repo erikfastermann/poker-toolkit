@@ -6,6 +6,18 @@ from .poker_human import Dataset
 
 
 class ActionHead(nn.Module):
+    @classmethod
+    def for_predict(cls, model_path):
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+        checkpoint = torch.load(model_path, map_location=device)
+
+        model = cls().to(device)
+        model.load_state_dict(checkpoint)
+        model.eval()
+
+        return model
+
     def __init__(self):
         super().__init__()
         self.net = nn.Sequential(
@@ -25,6 +37,15 @@ class ActionHead(nn.Module):
         )
         probs = F.softmax(masked_logits, dim=-1)
         return probs, masked_logits
+
+    def predict(self, x, legal_mask):
+        x = torch.tensor(x)
+        legal_mask = torch.tensor(legal_mask)
+
+        with torch.no_grad():
+            probs, _ = self(x, legal_mask)
+
+        return probs.cpu().numpy()
 
 
 class ShowdownHead(nn.Module):

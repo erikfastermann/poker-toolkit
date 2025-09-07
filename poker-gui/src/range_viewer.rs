@@ -12,6 +12,7 @@ use poker_core::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RangeValue {
+    None,
     Simple(RangeTableWith<u16>),
     Full(RangeConfigEntry),
 }
@@ -95,11 +96,13 @@ impl RangeViewer {
 
         let bounding_rect = ui.available_rect_before_wrap();
 
-        let range_rect =
-            Rect::from_min_size(bounding_rect.left_top(), Vec2::splat(bounding_rect.width()));
+        if !matches!(&self.ranges[self.selected], RangeValue::None) {
+            let range_rect =
+                Rect::from_min_size(bounding_rect.left_top(), Vec2::splat(bounding_rect.width()));
 
-        self.draw_range(ui, range_rect);
-        ui.allocate_rect(range_rect, Sense::empty());
+            self.draw_range(ui, range_rect);
+            ui.allocate_rect(range_rect, Sense::empty());
+        }
 
         self.navigation_bar(ui);
 
@@ -142,6 +145,7 @@ impl RangeViewer {
         let range = &self.ranges[self.selected];
 
         let height_percent = match range {
+            RangeValue::None => unreachable!(),
             RangeValue::Simple(range) => range_entry_frequency(range, entry),
             RangeValue::Full(range) => range.total_entry_frequency(entry),
         };
@@ -149,6 +153,7 @@ impl RangeViewer {
         let top = field_rect.bottom() - height_percent as f32 * field_rect.height();
 
         match range {
+            RangeValue::None => unreachable!(),
             RangeValue::Simple(_) => {
                 let frequency_rect = Rect::from_two_pos(
                     Pos2::new(field_rect.left(), top),
@@ -193,6 +198,7 @@ impl RangeViewer {
         action_kinds: &[(RangeActionKind, Color32)],
     ) {
         let label = match &self.ranges[self.selected] {
+            RangeValue::None => unreachable!(),
             RangeValue::Simple(range) => {
                 let frequency = range_entry_frequency(range, entry);
                 let text = format!("{}: {:.1}", entry.to_regular_string(), frequency * 100.0);
