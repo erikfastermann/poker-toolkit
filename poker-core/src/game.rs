@@ -236,7 +236,7 @@ impl Street {
         self as usize
     }
 
-    pub fn community_card_count(self) -> usize {
+    pub const fn community_card_count(self) -> usize {
         match self {
             Street::PreFlop => 0,
             Street::Flop => 3,
@@ -245,7 +245,7 @@ impl Street {
         }
     }
 
-    pub fn new_community_card_count(self) -> usize {
+    pub const fn new_community_card_count(self) -> usize {
         match self {
             Street::PreFlop => 0,
             Street::Flop => 3,

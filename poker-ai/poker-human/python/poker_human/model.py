@@ -9,12 +9,12 @@ class ActionHead(nn.Module):
     def __init__(self):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(Dataset.ACTION_INPUT_LEN, 1024), nn.ReLU(),
-            nn.Linear(1024, 1024), nn.ReLU(),
+            nn.Linear(Dataset.ACTION_INPUT_LEN, 4096), nn.ReLU(),
+            nn.Linear(4096, 4096), nn.ReLU(),
             nn.Dropout(0.2),
-            nn.Linear(1024, 1024), nn.ReLU(),
+            nn.Linear(4096, 4096), nn.ReLU(),
             nn.Dropout(0.2),
-            nn.Linear(1024, Dataset.ACTION_TARGET_LEN)  # raw logits
+            nn.Linear(4096, Dataset.ACTION_TARGET_LEN)  # raw logits
         )
 
     def forward(self, x, legal_mask):
@@ -31,12 +31,12 @@ class ShowdownHead(nn.Module):
     def __init__(self):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(Dataset.SHOWDOWN_INPUT_LEN, 2048), nn.ReLU(),
-            nn.Linear(2048, 2048), nn.ReLU(),
+            nn.Linear(Dataset.SHOWDOWN_INPUT_LEN, 4096), nn.ReLU(),
+            nn.Linear(4096, 4096), nn.ReLU(),
             nn.Dropout(0.2),
-            nn.Linear(2048, 2048), nn.ReLU(),
+            nn.Linear(4096, 4096), nn.ReLU(),
             nn.Dropout(0.2),
-            nn.Linear(2048, Dataset.SHOWDOWN_TARGET_LEN)  # raw logits
+            nn.Linear(4096, Dataset.SHOWDOWN_TARGET_LEN)  # raw logits
         )
 
     def forward(self, x):

@@ -9,6 +9,7 @@ use poker_core::{
     hand::Hand,
     init::init,
     range::RangeTable,
+    rank::Rank,
     result::Result,
     suite::Suite,
 };
@@ -44,10 +45,10 @@ struct Dataset {
 #[pymethods]
 impl Dataset {
     #[classattr]
-    const ACTION_INPUT_LEN: usize = 380;
+    const ACTION_INPUT_LEN: usize = Self::CURRENT_STACKS_INDEX + Self::STACKS_LEN;
 
     #[classattr]
-    const SHOWDOWN_INPUT_LEN: usize = 381;
+    const SHOWDOWN_INPUT_LEN: usize = Self::ACTION_INPUT_LEN + Game::MAX_PLAYERS;
 
     #[classattr]
     const ACTION_TARGET_LEN: usize = 14;
@@ -162,34 +163,33 @@ impl Dataset {
 }
 
 impl Dataset {
-    const BOARD_FLOP_INDEX: usize = 0;
-    const BOARD_TURN_INDEX: usize = 6;
-    const BOARD_RIVER_INDEX: usize = 8;
+    const CARD_LEN: usize = Rank::COUNT + Suite::COUNT;
 
-    const ACTION_POST: u8 = 1;
-    const ACTION_POST_DEAD: u8 = 2;
-    const ACTION_STRADDLE: u8 = 3;
-    const ACTION_FOLD: u8 = 4;
-    const ACTION_CHECK_CALL: u8 = 5;
-    const ACTION_BET_RAISE: u8 = 6;
+    const BOARD_INDEX: usize = 0;
+    const BOARD_LEN: usize = Self::CARD_LEN * Street::River.community_card_count();
 
-    const ACTION_SIZE: usize = 3;
+    const ACTION_POST_INDEX: usize = 0;
+    const ACTION_POST_DEAD_INDEX: usize = 1;
+    const ACTION_STRADDLE_INDEX: usize = 2;
+    const ACTION_FOLD_INDEX: usize = 3;
+    const ACTION_CHECK_CALL_INDEX: usize = 4;
+    const ACTION_BET_RAISE_INDEX: usize = 5;
+    const ACTION_KIND_LEN: usize = 6;
+
     const ACTION_KIND_OFFSET: usize = 0;
-    const ACTION_PLAYER_OFFSET: usize = 1;
-    const ACTION_AMOUNT_OFFSET: usize = 2;
+    const ACTION_PLAYER_OFFSET: usize = Self::ACTION_KIND_LEN;
+    const ACTION_PLAYER_LEN: usize = Game::MAX_PLAYERS;
+    const ACTION_AMOUNT_OFFSET: usize = Self::ACTION_PLAYER_OFFSET + Self::ACTION_PLAYER_LEN;
+    const ACTION_LEN: usize = Self::ACTION_AMOUNT_OFFSET + 1;
 
     const ACTIONS_PER_STREET: usize = 30; // TODO: Probably too much.
 
-    const PRE_FLOP_ACTIONS_INDEX: usize = 10;
-    const FLOP_ACTIONS_INDEX: usize =
-        Self::PRE_FLOP_ACTIONS_INDEX + Self::ACTIONS_PER_STREET * Self::ACTION_SIZE;
-    const TURN_ACTIONS_INDEX: usize =
-        Self::FLOP_ACTIONS_INDEX + Self::ACTIONS_PER_STREET * Self::ACTION_SIZE;
-    const RIVER_ACTIONS_INDEX: usize =
-        Self::TURN_ACTIONS_INDEX + Self::ACTIONS_PER_STREET * Self::ACTION_SIZE;
+    const ACTIONS_INDEX: usize = Self::BOARD_INDEX + Self::BOARD_LEN;
+    const ACTIONS_LEN: usize = Self::ACTIONS_PER_STREET * Self::ACTION_LEN * Street::COUNT;
 
-    const STACK_SIZES_INDEX: usize =
-        Self::RIVER_ACTIONS_INDEX + Self::ACTIONS_PER_STREET * Self::ACTION_SIZE;
+    const STACKS_LEN: usize = Game::MAX_PLAYERS;
+    const STARTING_STACKS_INDEX: usize = Self::ACTIONS_INDEX + Self::ACTIONS_LEN;
+    const CURRENT_STACKS_INDEX: usize = Self::STARTING_STACKS_INDEX + Self::STACKS_LEN;
 
     const FOLD_INDEX: usize = 0;
     const CHECK_CALL_INDEX: usize = 1;
@@ -576,13 +576,22 @@ impl Dataset {
 
         let mut out = vec![0.0; Self::ACTION_INPUT_LEN];
 
-        let stacks = game.current_stacks();
-
         let players = (game.button_index()..game.player_count()).chain(0..game.button_index());
+
+        let starting_stacks = game.starting_stacks();
+
+        for (index, player) in players.clone().enumerate() {
+            // We accept the potential loss of precision here.
+            out[Self::STARTING_STACKS_INDEX + index] =
+                starting_stacks[player] as f32 / game.big_blind() as f32;
+        }
+
+        let current_stacks = game.current_stacks();
 
         for (index, player) in players.enumerate() {
             // We accept the potential loss of precision here.
-            out[Self::STACK_SIZES_INDEX + index] = stacks[player] as f32 / game.big_blind() as f32;
+            out[Self::CURRENT_STACKS_INDEX + index] =
+                current_stacks[player] as f32 / game.big_blind() as f32;
         }
 
         let board = game.board();
@@ -591,53 +600,29 @@ impl Dataset {
             eprintln!("board: {:?}", board.cards());
         }
 
-        // Can only map suites from flop,
-        // although in some cases more flexibility is possible.
-        let suite_mapping = if let Some(flop) = board.flop() {
-            Cards::from_slice(&flop).unwrap().unify_suites_mapping()
-        } else {
-            Suite::SUITES
-        };
-
-        if let Some(mut flop) = board.flop() {
-            for card in &mut flop {
-                *card = Card::of(card.rank(), suite_mapping[card.suite().to_usize()]);
-            }
-
-            flop.sort_by(|a, b| a.cmp_by_rank(*b).reverse());
-
-            for (index, card) in flop.iter().copied().enumerate() {
-                out[Self::BOARD_FLOP_INDEX + index * 2] = Self::encode_card(card).0;
-                out[Self::BOARD_FLOP_INDEX + index * 2 + 1] = Self::encode_card(card).1;
-            }
-
-            if DEBUG {
-                eprintln!("flop converted: {:?}", &flop);
-            }
+        let mut cards = Vec::from(board.cards());
+        if board.street() >= Street::Flop {
+            cards[..Street::Flop.community_card_count()].sort_by(|a, b| a.cmp_by_rank(*b));
         }
 
-        if let Some(turn) = board.turn() {
-            let turn = Card::of(turn.rank(), suite_mapping[turn.suite().to_usize()]);
-            out[Self::BOARD_TURN_INDEX] = Self::encode_card(turn).0;
-            out[Self::BOARD_TURN_INDEX + 1] = Self::encode_card(turn).1;
-
-            if DEBUG {
-                eprintln!("turn converted: {:?}", turn);
-            }
+        for (index, card) in cards.iter().copied().enumerate() {
+            let offset = Self::BOARD_INDEX + index * Self::CARD_LEN;
+            Self::encode_card(card, &mut out[offset..offset + Self::CARD_LEN]);
         }
 
-        if let Some(river) = board.river() {
-            let river = Card::of(river.rank(), suite_mapping[river.suite().to_usize()]);
-            out[Self::BOARD_RIVER_INDEX] = Self::encode_card(river).0;
-            out[Self::BOARD_RIVER_INDEX + 1] = Self::encode_card(river).1;
+        Self::encode_actions(
+            game,
+            &mut out[Self::ACTIONS_INDEX..Self::ACTIONS_INDEX + Self::ACTIONS_LEN],
+        );
 
-            if DEBUG {
-                eprintln!("river converted: {:?}", river);
-            }
-        }
+        out
+    }
+
+    fn encode_actions(game: &Game, out: &mut [f32]) {
+        assert_eq!(out.len(), Self::ACTIONS_LEN);
 
         let mut street = Street::PreFlop;
-        let mut street_index = 0usize;
+        let mut per_street_index = 0usize;
 
         for action in game.actions().iter().copied() {
             let (action_kind, player, amount) = match action {
@@ -645,27 +630,31 @@ impl Dataset {
                     player,
                     amount,
                     dead,
-                } if dead => (Self::ACTION_POST_DEAD, player, amount),
-                Action::Post { player, amount, .. } => (Self::ACTION_POST, player, amount),
-                Action::Straddle { player, amount } => (Self::ACTION_STRADDLE, player, amount),
-                Action::Fold(player) => (Self::ACTION_FOLD, player, 0),
-                Action::Check(player) => (Self::ACTION_CHECK_CALL, player, 0),
-                Action::Call { player, amount } => (Self::ACTION_CHECK_CALL, player, amount),
-                Action::Bet { player, amount } => (Self::ACTION_BET_RAISE, player, amount),
-                Action::Raise { player, amount, .. } => (Self::ACTION_BET_RAISE, player, amount),
+                } if dead => (Self::ACTION_POST_DEAD_INDEX, player, amount),
+                Action::Post { player, amount, .. } => (Self::ACTION_POST_INDEX, player, amount),
+                Action::Straddle { player, amount } => {
+                    (Self::ACTION_STRADDLE_INDEX, player, amount)
+                }
+                Action::Fold(player) => (Self::ACTION_FOLD_INDEX, player, 0),
+                Action::Check(player) => (Self::ACTION_CHECK_CALL_INDEX, player, 0),
+                Action::Call { player, amount } => (Self::ACTION_CHECK_CALL_INDEX, player, amount),
+                Action::Bet { player, amount } => (Self::ACTION_BET_RAISE_INDEX, player, amount),
+                Action::Raise { player, amount, .. } => {
+                    (Self::ACTION_BET_RAISE_INDEX, player, amount)
+                }
                 Action::Flop(_) => {
                     street = Street::Flop;
-                    street_index = 0;
+                    per_street_index = 0;
                     continue;
                 }
                 Action::Turn(_) => {
                     street = Street::Turn;
-                    street_index = 0;
+                    per_street_index = 0;
                     continue;
                 }
                 Action::River(_) => {
                     street = Street::River;
-                    street_index = 0;
+                    per_street_index = 0;
                     continue;
                 }
                 _ => continue,
@@ -677,33 +666,41 @@ impl Dataset {
                 usize::from(player),
             )
             .unwrap();
-            let player = u8::try_from(player).unwrap();
 
-            let actions_index = match street {
-                Street::PreFlop => Self::PRE_FLOP_ACTIONS_INDEX,
-                Street::Flop => Self::FLOP_ACTIONS_INDEX,
-                Street::Turn => Self::TURN_ACTIONS_INDEX,
-                Street::River => Self::RIVER_ACTIONS_INDEX,
-            };
+            let street_index = street.to_usize() * Self::ACTION_LEN * Self::ACTIONS_PER_STREET;
 
-            assert!(street_index < Self::ACTIONS_PER_STREET);
-            let index = actions_index + street_index * Self::ACTION_SIZE;
+            assert!(per_street_index < Self::ACTIONS_PER_STREET);
+            let index = street_index + per_street_index * Self::ACTION_LEN;
 
-            out[index + Self::ACTION_KIND_OFFSET] = f32::from(action_kind);
-            out[index + Self::ACTION_PLAYER_OFFSET] = f32::from(player + 1);
+            let offset = index + Self::ACTION_KIND_OFFSET;
+            Self::one_hot(
+                action_kind,
+                &mut out[offset..offset + Self::ACTION_KIND_LEN],
+            );
+
+            let offset = index + Self::ACTION_PLAYER_OFFSET;
+            Self::one_hot(player, &mut out[offset..offset + Self::ACTION_PLAYER_LEN]);
+
             // We accept the potential loss of precision here.
             out[index + Self::ACTION_AMOUNT_OFFSET] = amount as f32 / game.big_blind() as f32;
 
-            street_index += 1;
+            per_street_index += 1;
         }
-
-        out
     }
 
-    fn encode_card(card: Card) -> (f32, f32) {
-        let rank = f32::from(card.rank().to_i8() + 1);
-        let suite = f32::from(card.suite().to_i8() + 1);
-        (rank, suite)
+    fn encode_card(card: Card, out: &mut [f32]) {
+        assert_eq!(out.len(), Self::CARD_LEN);
+
+        Self::one_hot(card.rank().to_usize(), &mut out[..Rank::COUNT]);
+        Self::one_hot(card.suite().to_usize(), &mut out[Rank::COUNT..]);
+    }
+
+    fn one_hot(index: usize, out: &mut [f32]) {
+        assert!(index < out.len());
+
+        for (i, v) in out.iter_mut().enumerate() {
+            *v = if i == index { 1.0 } else { 0.0 };
+        }
     }
 
     fn percent_pot(pot: u32, call_amount: u32, amount: u32) -> u32 {
@@ -737,10 +734,13 @@ impl Dataset {
             usize::from(hero_player),
         )
         .unwrap();
-        let player_button_offset = u8::try_from(player_button_offset).unwrap();
 
         let mut x = Self::encode_game(game);
-        x.push(f32::from(player_button_offset) + 1.0);
+
+        let mut player_encoded = [0.0; Game::MAX_PLAYERS];
+        Self::one_hot(player_button_offset, &mut player_encoded);
+
+        x.extend(player_encoded);
         assert_eq!(x.len(), Self::SHOWDOWN_INPUT_LEN);
 
         x
