@@ -825,6 +825,22 @@ impl<T: fmt::Debug> fmt::Debug for RangeTableWith<T> {
     }
 }
 
+impl<T: Default> RangeTableWith<T> {
+    pub fn from_iter(iter: impl IntoIterator<Item = T>) -> Result<Self> {
+        let mut out = Self::default();
+
+        for (index, v) in iter.into_iter().enumerate() {
+            if index >= Hand::COUNT {
+                return Err("failed building range table: bad len".into());
+            }
+
+            out[Hand::from_index(index)] = v;
+        }
+
+        Ok(out)
+    }
+}
+
 impl<T> RangeTableWith<T> {
     pub fn table(&self) -> &[T] {
         &self.table

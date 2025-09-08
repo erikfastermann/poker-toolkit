@@ -21,6 +21,8 @@ if __name__ == "__main__":
     with torch.no_grad():
         for index in range(len(dataset)):
             x, legal_mask, target = dataset[index]
+            x = x.to(device)
+            legal_mask = legal_mask.to(device)
 
             probs, _ = model(x, legal_mask)
 

@@ -5,11 +5,11 @@ from tqdm import tqdm
 from poker_human import (
     ShowdownPreprocessedDataset,
     ShowdownHead,
-    masked_bce_with_logits_loss,
+    CEWithMask,
 )
 
 
-def train_one_epoch(model, dataloader, optimizer, device):
+def train_one_epoch(model, dataloader, optimizer, criterion, device):
     model.train()
     total_loss = 0.0
 
@@ -19,8 +19,8 @@ def train_one_epoch(model, dataloader, optimizer, device):
         target = target.to(device)
 
         optimizer.zero_grad()
-        logits = model(x)
-        loss = masked_bce_with_logits_loss(logits, target, legal_mask)
+        probs, masked_logits = model(x, legal_mask)
+        loss = criterion(masked_logits, target)
         loss.backward()
         optimizer.step()
 
@@ -29,7 +29,7 @@ def train_one_epoch(model, dataloader, optimizer, device):
     return total_loss / len(dataloader.dataset)
 
 
-def evaluate(model, dataloader, device):
+def evaluate(model, dataloader, criterion, device):
     model.eval()
     total_loss = 0.0
 
@@ -39,8 +39,8 @@ def evaluate(model, dataloader, device):
             legal_mask = legal_mask.to(device)
             target = target.to(device)
 
-            logits = model(x)
-            loss = masked_bce_with_logits_loss(logits, target, legal_mask)
+            probs, masked_logits = model(x, legal_mask)
+            loss = criterion(masked_logits, target)
             total_loss += loss.item() * x.size(0)
 
     return total_loss / len(dataloader.dataset)
@@ -58,11 +58,12 @@ if __name__ == "__main__":
 
     model = ShowdownHead().to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    criterion = CEWithMask()
 
     for epoch in range(5):
         # TODO: Data splits
-        train_loss = train_one_epoch(model, dataloader, optimizer, device)
-        val_loss = evaluate(model, dataloader, device)
+        train_loss = train_one_epoch(model, dataloader, optimizer, criterion, device)
+        val_loss = evaluate(model, dataloader, criterion, device)
         print(f"Epoch {epoch+1}: train_loss={train_loss:.4f}, val_loss={val_loss:.4f}")
 
     torch.save(model.state_dict(), out_model_path)

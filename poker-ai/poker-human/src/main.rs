@@ -5,17 +5,20 @@ use eframe::{
 use poker_core::{
     ai::{AiAction, PlayerActionGenerator},
     game::Game,
+    hand::Hand,
     init::init,
     range::{RangeConfigEntry, RangeTableWith},
     result::Result,
 };
 use poker_gui::game_view::{GameView, PlayerActionGeneratorEntry};
-use poker_human::{new_action_head, ActionProbabilities};
+use poker_human::{ActionHead, ActionProbabilities, ShowdownHead, ShowdownProbabilities};
 use pyo3::prelude::*;
 use rand::thread_rng;
 use std::fmt::Write;
 
 const ACTION_MODEL_PATH: &str = "action.pt";
+
+const SHOWDOWN_MODEL_PATH: &str = "showdown.pt";
 
 fn main() -> Result<()> {
     unsafe { init() };
@@ -55,12 +58,16 @@ struct App {
 }
 
 struct HumanActionGenerator {
-    action_head: Py<PyAny>,
+    action_head: ActionHead,
+    showdown_head: ShowdownHead,
 }
 
 impl HumanActionGenerator {
-    fn new(action_head: Py<PyAny>) -> Self {
-        Self { action_head }
+    fn new(action_head: ActionHead, showdown_head: ShowdownHead) -> Self {
+        Self {
+            action_head,
+            showdown_head,
+        }
     }
 }
 
@@ -91,20 +98,32 @@ impl PlayerActionGenerator for HumanActionGenerator {
         Ok((action, None, None))
     }
 
-    fn custom_showdown(&self) -> bool {
+    fn custom_show_or_muck(&self) -> bool {
         true
+    }
+
+    fn show_or_muck(&self, game: &Game, log: &mut String) -> Result<Option<Hand>> {
+        let probs = ShowdownProbabilities::predict(&self.showdown_head, game)?;
+
+        writeln!(log, "{probs:#?}")?;
+
+        Ok(probs.choose(&mut thread_rng(), game.known_cards()))
     }
 }
 
 impl App {
     fn new() -> Result<Self> {
-        let action_head = new_action_head(ACTION_MODEL_PATH)?;
+        let action_head = ActionHead::new(ACTION_MODEL_PATH)?;
+        let showdown_head = ShowdownHead::new(SHOWDOWN_MODEL_PATH)?;
 
         let action_generator = PlayerActionGeneratorEntry::new(
             "Human",
             Box::new(move || {
                 Python::with_gil(|py| {
-                    Box::new(HumanActionGenerator::new(action_head.clone_ref(py)))
+                    Box::new(HumanActionGenerator::new(
+                        action_head.clone_ref(py),
+                        showdown_head.clone_ref(py),
+                    ))
                 })
             }),
         );

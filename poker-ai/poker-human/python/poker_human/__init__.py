@@ -1,5 +1,5 @@
 from .dataset import ActionDataset, ShowdownDataset, ShowdownPreprocessedDataset
-from .model import ActionHead, ShowdownHead, CEWithMask, masked_bce_with_logits_loss
+from .model import ActionHead, ShowdownHead, CEWithMask
 
 __all__ = [
     "ActionDataset",
@@ -8,5 +8,4 @@ __all__ = [
     "ActionHead",
     "ShowdownHead",
     "CEWithMask",
-    "masked_bce_with_logits_loss",
 ]

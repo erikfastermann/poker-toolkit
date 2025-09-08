@@ -180,8 +180,12 @@ pub trait PlayerActionGenerator {
         Option<&[RangeTableWith<u16>]>,
     )>;
 
-    fn custom_showdown(&self) -> bool {
+    fn custom_show_or_muck(&self) -> bool {
         false
+    }
+
+    fn show_or_muck(&self, _game: &Game, _log: &mut String) -> Result<Option<Hand>> {
+        Err("custom show or muck not implemented".into())
     }
 }
 

@@ -25,13 +25,16 @@ if __name__ == "__main__":
     with torch.no_grad():
         for index in range(len(dataset)):
             x, legal_mask, target = dataset[index]
+            x = x.to(device)
+            legal_mask = legal_mask.to(device)
 
-            probs = torch.sigmoid(model(x))
+            probs, _ = model(x, legal_mask)
 
             print("Model inputs:", x.cpu().numpy())
             print("Legal mask:", legal_mask.cpu().numpy())
             print("Expected target:", target.cpu().numpy())
             print("Predicted showdown probabilities:", probs.cpu().numpy())
+            print("Sum over legal actions:", probs.sum().item())
             print()
 
             input()

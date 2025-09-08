@@ -178,10 +178,6 @@ impl GameView {
 
         self.apply_action_to_villains()?;
 
-        // TODO: Custom showdown.
-        let skip_showdown =
-            (0..self.game.player_count()).any(|player| self.game.get_hand(player).is_none());
-
         match self.game.state() {
             State::Player(player)
                 if self.current_player_action_generators.contains_key(&player) =>
@@ -230,10 +226,34 @@ impl GameView {
             State::UncalledBet { .. } => {
                 self.game.uncalled_bet()?;
             }
-            State::ShowOrMuck(_) if !skip_showdown => {
-                self.game.show_hand()?;
+            State::ShowOrMuck(player) => {
+                if self.game.get_hand(player).is_none() {
+                    let action_generator = &self.current_player_action_generators[&player];
+                    assert!(action_generator.custom_show_or_muck());
+
+                    let mut temp_log = String::new();
+
+                    // TODO: Check correct usage of api and handle errors gracefully.
+                    if let Some(hand) = action_generator.show_or_muck(&self.game, &mut temp_log)? {
+                        self.game.set_hand(player, hand)?;
+                        self.game.show_hand()?;
+                    } else {
+                        // TODO: All players could muck.
+                        self.game.muck_hand()?;
+                    }
+
+                    let current_log_offset =
+                        self.write_generator_log(player, "Showdown", &temp_log);
+
+                    self.current_range_histories.insert(
+                        self.game.actions().len(),
+                        (vec![RangeValue::None], current_log_offset),
+                    );
+                } else {
+                    self.game.show_hand()?;
+                }
             }
-            State::ShowdownOrNextRunout if !skip_showdown => self.game.showdown_simple()?,
+            State::ShowdownOrNextRunout => self.game.showdown_simple()?,
             _ => return Ok(()),
         }
 
@@ -800,7 +820,7 @@ impl GameView {
             };
             let action_generator = (self.player_action_generators[ai_index].constructor)();
 
-            if action_generator.custom_showdown() {
+            if action_generator.custom_show_or_muck() {
                 skip_hands.set(player_index);
             }
 
@@ -829,7 +849,9 @@ impl GameView {
             return;
         };
 
-        let player = self.game.actions().last().unwrap().player().unwrap();
+        let action = self.game.actions().last().unwrap();
+
+        let player = action.player_all().unwrap();
 
         self.range_viewer.replace_ranges(ranges.clone());
         self.range_viewer
@@ -849,7 +871,17 @@ impl GameView {
             String::new()
         };
 
-        let title = format!("Range - {}{}", self.game.player_name(player), villain_title);
+        let kind = match action {
+            Action::Shows { .. } | Action::MucksOrUnknown(_) => "Showdown",
+            _ => "Range",
+        };
+
+        let title = format!(
+            "{} - {}{}",
+            kind,
+            self.game.player_name(player),
+            villain_title
+        );
         // TODO: Nicer rendering and default position of window.
         self.range_viewer.window(ctx, Id::new("Range"), title);
     }
@@ -859,6 +891,14 @@ impl GameView {
 
         if log.is_empty() {
             out.len() // TODO: Use last len.
+        } else if matches!(
+            self.game.state(),
+            State::ShowOrMuck(_) | State::ShowdownOrNextRunout
+        ) {
+            write!(out, "{name}:\n\n{log}",).unwrap();
+            let offset = out.trim_end().len();
+            out.push_str("\n---------\n\n");
+            offset
         } else {
             write!(
                 out,
