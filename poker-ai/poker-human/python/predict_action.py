@@ -1,6 +1,6 @@
 import torch
 
-from poker_human import ActionHead, ActionDataset
+from poker_human_user import ActionHead, ActionDataset
 
 
 if __name__ == "__main__":

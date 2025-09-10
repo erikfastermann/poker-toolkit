@@ -1,6 +1,6 @@
 from concurrent.futures import ProcessPoolExecutor
 import pickle
-from poker_human import ShowdownDataset
+from poker_human_user import ShowdownDataset
 from tqdm.contrib.concurrent import process_map
 
 
@@ -21,7 +21,7 @@ def get_entry(index):
 
 if __name__ == '__main__':
     db_path = '../../poker-app/phh_full.db'
-    limit = 100
+    limit = 1000
     out_path = 'showdown.pkl'
     max_workers = 10
 

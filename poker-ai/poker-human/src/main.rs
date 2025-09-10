@@ -12,7 +12,7 @@ use poker_core::{
 };
 use poker_gui::game_view::{GameView, PlayerActionGeneratorEntry};
 use poker_human::{ActionHead, ActionProbabilities, ShowdownHead, ShowdownProbabilities};
-use pyo3::prelude::*;
+use pyo3::{prelude::*, types::PyList};
 use rand::thread_rng;
 use std::fmt::Write;
 
@@ -29,6 +29,22 @@ fn main() -> Result<()> {
 // TODO: Could unify the gui code more with poker-app.
 
 fn gui() -> Result<()> {
+    // TODO: Workaround
+    Python::with_gil(|py| -> Result<()> {
+        let sys = py.import("sys")?;
+        let path = sys.getattr("path")?;
+        let path: &Bound<'_, PyList> = path.downcast().unwrap();
+
+        // Ensure current directory is on sys.path
+        path.insert(0, ".")?;
+
+        // Now import your module
+        let poker_human = py.import("poker_human")?;
+        println!("Imported module: {:?}", poker_human.name()?);
+
+        Ok(())
+    })?;
+
     env_logger::init();
     let options = eframe::NativeOptions {
         viewport: ViewportBuilder::default().with_maximized(true),

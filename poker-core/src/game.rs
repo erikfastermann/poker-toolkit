@@ -2018,7 +2018,11 @@ impl Game {
         Ok(())
     }
 
-    fn showdown_winners_by_pot(&self) -> Result<Vec<(u32, Bitset<2>)>> {
+    pub fn showdown_winners_by_pot(&self) -> Result<Vec<(u32, Bitset<2>)>> {
+        if !matches!(self.state(), State::ShowOrMuck(_) | State::End) {
+            return Err("showdown: not in showdown or end state".into());
+        }
+
         if self.not_folded.count() == 1 {
             return Ok(vec![(self.total_pot(), self.not_folded)]);
         }

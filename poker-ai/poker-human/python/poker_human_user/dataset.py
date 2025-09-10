@@ -2,7 +2,7 @@ import pickle
 import torch
 from torch.utils.data import Dataset as TorchDataset
 
-from .poker_human import Dataset as InternalDataset
+from poker_human import Dataset as InternalDataset
 
 
 class ActionDataset(TorchDataset):

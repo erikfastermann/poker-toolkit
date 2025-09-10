@@ -1,4 +1,4 @@
-use std::ops::BitAnd;
+use std::ops::{BitAnd, BitOr};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)] // TODO: Custom Debug
 pub struct Bitset<const SIZE: usize>([u8; SIZE]);
@@ -57,6 +57,17 @@ impl<const SIZE: usize> BitAnd for Bitset<SIZE> {
     fn bitand(mut self, rhs: Self) -> Self::Output {
         for (a, b) in self.0.iter_mut().zip(rhs.0) {
             *a &= b;
+        }
+        self
+    }
+}
+
+impl<const SIZE: usize> BitOr for Bitset<SIZE> {
+    type Output = Self;
+
+    fn bitor(mut self, rhs: Self) -> Self::Output {
+        for (a, b) in self.0.iter_mut().zip(rhs.0) {
+            *a |= b;
         }
         self
     }

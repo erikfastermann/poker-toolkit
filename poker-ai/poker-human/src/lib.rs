@@ -3,8 +3,9 @@ use std::{cmp, sync::Arc};
 
 use poker_core::{
     ai::AiAction,
+    bitset::Bitset,
     card::Card,
-    cards::{Cards, Score},
+    cards::Cards,
     db::{HandData, DB},
     game::{milli_big_blind_to_amount_rounded, Action, Game, MilliBigBlind, State, Street},
     hand::Hand,
@@ -402,46 +403,34 @@ impl Dataset {
         let hero_hand = match game.get_hand(usize::from(hero_player)) {
             Some(hand) => hand,
             None => {
-                let mut worst_score = Score::MAX;
-
-                let showdown_players = (0..game.player_count())
-                    .filter(|player| game.hand_shown(*player) || game.hand_mucked(*player));
-
-                for player in showdown_players {
-                    let Some(hand) = game.get_hand(player) else {
-                        continue;
-                    };
-
-                    // Need to be conservative. Using final board,
-                    // because we don't know how the data source handles
-                    // show / muck. Also easier to implement.
-                    let player_cards = final_board_cards | hand.to_cards();
-                    let score = player_cards.score_fast();
-
-                    if score <= worst_score {
-                        worst_score = score;
-                    }
-                }
-
-                // One shows is required in the dataset construction.
-                assert_ne!(worst_score, Score::MAX);
+                // Get the worst score of the showdown winners.
+                // Using final board, because we don't know
+                // how the data source handles show / muck.
+                // Also easier to implement.
+                //
+                // TODO: Use the actual showdown order.
+                let worst_score = game
+                    .showdown_winners_by_pot()
+                    .unwrap()
+                    .iter()
+                    .fold(Bitset::EMPTY, |acc, (_, players)| acc | *players)
+                    .iter(game.player_count())
+                    .filter_map(|player| game.get_hand(player))
+                    .map(|hand| (final_board_cards | hand.to_cards()).score_fast())
+                    .min()
+                    .unwrap(); // One shows is required in the dataset construction.
 
                 let known_cards = game.known_cards();
 
                 let worse_hands: Vec<_> = Hand::all()
-                    .filter(|hand| !final_board_cards.overlaps(hand.to_cards()))
-                    .filter(|hand| (hand.to_cards() | final_board_cards).score_fast() < worst_score)
                     .filter(|hand| !hand.to_cards().overlaps(known_cards))
+                    .filter(|hand| (hand.to_cards() | final_board_cards).score_fast() < worst_score)
                     .collect();
 
-                // Using a random worse hand than the worst known hand found.
-                // This is misleading, but currently I don't see another option
+                // Using a random worse hand than the worst known hand that won something.
+                // This is misleading, but I currently don't see another option
                 // to still use most showdown data.
-                // TODO: Can optimize distribution.
-
-                // For every player who mucked,
-                // we should have one hand that is worse.
-                // This is not guaranteed by the game implementation.
+                // This should always exist, but it is not guaranteed by the game implementation.
                 worse_hands.choose(&mut self.rng).copied().unwrap()
             }
         };
@@ -849,7 +838,7 @@ impl ActionHead {
     pub fn new(model_path: &str) -> Result<Self> {
         Python::with_gil(|py| {
             // TODO: This is circular and somewhat ugly.
-            let poker_human = PyModule::import(py, "poker_human")?;
+            let poker_human = PyModule::import(py, "python.poker_human_user")?;
 
             let action_head = poker_human
                 .getattr("ActionHead")?
@@ -1066,7 +1055,7 @@ impl ShowdownHead {
     pub fn new(model_path: &str) -> Result<Self> {
         Python::with_gil(|py| {
             // TODO: This is circular and somewhat ugly.
-            let poker_human = PyModule::import(py, "poker_human")?;
+            let poker_human = PyModule::import(py, "python.poker_human_user")?;
 
             let showdown_head = poker_human
                 .getattr("ShowdownHead")?

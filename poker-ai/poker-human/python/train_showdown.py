@@ -1,8 +1,10 @@
+from datetime import datetime
+from pathlib import Path
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
 
-from poker_human import (
+from poker_human_user import (
     ShowdownPreprocessedDataset,
     ShowdownHead,
     CEWithMask,
@@ -48,22 +50,39 @@ def evaluate(model, dataloader, criterion, device):
 
 if __name__ == "__main__":
     dataset_preprocessed_path = "showdown.pkl"
-    out_model_path = "showdown.pt"
+    out_model_dir = "showdown"
+    batch_size = 64
+    learning_rate = 1e-3
+    epochs = 100
 
+
+    start = datetime.now()
+
+    Path(out_model_dir).mkdir(exist_ok=True)
+
+    out_dir = Path(out_model_dir) / start.strftime("%Y-%m-%d_%H-%M-%S")
+    out_dir.mkdir()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     dataset = ShowdownPreprocessedDataset(dataset_preprocessed_path)
-    dataloader = DataLoader(dataset, batch_size=64, shuffle=True)
+    train, val, test = random_split(
+        dataset,
+        [0.98, 0.01, 0.01],
+        generator=torch.Generator().manual_seed(42), # deterministic
+    )
+
+    train_loader = DataLoader(train, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val, batch_size=batch_size, shuffle=True)
 
     model = ShowdownHead().to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     criterion = CEWithMask()
 
-    for epoch in range(5):
-        # TODO: Data splits
-        train_loss = train_one_epoch(model, dataloader, optimizer, criterion, device)
-        val_loss = evaluate(model, dataloader, criterion, device)
+    for epoch in range(epochs):
+        train_loss = train_one_epoch(model, train_loader, optimizer, criterion, device)
+        val_loss = evaluate(model, val_loader, criterion, device)
         print(f"Epoch {epoch+1}: train_loss={train_loss:.4f}, val_loss={val_loss:.4f}")
 
-    torch.save(model.state_dict(), out_model_path)
+        out_model_path = out_dir / f"showdown-{epoch+1}.pt"
+        torch.save(model.state_dict(), out_model_path)

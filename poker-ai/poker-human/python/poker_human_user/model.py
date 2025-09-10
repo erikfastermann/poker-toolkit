@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .poker_human import Dataset
+from poker_human import Dataset
 
 
 class ActionHead(nn.Module):
