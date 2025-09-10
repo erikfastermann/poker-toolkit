@@ -2019,7 +2019,7 @@ impl Game {
     }
 
     pub fn showdown_winners_by_pot(&self) -> Result<Vec<(u32, Bitset<2>)>> {
-        if !matches!(self.state(), State::ShowOrMuck(_) | State::End) {
+        if !matches!(self.state(), State::ShowdownOrNextRunout | State::End) {
             return Err("showdown: not in showdown or end state".into());
         }
 

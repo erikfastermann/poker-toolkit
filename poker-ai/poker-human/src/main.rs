@@ -30,19 +30,11 @@ fn main() -> Result<()> {
 
 fn gui() -> Result<()> {
     // TODO: Workaround
-    Python::with_gil(|py| -> Result<()> {
+    Python::with_gil(|py| {
         let sys = py.import("sys")?;
         let path = sys.getattr("path")?;
         let path: &Bound<'_, PyList> = path.downcast().unwrap();
-
-        // Ensure current directory is on sys.path
-        path.insert(0, ".")?;
-
-        // Now import your module
-        let poker_human = py.import("poker_human")?;
-        println!("Imported module: {:?}", poker_human.name()?);
-
-        Ok(())
+        path.insert(0, ".")
     })?;
 
     env_logger::init();

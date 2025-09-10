@@ -13,11 +13,19 @@ class ActionDataset(TorchDataset):
         return self.dataset.total_actions_of_interest()
 
     def __getitem__(self, idx):
-        x, legal_mask, target = self.dataset.get_action_item(idx)
+        try:
+            x, legal_mask, target = self.dataset.get_action_item(idx)
+        except Exception as e:
+            print(f'Error at index {idx}: {self.info(idx)}')
+            raise e
+
         x = torch.tensor(x, dtype=torch.float32)
         legal_mask = torch.tensor(legal_mask, dtype=torch.int8)
         target = torch.tensor(target, dtype=torch.float32)
         return x, legal_mask, target
+
+    def info(self, idx):
+        return self.dataset.action_info(idx)
 
 
 class ShowdownDataset(TorchDataset):
@@ -28,7 +36,12 @@ class ShowdownDataset(TorchDataset):
         return self.dataset.total_showdowns_of_interest()
 
     def __getitem__(self, idx):
-        x, legal_mask, target = self.dataset.get_showdown_item(idx)
+        try:
+            x, legal_mask, target = self.dataset.get_showdown_item(idx)
+        except Exception as e:
+            print(f'Error at index {idx}: {self.info(idx)}')
+            raise e
+
         x = torch.tensor(x, dtype=torch.float32)
         legal_mask = torch.tensor(legal_mask, dtype=torch.int8)
         target = torch.tensor(target, dtype=torch.float32)

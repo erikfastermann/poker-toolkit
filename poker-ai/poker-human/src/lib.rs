@@ -140,6 +140,15 @@ impl Dataset {
         (x, legal_mask, Self::create_action_target(target_index))
     }
 
+    fn action_info(&mut self, index: usize) -> (String, String) {
+        let game = self.get_action_index_game(index);
+
+        let hand_name = Arc::unwrap_or_clone(game.hand_name().unwrap_or_default());
+        let info = format!("{}: {:?}", game.board().street(), game.actions().last());
+
+        (hand_name, info)
+    }
+
     fn get_showdown_item(&mut self, index: usize) -> (Vec<f32>, Vec<i8>, Vec<f32>) {
         // TODO: Could consider hands with revealed cards without showdown.
 
