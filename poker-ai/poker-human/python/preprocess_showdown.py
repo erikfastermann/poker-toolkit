@@ -5,7 +5,12 @@ from tqdm.contrib.concurrent import process_map
 
 
 def get_entry(index):
-    x, legal_mask, target = dataset[index]
+    try:
+        x, legal_mask, target = dataset[index]
+    except Exception as e:
+        print(f'Skipping {index}: {e}')
+        return None
+
     hand_name, info = dataset.info(index)
 
     entry = {
@@ -29,6 +34,8 @@ if __name__ == '__main__':
     dataset = ShowdownDataset(db_path, limit)
 
     out = process_map(get_entry, range(len(dataset)), max_workers=max_workers, chunksize=1)
+
+    out = [entry for entry in out if entry is not None]
 
     with open(out_path, 'wb') as out_file:
         pickle.dump(out, out_file)

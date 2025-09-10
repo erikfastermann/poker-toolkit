@@ -1,5 +1,9 @@
 use core::fmt;
-use std::{cmp, sync::Arc};
+use std::{
+    cmp,
+    panic::{catch_unwind, AssertUnwindSafe, UnwindSafe},
+    sync::Arc,
+};
 
 use poker_core::{
     ai::AiAction,
@@ -15,7 +19,10 @@ use poker_core::{
     result::Result,
     suite::Suite,
 };
-use pyo3::{exceptions::PyValueError, prelude::*};
+use pyo3::{
+    exceptions::{PyRuntimeError, PyValueError},
+    prelude::*,
+};
 use rand::{
     distributions::{WeightedError, WeightedIndex},
     prelude::Distribution,
@@ -125,19 +132,21 @@ impl Dataset {
         self.total_showdowns_of_interest
     }
 
-    fn get_action_item(&mut self, index: usize) -> (Vec<f32>, Vec<i8>, Vec<f32>) {
-        let game = self.get_action_index_game(index);
+    fn get_action_item(&mut self, index: usize) -> PyResult<(Vec<f32>, Vec<i8>, Vec<f32>)> {
+        catch_unwind_helper(AssertUnwindSafe(|| {
+            let game = self.get_action_index_game(index);
 
-        let target_index = Self::encode_action_target_index(game);
+            let target_index = Self::encode_action_target_index(game);
 
-        assert!(game.previous());
+            assert!(game.previous());
 
-        let x = encode_action_input(game);
-        let legal_mask = encode_action_legal_mask(game);
+            let x = encode_action_input(game);
+            let legal_mask = encode_action_legal_mask(game);
 
-        assert_eq!(legal_mask[target_index], 1);
+            assert_eq!(legal_mask[target_index], 1);
 
-        (x, legal_mask, Self::create_action_target(target_index))
+            (x, legal_mask, Self::create_action_target(target_index))
+        }))
     }
 
     fn action_info(&mut self, index: usize) -> (String, String) {
@@ -149,18 +158,20 @@ impl Dataset {
         (hand_name, info)
     }
 
-    fn get_showdown_item(&mut self, index: usize) -> (Vec<f32>, Vec<i8>, Vec<f32>) {
+    fn get_showdown_item(&mut self, index: usize) -> PyResult<(Vec<f32>, Vec<i8>, Vec<f32>)> {
         // TODO: Could consider hands with revealed cards without showdown.
 
-        let game_index = self.get_showdown_index_game(index);
+        catch_unwind_helper(AssertUnwindSafe(|| {
+            let game_index = self.get_showdown_index_game(index);
 
-        let game = &mut self.games[game_index].0;
+            let game = &mut self.games[game_index].0;
 
-        let x = encode_showdown_input(game);
-        let legal_mask = encode_showdown_legal_mask(game);
-        let target = self.encode_showdown_target(game_index);
+            let x = encode_showdown_input(game);
+            let legal_mask = encode_showdown_legal_mask(game);
+            let target = self.encode_showdown_target(game_index);
 
-        (x, legal_mask, target)
+            (x, legal_mask, target)
+        }))
     }
 
     fn showdown_info(&mut self, index: usize) -> (String, String) {
@@ -1146,6 +1157,20 @@ impl ShowdownProbabilities {
 
         Some(Hand::from_index(weights.sample(rng)))
     }
+}
+
+fn catch_unwind_helper<F: FnOnce() -> R + UnwindSafe, R>(f: F) -> PyResult<R> {
+    catch_unwind(f).map_err(|err| {
+        let message = if let Some(s) = err.downcast_ref::<&str>() {
+            format!("panic: {s}")
+        } else if let Some(s) = err.downcast_ref::<String>() {
+            format!("panic: {s}")
+        } else {
+            "panic: unknown reason".to_owned()
+        };
+
+        PyRuntimeError::new_err(message)
+    })
 }
 
 #[pymodule]
