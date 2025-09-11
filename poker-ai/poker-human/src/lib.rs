@@ -94,6 +94,10 @@ impl Dataset {
             let mut game = Game::from_game_data(&hand_data.data)?;
             let current_action_count = Self::count_actions_of_interest(&mut game);
 
+            if current_action_count == 0 {
+                return Ok(true);
+            }
+
             let current_showdown_count = Self::showdowns_of_interest(&mut game);
             if current_showdown_count != 0 {
                 showdowns.push((games.len(), total_showdown_count));
@@ -192,8 +196,6 @@ impl Dataset {
         if !game.can_previous() {
             // Skip initial posts / straddles.
             assert!(game.next());
-            assert!(game.next());
-            return true;
         }
 
         let mut last_action = game.actions().last().copied().unwrap();
@@ -235,7 +237,6 @@ impl Dataset {
             count += 1;
         }
 
-        assert!(count > 0);
         count
     }
 
