@@ -817,15 +817,14 @@ impl PlayerActionGenerator for EquityStrategy {
         Option<&[RangeTableWith<u16>]>,
     )> {
         // Possible optimizations:
-        // - Adapt to bet sizes
-        // - Include bluffs
+        // - Cache pre flop frequencies
         // - Pre flop with ranges where possible
         // - No limping pre flop
 
         const SIZE_1_PERCENT: f64 = 1.0 / 3.0;
         const SIZE_2_PERCENT: f64 = 0.8;
 
-        let bet_raise_count: u32 = game
+        let previous_bet_raise_count: u32 = game
             .actions()
             .iter()
             .filter(|action| matches!(action, Action::Bet { .. } | Action::Raise { .. }))
@@ -833,17 +832,17 @@ impl PlayerActionGenerator for EquityStrategy {
             .try_into()
             .unwrap();
 
+        let equity_scale_factor =
+            previous_bet_raise_count + game.total_pot() / game.big_blind() / 10 + 1;
+
         let player = game.current_player().unwrap();
 
-        let in_hand_not_all_in = (0..game.player_count())
-            .filter(|player| game.in_hand_not_all_in(*player))
-            .count();
-        assert!(in_hand_not_all_in >= 2);
+        let not_folded = game.players_not_folded().count();
+        assert!(not_folded >= 2);
 
         let ranges: Vec<_> = iter::once(self.current_range.clone())
             .chain(
-                iter::repeat(RangeTable::FULL.to_frequencies(MAX_FREQUENCY))
-                    .take(in_hand_not_all_in - 1),
+                iter::repeat(RangeTable::FULL.to_frequencies(MAX_FREQUENCY)).take(not_folded - 1),
             )
             .collect();
 
@@ -863,6 +862,10 @@ impl PlayerActionGenerator for EquityStrategy {
         let mut bet_raise_1 = RangeTableWith::default();
         let mut bet_raise_2 = RangeTableWith::default();
 
+        let mut bet_raise_1_count = 0usize;
+        let mut bet_raise_2_count = 0usize;
+        let mut would_fold = Vec::new();
+
         for hand in Hand::all() {
             if hand.to_cards().overlaps(board) {
                 self.current_range[hand] = 0;
@@ -870,20 +873,41 @@ impl PlayerActionGenerator for EquityStrategy {
 
             let scaled_equity = equity
                 .equity_percent(hand)
-                .powf(f64::from(bet_raise_count) + 1.0);
+                .powf(f64::from(equity_scale_factor));
 
             if scaled_equity > 0.75 {
                 bet_raise_2[hand] = MAX_FREQUENCY;
+                bet_raise_2_count += 1;
             } else if scaled_equity > 0.5 {
                 bet_raise_1[hand] = MAX_FREQUENCY;
+                bet_raise_1_count += 1;
             } else if scaled_equity > 0.25 {
                 check_call[hand] = MAX_FREQUENCY;
             } else {
                 check_fold[hand] = MAX_FREQUENCY;
+                would_fold.push(hand);
             }
         }
 
-        // TODO: Merge with check / call if only that is allowed.
+        would_fold.sort_by_key(|hand| (equity.equity_percent(*hand) * 10_000.0).round() as u16);
+
+        // Add some bluffs, specific number has no significance.
+
+        for hand in would_fold.iter().copied().rev().take(bet_raise_2_count / 3) {
+            bet_raise_2[hand] = MAX_FREQUENCY;
+            check_fold[hand] = 0;
+        }
+
+        for hand in would_fold
+            .iter()
+            .copied()
+            .rev()
+            .skip(bet_raise_2_count / 3)
+            .take(bet_raise_1_count / 3)
+        {
+            bet_raise_1[hand] = MAX_FREQUENCY;
+            check_fold[hand] = 0;
+        }
 
         let call_amount = game.can_call().unwrap_or(0);
         let pot_with_call = game.total_pot().checked_add(call_amount).unwrap();
