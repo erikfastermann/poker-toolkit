@@ -49,7 +49,7 @@ if __name__ == "__main__":
     limit = 1000
     out_model_dir = "action"
     batch_size = 512
-    learning_rate = 1e-3
+    learning_rate = 1e-3 # TODO: Maybe test smaller or dynamic.
     epochs = 100
 
 

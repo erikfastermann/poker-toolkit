@@ -11,7 +11,10 @@ use eframe::egui::{
 };
 
 use poker_core::{
-    ai::{AlwaysAllIn, AlwaysCheckCall, AlwaysFold, PlayerActionGenerator, SimpleStrategy},
+    ai::{
+        AlwaysAllIn, AlwaysCheckCall, AlwaysFold, EquityStrategy, PlayerActionGenerator,
+        SimpleStrategy,
+    },
     bitset::Bitset,
     deck::Deck,
     game::{Action, Game, GameData, State, Street},
@@ -76,6 +79,7 @@ impl GameView {
         default_player_action: Option<usize>,
     ) -> Result<Self> {
         let mut player_action_generators = vec![
+            PlayerActionGeneratorEntry::new("Equity", Box::new(|| Box::new(EquityStrategy::new()))),
             PlayerActionGeneratorEntry::new("Fold", Box::new(|| Box::new(AlwaysFold))),
             PlayerActionGeneratorEntry::new("Check/Call", Box::new(|| Box::new(AlwaysCheckCall))),
             PlayerActionGeneratorEntry::new("AllIn", Box::new(|| Box::new(AlwaysAllIn))),

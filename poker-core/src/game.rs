@@ -1040,7 +1040,7 @@ impl Game {
         self.not_folded.iter(self.player_count())
     }
 
-    fn in_hand_not_all_in(&self, index: usize) -> bool {
+    pub fn in_hand_not_all_in(&self, index: usize) -> bool {
         assert!(index < self.player_count());
         self.not_folded.has(index) && !self.is_all_in(index)
     }

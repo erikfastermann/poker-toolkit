@@ -848,7 +848,7 @@ fn percent_pot(pot: u32, call_amount: u32, amount: u32) -> u32 {
 fn percent_pot_to_amount(pot_with_call: MilliBigBlind, percent: i64) -> MilliBigBlind {
     assert!(percent >= 0);
 
-    // Wee accept the precision loss here.
+    // We accept the precision loss here.
     let amount = ((percent as f64) / 100.0) * pot_with_call as f64;
     amount.round() as MilliBigBlind
 }

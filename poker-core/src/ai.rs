@@ -2,6 +2,7 @@ use std::{
     cmp::{self, Ordering},
     error::Error,
     fmt::{self, Write},
+    iter,
     sync::Arc,
 };
 
@@ -786,5 +787,205 @@ impl SimpleStrategy {
         let range_top = &hands_sorted_by_equity[range_top_end..];
 
         (range_bottom, range_middle, range_top)
+    }
+}
+
+pub struct EquityStrategy {
+    current_range: RangeTableWith<u16>,
+}
+
+impl EquityStrategy {
+    pub fn new() -> Self {
+        Self {
+            current_range: RangeTable::FULL.to_frequencies(MAX_FREQUENCY),
+        }
+    }
+}
+
+impl PlayerActionGenerator for EquityStrategy {
+    fn update_villain(&mut self, _game: &Game, _log: &mut String) -> Result<()> {
+        Ok(())
+    }
+
+    fn update_hero(
+        &mut self,
+        game: &Game,
+        _log: &mut String,
+    ) -> Result<(
+        AiAction,
+        Option<RangeConfigEntry>,
+        Option<&[RangeTableWith<u16>]>,
+    )> {
+        // Possible optimizations:
+        // - Adapt to bet sizes
+        // - Include bluffs
+        // - Pre flop with ranges where possible
+        // - No limping pre flop
+
+        const SIZE_1_PERCENT: f64 = 1.0 / 3.0;
+        const SIZE_2_PERCENT: f64 = 0.8;
+
+        let bet_raise_count: u32 = game
+            .actions()
+            .iter()
+            .filter(|action| matches!(action, Action::Bet { .. } | Action::Raise { .. }))
+            .count()
+            .try_into()
+            .unwrap();
+
+        let player = game.current_player().unwrap();
+
+        let in_hand_not_all_in = (0..game.player_count())
+            .filter(|player| game.in_hand_not_all_in(*player))
+            .count();
+        assert!(in_hand_not_all_in >= 2);
+
+        let ranges: Vec<_> = iter::once(self.current_range.clone())
+            .chain(
+                iter::repeat(RangeTable::FULL.to_frequencies(MAX_FREQUENCY))
+                    .take(in_hand_not_all_in - 1),
+            )
+            .collect();
+
+        let board = game.board().cards_set();
+        let equity = EquityTable::simulate_frequencies_with(
+            board,
+            &ranges,
+            100_000,
+            &mut SmallRng::seed_from_u64(42), // deterministic
+        )
+        .unwrap();
+
+        let equity = &equity[0];
+
+        let mut check_fold = RangeTableWith::default();
+        let mut check_call = RangeTableWith::default();
+        let mut bet_raise_1 = RangeTableWith::default();
+        let mut bet_raise_2 = RangeTableWith::default();
+
+        for hand in Hand::all() {
+            if hand.to_cards().overlaps(board) {
+                self.current_range[hand] = 0;
+            }
+
+            let scaled_equity = equity
+                .equity_percent(hand)
+                .powf(f64::from(bet_raise_count) + 1.0);
+
+            if scaled_equity > 0.75 {
+                bet_raise_2[hand] = MAX_FREQUENCY;
+            } else if scaled_equity > 0.5 {
+                bet_raise_1[hand] = MAX_FREQUENCY;
+            } else if scaled_equity > 0.25 {
+                check_call[hand] = MAX_FREQUENCY;
+            } else {
+                check_fold[hand] = MAX_FREQUENCY;
+            }
+        }
+
+        // TODO: Merge with check / call if only that is allowed.
+
+        let call_amount = game.can_call().unwrap_or(0);
+        let pot_with_call = game.total_pot().checked_add(call_amount).unwrap();
+
+        let raise_offset = game
+            .invested_in_street(player)
+            .checked_add(call_amount)
+            .unwrap();
+
+        // TODO: Remove with AiAction raise amount.
+        let min_bet_raise = game
+            .can_bet()
+            .or_else(|| game.can_raise().map(|(_, to)| to))
+            .unwrap_or(0);
+
+        // TODO: Use amount here with AiAction raise amount.
+        let max_bet_raise = game.previous_street_stack().unwrap();
+
+        // Should not overflow a u32, the percentages are smaller than one.
+        // TODO: Use amount here with AiAction raise amount, can remove raise_offset.
+
+        let size_1 = (f64::from(pot_with_call) * SIZE_1_PERCENT).round() as u32;
+        let size_1 = size_1.checked_add(raise_offset).unwrap();
+        let size_1 = cmp::max(cmp::min(size_1, max_bet_raise), min_bet_raise);
+
+        let size_2 = (f64::from(pot_with_call) * SIZE_2_PERCENT).round() as u32;
+        let size_2 = size_2.checked_add(raise_offset).unwrap();
+        let size_2 = cmp::max(cmp::min(size_2, max_bet_raise), min_bet_raise);
+
+        let bet_raise_actions = if game.can_bet().is_none() && game.can_raise().is_none() {
+            for hand in Hand::all() {
+                check_call[hand] = check_call[hand].checked_add(bet_raise_1[hand]).unwrap();
+                check_call[hand] = check_call[hand].checked_add(bet_raise_2[hand]).unwrap();
+
+                bet_raise_1[hand] = 0;
+                bet_raise_2[hand] = 0;
+            }
+
+            Vec::new()
+        } else {
+            if size_1 == size_2 {
+                for hand in Hand::all() {
+                    bet_raise_1[hand] = bet_raise_1[hand].checked_add(bet_raise_2[hand]).unwrap();
+                    bet_raise_2[hand] = 0;
+                }
+            }
+
+            let bet_raise_1_action = AiAction::BetRaise(size_1);
+            let bet_raise_1 = RangeAction::new(
+                bet_raise_1_action.to_range(game).unwrap(),
+                &self.current_range,
+                bet_raise_1,
+            );
+
+            let bet_raise_2_action = AiAction::BetRaise(size_2);
+            let bet_raise_2 = RangeAction::new(
+                bet_raise_2_action.to_range(game).unwrap(),
+                &self.current_range,
+                bet_raise_2,
+            );
+
+            if size_1 == size_2 {
+                vec![bet_raise_1]
+            } else {
+                vec![bet_raise_1, bet_raise_2]
+            }
+        };
+
+        let check_actions = if game.can_check() {
+            for hand in Hand::all() {
+                check_fold[hand] = check_fold[hand].checked_add(check_call[hand]).unwrap();
+                check_call[hand] = 0;
+            }
+
+            let check = RangeAction::new(RangeActionKind::Check, &self.current_range, check_fold);
+            vec![check]
+        } else {
+            let fold = RangeAction::new(RangeActionKind::Fold, &self.current_range, check_fold);
+            let call = RangeAction::new(RangeActionKind::Call, &self.current_range, check_call);
+            vec![fold, call]
+        };
+
+        let actions = check_actions.into_iter().chain(bet_raise_actions).collect();
+        let config = RangeConfigEntry::new(self.current_range.clone(), actions)?;
+
+        let action = config.pick(&mut rand::thread_rng(), game.current_hand().unwrap());
+        self.current_range = config.action_range(action).unwrap();
+
+        let action = AiAction::from_range(action, game.big_blind()).unwrap();
+
+        let action = if let AiAction::BetRaise(amount) = action {
+            // Avoid rounding issues.
+            let size = [size_1, size_2]
+                .into_iter()
+                .min_by_key(|size| size.abs_diff(amount))
+                .unwrap();
+
+            AiAction::BetRaise(size)
+        } else {
+            action
+        };
+
+        Ok((action, Some(config), None))
     }
 }
