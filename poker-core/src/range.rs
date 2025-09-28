@@ -1,5 +1,5 @@
 use std::cmp::{self, max, min};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::{BitAndAssign, BitOrAssign, Index, IndexMut};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -800,7 +800,7 @@ impl fmt::Debug for RangeTable {
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct RangeTableWith<T> {
     table: [T; Hand::COUNT],
 }
@@ -810,6 +810,43 @@ impl<T: Default> Default for RangeTableWith<T> {
         Self {
             table: array::from_fn(|_| Default::default()),
         }
+    }
+}
+
+impl<T: Serialize> Serialize for RangeTableWith<T> {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        use serde::ser::SerializeMap;
+
+        let mut state = serializer.serialize_map(Some(Hand::COUNT))?;
+        for (hand, value) in self.iter() {
+            state.serialize_entry(&hand, value)?;
+        }
+        state.end()
+    }
+}
+
+impl<'de, T: Deserialize<'de> + Default> Deserialize<'de> for RangeTableWith<T> {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let range: HashMap<Hand, T> = HashMap::deserialize(deserializer)?;
+
+        if range.len() != Hand::COUNT {
+            return Err(de::Error::invalid_length(
+                range.len(),
+                &Hand::COUNT.to_string().as_str(),
+            ));
+        }
+
+        let mut out = Self::default();
+        for (hand, value) in range {
+            out[hand] = value;
+        }
+        Ok(out)
     }
 }
 
@@ -1651,7 +1688,7 @@ impl RangeActionKind {
 }
 
 /// Might not be valid after initialization.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RangeAction {
     action: RangeActionKind,
     frequency: u64,
@@ -2116,6 +2153,23 @@ impl RangeConfigEntry {
 
         self.finalize_update()
     }
+
+    pub fn from_data(data: RangeConfigEntryData) -> Result<Self> {
+        Self::new(data.total_range, data.actions)
+    }
+
+    pub fn to_data(self) -> RangeConfigEntryData {
+        RangeConfigEntryData {
+            total_range: self.total_range,
+            actions: self.actions,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RangeConfigEntryData {
+    total_range: RangeTableWith<u16>,
+    actions: Vec<RangeAction>,
 }
 
 // TODO: Probably better to use a custom type for range frequencies.

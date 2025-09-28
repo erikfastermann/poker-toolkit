@@ -1,0 +1,9 @@
+[package]
+name = "generate-hands"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+poker-core = { path = "../../poker-core" }
+rand = { workspace = true }
+serde_json = { workspace = true }

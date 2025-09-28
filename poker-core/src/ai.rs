@@ -1,9 +1,10 @@
 use std::{
     cmp::{self, Ordering},
+    collections::HashMap,
     error::Error,
     fmt::{self, Write},
     iter,
-    sync::Arc,
+    sync::{Arc, LazyLock, RwLock},
 };
 
 use rand::{
@@ -790,15 +791,65 @@ impl SimpleStrategy {
     }
 }
 
+#[derive(Clone)]
 pub struct EquityStrategy {
     current_range: RangeTableWith<u16>,
 }
+
+static EQUITY_PRE_FLOP_CACHE: LazyLock<RwLock<HashMap<(RangeTableWith<u16>, usize), EquityTable>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
 
 impl EquityStrategy {
     pub fn new() -> Self {
         Self {
             current_range: RangeTable::FULL.to_frequencies(MAX_FREQUENCY),
         }
+    }
+
+    fn equity_table(&self, game: &Game) -> EquityTable {
+        let not_folded = game.players_not_folded().count();
+        assert!(not_folded >= 2);
+
+        if game.board().street() == Street::PreFlop {
+            let cache = EQUITY_PRE_FLOP_CACHE.read().unwrap();
+
+            let equity_table = cache.get(&(self.current_range.clone(), not_folded));
+
+            if let Some(equity_table) = equity_table {
+                return equity_table.clone();
+            }
+        }
+
+        let ranges: Vec<_> = iter::once(self.current_range.clone())
+            .chain(
+                iter::repeat(RangeTable::FULL.to_frequencies(MAX_FREQUENCY)).take(not_folded - 1),
+            )
+            .collect();
+
+        let board = game.board().cards_set();
+        let mut equity = EquityTable::simulate_frequencies_with(
+            board,
+            &ranges,
+            100_000,
+            &mut SmallRng::seed_from_u64(42), // deterministic
+        )
+        .unwrap();
+
+        let equity_table = equity.swap_remove(0);
+
+        if game.board().street() == Street::PreFlop {
+            // Multiple threads might recompute the equity,
+            // which we accept here.
+
+            let mut cache = EQUITY_PRE_FLOP_CACHE.write().unwrap();
+
+            cache.insert(
+                (self.current_range.clone(), not_folded),
+                equity_table.clone(),
+            );
+        }
+
+        equity_table
     }
 }
 
@@ -817,7 +868,6 @@ impl PlayerActionGenerator for EquityStrategy {
         Option<&[RangeTableWith<u16>]>,
     )> {
         // Possible optimizations:
-        // - Cache pre flop frequencies
         // - Pre flop with ranges where possible
         // - No limping pre flop
 
@@ -835,27 +885,10 @@ impl PlayerActionGenerator for EquityStrategy {
         let equity_scale_factor =
             previous_bet_raise_count + game.total_pot() / game.big_blind() / 10 + 1;
 
+        let board = game.board().cards_set();
         let player = game.current_player().unwrap();
 
-        let not_folded = game.players_not_folded().count();
-        assert!(not_folded >= 2);
-
-        let ranges: Vec<_> = iter::once(self.current_range.clone())
-            .chain(
-                iter::repeat(RangeTable::FULL.to_frequencies(MAX_FREQUENCY)).take(not_folded - 1),
-            )
-            .collect();
-
-        let board = game.board().cards_set();
-        let equity = EquityTable::simulate_frequencies_with(
-            board,
-            &ranges,
-            100_000,
-            &mut SmallRng::seed_from_u64(42), // deterministic
-        )
-        .unwrap();
-
-        let equity = &equity[0];
+        let equity = self.equity_table(game);
 
         let mut check_fold = RangeTableWith::default();
         let mut check_call = RangeTableWith::default();

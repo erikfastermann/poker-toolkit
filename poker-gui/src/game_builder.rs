@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use eframe::egui::{self, Align, ComboBox, Context, DragValue, Layout, Ui, Window};
 use egui_extras::{Column, TableBody, TableBuilder, TableRow};
@@ -352,6 +352,7 @@ impl GameBuilder {
                         date: None,
                         table_name: None,
                         hand_name: None,
+                        additional_metadata: HashMap::new(),
                         hero_index: None,
                         players,
                         button_index: self.button_index,

@@ -1,5 +1,5 @@
 use std::cmp::min;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::num::NonZeroU8;
 use std::sync::Arc;
 use std::{array, fmt, usize};
@@ -7,6 +7,7 @@ use std::{array, fmt, usize};
 use chrono::NaiveDateTime;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use serde_with::skip_serializing_none;
 
 use crate::bitset::Bitset;
@@ -350,6 +351,7 @@ pub struct Game {
     date: Option<NaiveDateTime>,
     table_name: Option<Arc<String>>,
     hand_name: Option<Arc<String>>,
+    additional_metadata: HashMap<Arc<str>, Value>,
     /// Set to u8::MAX if no hero is set.
     hero_index: u8,
     hands: [Hand; Self::MAX_PLAYERS],
@@ -601,6 +603,7 @@ impl Game {
             hand_name: None,
             max_players: None,
             unit: None,
+            additional_metadata: HashMap::new(),
             hero_index: u8::MAX,
             names,
             seats,
@@ -656,6 +659,7 @@ impl Game {
         if let Some(hand_name) = data.hand_name.clone() {
             game.set_hand_name(hand_name);
         }
+        game.additional_metadata = data.additional_metadata.clone();
         if let Some(hero_index) = data.hero_index {
             game.set_hero(usize::from(hero_index))?;
         }
@@ -760,6 +764,7 @@ impl Game {
             location: self.location(),
             table_name: self.table_name(),
             hand_name: self.hand_name(),
+            additional_metadata: self.additional_metadata.clone(),
             hero_index: self.hero().map(|n| u8::try_from(n).unwrap()),
             date: self.date(),
             players,
@@ -891,6 +896,14 @@ impl Game {
 
     pub fn clear_hand_name(&mut self) {
         self.hand_name = None;
+    }
+
+    pub fn additional_metadata(&self) -> &HashMap<Arc<str>, Value> {
+        &self.additional_metadata
+    }
+
+    pub fn additional_metadata_mut(&mut self) -> &mut HashMap<Arc<str>, Value> {
+        &mut self.additional_metadata
     }
 
     pub fn hero(&self) -> Option<usize> {
@@ -2019,8 +2032,11 @@ impl Game {
     }
 
     pub fn showdown_winners_by_pot(&self) -> Result<Vec<(u32, Bitset<2>)>> {
-        if !matches!(self.state(), State::ShowdownOrNextRunout | State::End) {
-            return Err("showdown: not in showdown or end state".into());
+        if !matches!(
+            self.state(),
+            State::ShowOrMuck(_) | State::ShowdownOrNextRunout | State::End
+        ) {
+            return Err("showdown: not in show or muck, showdown, or end state".into());
         }
 
         if self.not_folded.count() == 1 {
@@ -2032,7 +2048,7 @@ impl Game {
         }
 
         for player in self.players_not_folded() {
-            if self.hand_mucked(player) {
+            if self.hand_mucked(player) || !self.hand_shown(player) {
                 continue;
             }
             if self.get_hand(player).is_none() {
@@ -2110,6 +2126,12 @@ impl Game {
         let runout_count = u32::try_from(runouts.len()).unwrap();
         let mut winners_by_pot = Vec::new();
 
+        let show_or_muck_player = if let State::ShowOrMuck(player) = self.state() {
+            Some(player)
+        } else {
+            None
+        };
+
         for (runout_index, board) in runouts.iter().enumerate() {
             let board = Cards::from_slice(board.cards()).unwrap();
 
@@ -2117,6 +2139,10 @@ impl Game {
                 if self.hand_mucked(player) {
                     continue;
                 }
+                if !self.hand_shown(player) && Some(player) != show_or_muck_player {
+                    continue;
+                }
+
                 let hand = self.get_hand(player).unwrap();
                 scores[player] = board.with(hand.high()).with(hand.low()).score_fast();
             }
@@ -2215,6 +2241,20 @@ impl Game {
         self.hand_mucked.set(player);
         self.add_action(Action::MucksOrUnknown(u8::try_from(player).unwrap()));
         Ok(())
+    }
+
+    pub fn should_show(&self) -> Result<bool> {
+        let State::ShowOrMuck(player) = self.state() else {
+            return Err("should muck: not in show or muck state".into());
+        };
+
+        let winners_by_pot = self.showdown_winners_by_pot()?;
+
+        let should_show = winners_by_pot
+            .iter()
+            .any(|(_, winners)| winners.has(player));
+
+        Ok(should_show)
     }
 
     pub fn get_hand(&self, index: usize) -> Option<Hand> {
@@ -2665,6 +2705,9 @@ pub struct GameData {
     pub date: Option<NaiveDateTime>,
     pub table_name: Option<Arc<String>>,
     pub hand_name: Option<Arc<String>>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub additional_metadata: HashMap<Arc<str>, Value>,
     pub hero_index: Option<u8>,
 
     pub players: Vec<Player>,
@@ -2684,6 +2727,7 @@ impl Default for GameData {
             table_name: None,
             hand_name: None,
             date: None,
+            additional_metadata: HashMap::new(),
             hero_index: None,
             players: vec![Player::with_starting_stack(1_000); 6],
             button_index: 0,

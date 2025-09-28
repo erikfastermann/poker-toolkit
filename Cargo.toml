@@ -6,6 +6,7 @@ members = [
     "gto-wizard-crawler",
     "poker-ai/analyze-sizings",
     "poker-ai/poker-human",
+    "poker-ai/generate-hands",
 ]
 resolver = "2"
 
