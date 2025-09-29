@@ -19,7 +19,10 @@ use poker_core::{
     deck::Deck,
     game::{Action, Game, GameData, State, Street},
     hand::Hand,
-    range::{PreFlopRangeConfig, PreFlopRangeConfigData, RangeConfigEntry, RangeConfigEntryData},
+    range::{
+        PreFlopRangeConfig, PreFlopRangeConfigData, RangeConfigEntry, RangeConfigEntryData,
+        RangeTableWith,
+    },
     result::Result,
 };
 use rand::thread_rng;
@@ -863,10 +866,22 @@ impl GameView {
             };
 
             // TODO: Handle errors gracefully.
-            let range_config: RangeConfigEntryData = serde_json::from_value(range_config).unwrap();
-            let range_config = RangeConfigEntry::from_data(range_config).unwrap();
 
-            (vec![RangeValue::Full(range_config)], 0)
+            let Some(action) = self.game.actions().last().copied() else {
+                return;
+            };
+
+            if matches!(action, Action::Shows { .. } | Action::MucksOrUnknown(_)) {
+                let range: RangeTableWith<u16> = serde_json::from_value(range_config).unwrap();
+
+                (vec![RangeValue::Simple(range)], 0)
+            } else {
+                let range_config: RangeConfigEntryData =
+                    serde_json::from_value(range_config).unwrap();
+                let range_config = RangeConfigEntry::from_data(range_config).unwrap();
+
+                (vec![RangeValue::Full(range_config)], 0)
+            }
         } else {
             return;
         };

@@ -422,8 +422,8 @@ impl Dataset {
         let final_board_cards = final_board.cards_set();
 
         let hero_hand = match game.get_hand(usize::from(hero_player)) {
-            Some(hand) => hand,
-            None => {
+            Some(hand) if game.hand_shown(hero_player) => hand,
+            _ => {
                 // Get the worst score of the showdown winners.
                 // Using final board, because we don't know
                 // how the data source handles show / muck.
@@ -452,6 +452,8 @@ impl Dataset {
                 // This is misleading, but I currently don't see another option
                 // to still use most showdown data.
                 // This should always exist, but it is not guaranteed by the game implementation.
+                // Does not always exist in the phh handhq dataset,
+                // probably happens in cases where the hand is unknown.
                 worse_hands.choose(&mut self.rng).copied().unwrap()
             }
         };

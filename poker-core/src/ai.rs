@@ -806,6 +806,10 @@ impl EquityStrategy {
         }
     }
 
+    pub fn current_range(&self) -> &RangeTableWith<u16> {
+        &self.current_range
+    }
+
     fn equity_table(&self, game: &Game) -> EquityTable {
         let not_folded = game.players_not_folded().count();
         assert!(not_folded >= 2);
@@ -867,10 +871,6 @@ impl PlayerActionGenerator for EquityStrategy {
         Option<RangeConfigEntry>,
         Option<&[RangeTableWith<u16>]>,
     )> {
-        // Possible optimizations:
-        // - Pre flop with ranges where possible
-        // - No limping pre flop
-
         const SIZE_1_PERCENT: f64 = 1.0 / 3.0;
         const SIZE_2_PERCENT: f64 = 0.8;
 
@@ -882,8 +882,8 @@ impl PlayerActionGenerator for EquityStrategy {
             .try_into()
             .unwrap();
 
-        let equity_scale_factor =
-            previous_bet_raise_count + game.total_pot() / game.big_blind() / 10 + 1;
+        let equity_scale_factor = (1.35f64).powf(f64::from(previous_bet_raise_count))
+            + f64::from(game.total_pot() / game.big_blind() / 10);
 
         let board = game.board().cards_set();
         let player = game.current_player().unwrap();
@@ -899,14 +899,18 @@ impl PlayerActionGenerator for EquityStrategy {
         let mut bet_raise_2_count = 0usize;
         let mut would_fold = Vec::new();
 
+        let can_open = game.board().street() == Street::PreFlop
+            && game
+                .actions()
+                .iter()
+                .all(|action| !matches!(action, Action::Raise { .. }));
+
         for hand in Hand::all() {
             if hand.to_cards().overlaps(board) {
                 self.current_range[hand] = 0;
             }
 
-            let scaled_equity = equity
-                .equity_percent(hand)
-                .powf(f64::from(equity_scale_factor));
+            let scaled_equity = equity.equity_percent(hand).powf(equity_scale_factor);
 
             if scaled_equity > 0.75 {
                 bet_raise_2[hand] = MAX_FREQUENCY;
@@ -915,7 +919,11 @@ impl PlayerActionGenerator for EquityStrategy {
                 bet_raise_1[hand] = MAX_FREQUENCY;
                 bet_raise_1_count += 1;
             } else if scaled_equity > 0.25 {
-                check_call[hand] = MAX_FREQUENCY;
+                if can_open {
+                    bet_raise_1[hand] = MAX_FREQUENCY;
+                } else {
+                    check_call[hand] = MAX_FREQUENCY;
+                }
             } else {
                 check_fold[hand] = MAX_FREQUENCY;
                 would_fold.push(hand);

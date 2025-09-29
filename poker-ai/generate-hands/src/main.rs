@@ -5,6 +5,7 @@ use std::{
         Arc, Mutex,
     },
     thread,
+    time::Instant,
 };
 
 use poker_core::{
@@ -18,8 +19,8 @@ use serde_json::Map;
 
 const DB_PATH: &str = "equity.db";
 const WORKER_THREADS: usize = 10;
-const TOTAL_HANDS: usize = 20;
-const REPORT_INTERVAL: usize = 100;
+const TOTAL_HANDS: usize = 100;
+const REPORT_INTERVAL: usize = 10;
 const WRITE_TO_DB_INTERVAL: usize = 100;
 
 const PLAYER_COUNT: usize = 6;
@@ -36,6 +37,8 @@ fn main() -> Result<()> {
 }
 
 fn spawn_workers() -> Result<()> {
+    let start = Instant::now();
+
     let mut db = DB::open_and_create(DB_PATH)?;
 
     let (tx, rx) = mpsc::channel::<Game>();
@@ -45,7 +48,7 @@ fn spawn_workers() -> Result<()> {
         let tx = tx.clone();
         let counter = Arc::clone(&counter);
 
-        thread::spawn(|| worker_loop(tx, counter));
+        thread::spawn(move || worker_loop(tx, counter, start));
     }
 
     let mut games = Vec::new();
@@ -64,7 +67,7 @@ fn spawn_workers() -> Result<()> {
     Ok(())
 }
 
-fn worker_loop(tx: Sender<Game>, counter: Arc<Mutex<usize>>) {
+fn worker_loop(tx: Sender<Game>, counter: Arc<Mutex<usize>>, start: Instant) {
     loop {
         let mut count = counter.lock().unwrap();
 
@@ -73,7 +76,7 @@ fn worker_loop(tx: Sender<Game>, counter: Arc<Mutex<usize>>) {
         }
 
         if *count % REPORT_INTERVAL == 0 {
-            eprintln!("{count}/{TOTAL_HANDS}");
+            eprintln!("{count}/{TOTAL_HANDS} (elapsed: {:?})", start.elapsed());
         }
 
         *count += 1;
@@ -126,15 +129,38 @@ fn produce_hand() -> Result<Game> {
                     let range = serde_json::to_value(range.to_data())?;
                     ranges.insert(game.actions().len().to_string(), range);
                 }
+
+                for (villain, strat) in player_strategies.iter_mut().enumerate() {
+                    if villain == player {
+                        continue;
+                    }
+
+                    strat.update_villain(&game, &mut log)?;
+
+                    if log.len() != 0 {
+                        // TODO: Support log.
+                        return Err(format!(
+                            "game log is not empty for villain {}: {:?}: {}",
+                            villain,
+                            game.actions(),
+                            log
+                        )
+                        .into());
+                    }
+                }
             }
             State::Street(_) => game.draw_next_street(&mut rng)?,
             State::UncalledBet { .. } => game.uncalled_bet()?,
-            State::ShowOrMuck(_) => {
+            State::ShowOrMuck(player) => {
                 if game.should_show()? {
                     game.show_hand()?
                 } else {
                     game.muck_hand()?
                 }
+
+                let range = player_strategies[player].current_range();
+                let range = serde_json::to_value(range.clone())?;
+                ranges.insert(game.actions().len().to_string(), range);
             }
             State::ShowdownOrNextRunout => game.showdown_simple()?,
             State::End => {
