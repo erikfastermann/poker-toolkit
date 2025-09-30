@@ -64,12 +64,12 @@ class ShowdownHead(nn.Module):
     def __init__(self):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(Dataset.SHOWDOWN_INPUT_LEN, 4096), nn.ReLU(),
-            nn.Linear(4096, 4096), nn.ReLU(),
+            nn.Linear(Dataset.SHOWDOWN_INPUT_LEN, 10_000), nn.ReLU(),
+            nn.Linear(10_000, 10_000), nn.ReLU(),
             nn.Dropout(0.2),
-            nn.Linear(4096, 4096), nn.ReLU(),
+            nn.Linear(10_000, 10_000), nn.ReLU(),
             nn.Dropout(0.2),
-            nn.Linear(4096, Dataset.SHOWDOWN_TARGET_LEN)  # raw logits
+            nn.Linear(10_000, Dataset.SHOWDOWN_TARGET_LEN)  # raw logits
         )
 
     def forward(self, x, legal_mask):

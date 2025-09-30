@@ -269,7 +269,7 @@ pub struct Board {
 }
 
 impl Board {
-    const EMPTY: Self = Self {
+    pub const EMPTY: Self = Self {
         cards: [Card::MIN; 5],
         street: Street::PreFlop,
     };

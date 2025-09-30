@@ -1,8 +1,8 @@
 use core::fmt;
 use std::{
-    cmp,
+    cmp, iter,
     panic::{catch_unwind, AssertUnwindSafe, UnwindSafe},
-    sync::Arc,
+    sync::{Arc, LazyLock},
 };
 
 use poker_core::{
@@ -11,10 +11,11 @@ use poker_core::{
     card::Card,
     cards::Cards,
     db::{HandData, DB},
-    game::{milli_big_blind_to_amount_rounded, Action, Game, MilliBigBlind, State, Street},
+    equity::EquityTable,
+    game::{milli_big_blind_to_amount_rounded, Action, Board, Game, MilliBigBlind, State, Street},
     hand::Hand,
     init::init,
-    range::RangeTableWith,
+    range::{RangeTable, RangeTableWith},
     rank::Rank,
     result::Result,
     suite::Suite,
@@ -476,7 +477,8 @@ impl Dataset {
 
 const ACTION_INPUT_LEN: usize = CURRENT_STACKS_INDEX + STACKS_LEN;
 
-const SHOWDOWN_INPUT_LEN: usize = ACTION_INPUT_LEN + Game::MAX_PLAYERS;
+const SHOWDOWN_INPUT_LEN: usize =
+    ACTION_INPUT_LEN + Game::MAX_PLAYERS + Hand::COUNT * Street::COUNT;
 
 const ACTION_TARGET_LEN: usize = 14;
 
@@ -736,6 +738,9 @@ pub fn encode_action_legal_mask(game: &Game) -> Vec<i8> {
     legal_mask
 }
 
+static SHOWDOWN_PRE_FLOP_EQUITY: LazyLock<EquityTable> =
+    LazyLock::new(|| showdown_input_equity(Board::EMPTY, Street::PreFlop));
+
 pub fn encode_showdown_input(game: &Game) -> Vec<f32> {
     let hero_player = match game.state() {
         State::ShowOrMuck(player) => player,
@@ -750,14 +755,41 @@ pub fn encode_showdown_input(game: &Game) -> Vec<f32> {
     .unwrap();
 
     let mut x = encode_action_input(game);
+    x.reserve(SHOWDOWN_INPUT_LEN - ACTION_INPUT_LEN);
 
     let mut player_encoded = [0.0; Game::MAX_PLAYERS];
     one_hot(player_button_offset, &mut player_encoded);
-
     x.extend(player_encoded);
+
+    x.extend(Hand::all().map(|hand| SHOWDOWN_PRE_FLOP_EQUITY.equity_percent(hand) as f32));
+
+    let equity_streets =
+        &Street::STREETS[Street::Flop.to_usize()..=game.board().street().to_usize()];
+
+    for street in equity_streets.iter().copied() {
+        let equity = showdown_input_equity(game.board(), street);
+        let equity = Hand::all().map(|hand| equity.equity_percent(hand) as f32);
+
+        x.extend(equity);
+    }
+
+    let future_streets = (game.board().street().to_usize() + 1)..=Street::River.to_usize();
+
+    let zeros = iter::repeat(0.0f32).take(Hand::COUNT * future_streets.count());
+    x.extend(zeros);
+
     assert_eq!(x.len(), SHOWDOWN_INPUT_LEN);
 
     x
+}
+
+fn showdown_input_equity(board: Board, street: Street) -> EquityTable {
+    let board = Cards::from_slice(&board.cards()[..street.community_card_count()]).unwrap();
+
+    const RANGES: [RangeTable; 2] = [RangeTable::FULL, RangeTable::FULL];
+
+    let mut equity = EquityTable::simulate(board, &RANGES, 100_000).unwrap();
+    equity.pop().unwrap()
 }
 
 pub fn encode_showdown_legal_mask(game: &Game) -> Vec<i8> {

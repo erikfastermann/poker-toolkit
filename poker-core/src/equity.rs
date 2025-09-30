@@ -37,12 +37,12 @@ impl fmt::Display for Equity {
     }
 }
 
-fn valid_input(community_cards: Cards, ranges: &[impl AsRef<RangeTable>]) -> bool {
+fn valid_input(community_cards: Cards, ranges: &[RangeTable]) -> bool {
     // TODO: Support 10 players.
     community_cards.count() <= 5
         && ranges.len() >= 2
         && ranges.len() <= 9
-        && ranges.iter().all(|range| !range.as_ref().is_empty())
+        && ranges.iter().all(|range| !range.is_empty())
 }
 
 fn valid_input_frequencies(community_cards: Cards, ranges: &[RangeTableWith<u16>]) -> bool {
@@ -54,9 +54,9 @@ fn valid_input_frequencies(community_cards: Cards, ranges: &[RangeTableWith<u16>
             .all(|range| range_frequencies_valid(range) && !range_frequencies_empty(range))
 }
 
-pub fn total_combos_upper_bound(community_cards: Cards, ranges: &[impl AsRef<RangeTable>]) -> u128 {
+pub fn total_combos_upper_bound(community_cards: Cards, ranges: &[RangeTable]) -> u128 {
     assert!(ranges.len() <= 9);
-    assert!(ranges.iter().all(|range| !range.as_ref().is_empty()));
+    assert!(ranges.iter().all(|range| !range.is_empty()));
 
     let community_cards_count = community_cards.count();
     assert!(community_cards_count <= 5);
@@ -74,9 +74,7 @@ pub fn total_combos_upper_bound(community_cards: Cards, ranges: &[impl AsRef<Ran
     }
 
     for range in ranges {
-        count = count
-            .checked_mul(u128::from(range.as_ref().count()))
-            .unwrap();
+        count = count.checked_mul(u128::from(range.count())).unwrap();
     }
 
     count
@@ -143,10 +141,7 @@ impl Equity {
         equities
     }
 
-    pub fn enumerate(
-        community_cards: Cards,
-        ranges: &[impl AsRef<RangeTable>],
-    ) -> Option<Vec<Equity>> {
+    pub fn enumerate(community_cards: Cards, ranges: &[RangeTable]) -> Option<Vec<Equity>> {
         let mut wins = vec![0; ranges.len()];
         let mut ties = vec![0.0; ranges.len()];
         let equity_calculator = EquityCalculator::new(community_cards, ranges, |_, scores| {
@@ -158,7 +153,7 @@ impl Equity {
 
     pub fn simulate(
         start_community_cards: Cards,
-        ranges: &[impl AsRef<RangeTable>],
+        ranges: &[RangeTable],
         rounds: u64,
     ) -> Option<Vec<Equity>> {
         let mut wins = vec![0.0; ranges.len()];
@@ -253,10 +248,7 @@ impl EquityTable {
         equity_tables
     }
 
-    pub fn enumerate(
-        community_cards: Cards,
-        ranges: &[impl AsRef<RangeTable>],
-    ) -> Option<Vec<EquityTable>> {
+    pub fn enumerate(community_cards: Cards, ranges: &[RangeTable]) -> Option<Vec<EquityTable>> {
         let mut totals = vec![RangeTableWith::default(); ranges.len()];
         let mut wins = vec![RangeTableWith::default(); ranges.len()];
         let mut ties = vec![RangeTableWith::default(); ranges.len()];
@@ -270,7 +262,7 @@ impl EquityTable {
 
     pub fn simulate(
         start_community_cards: Cards,
-        ranges: &[impl AsRef<RangeTable>],
+        ranges: &[RangeTable],
         rounds: u64,
     ) -> Option<Vec<Self>> {
         let mut totals = vec![RangeTableWith::default(); ranges.len()];
@@ -370,7 +362,7 @@ impl EquityTable {
 
 fn simulate(
     start_community_cards: Cards,
-    ranges: &[impl AsRef<RangeTable>],
+    ranges: &[RangeTable],
     rounds: u64,
     mut f: impl FnMut(&[Hand], &[Score], f64),
 ) -> Option<f64> {
@@ -386,7 +378,7 @@ fn simulate(
     let player_count = ranges.len();
     let full_ranges_original: Vec<_> = ranges
         .iter()
-        .map(|r| r.as_ref().into_iter().collect::<Vec<_>>())
+        .map(|r| r.into_iter().collect::<Vec<_>>())
         .collect();
     let mut full_ranges = full_ranges_original.clone();
 
@@ -559,19 +551,19 @@ fn build_ranges_frequencies<'a>(
     total
 }
 
-struct EquityCalculator<'a, RT: AsRef<RangeTable>, F: FnMut(&[Hand], &[Score])> {
+struct EquityCalculator<'a, F: FnMut(&[Hand], &[Score])> {
     known_cards: Cards,
     visited_community_cards: Cards,
     community_cards: Cards,
-    ranges: &'a [RT],
+    ranges: &'a [RangeTable],
     hands: Vec<Hand>,
     hand_ranking_scores: Vec<Score>,
     total: u64,
     f: F,
 }
 
-impl<'a, RT: AsRef<RangeTable>, F: FnMut(&[Hand], &[Score])> EquityCalculator<'a, RT, F> {
-    fn new(community_cards: Cards, ranges: &'a [RT], f: F) -> Option<Self> {
+impl<'a, F: FnMut(&[Hand], &[Score])> EquityCalculator<'a, F> {
+    fn new(community_cards: Cards, ranges: &'a [RangeTable], f: F) -> Option<Self> {
         if !valid_input(community_cards, ranges) {
             None
         } else {
@@ -622,7 +614,7 @@ impl<'a, RT: AsRef<RangeTable>, F: FnMut(&[Hand], &[Score])> EquityCalculator<'a
     fn players(&mut self, remainder: usize) {
         let player_index = self.ranges.len() - remainder - 1;
         let current_known_cards = self.known_cards;
-        for hand in self.ranges[player_index].as_ref().into_iter() {
+        for hand in self.ranges[player_index].into_iter() {
             if current_known_cards.has(hand.high()) || current_known_cards.has(hand.low()) {
                 continue;
             }

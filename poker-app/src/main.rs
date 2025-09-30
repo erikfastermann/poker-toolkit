@@ -48,7 +48,6 @@ fn enumerate(args: &[String]) -> Result<()> {
     let ranges = args[1..]
         .iter()
         .map(|raw_range| RangeTable::parse(&raw_range))
-        .map(|r| r.map(Box::new))
         .collect::<Result<Vec<_>>>()?;
     let Some(equities) = Equity::enumerate(community_cards, &ranges) else {
         return Err("enumerate failed: invalid input or expected sample to large".into());
@@ -66,7 +65,6 @@ fn simulate(args: &[String]) -> Result<()> {
     let ranges = args[2..]
         .iter()
         .map(|raw_range| RangeTable::parse(&raw_range))
-        .map(|r| r.map(Box::new))
         .collect::<Result<Vec<_>>>()?;
     let Some(equities) = Equity::simulate(community_cards, &ranges, rounds) else {
         return Err("simulate failed: invalid input".into());
@@ -90,7 +88,6 @@ fn enumerate_table(args: &[String]) -> Result<()> {
     let ranges = args[1..]
         .iter()
         .map(|raw_range| RangeTable::parse(&raw_range))
-        .map(|r| r.map(Box::new))
         .collect::<Result<Vec<_>>>()?;
     let Some(equities) = EquityTable::enumerate(community_cards, &ranges) else {
         return Err("enumerate-table failed: invalid input or expected sample to large".into());
@@ -108,7 +105,6 @@ fn simulate_table(args: &[String]) -> Result<()> {
     let ranges = args[2..]
         .iter()
         .map(|raw_range| RangeTable::parse(&raw_range))
-        .map(|r| r.map(Box::new))
         .collect::<Result<Vec<_>>>()?;
     let Some(equity_tables) = EquityTable::simulate(community_cards, &ranges, rounds) else {
         return Err("simulate-table failed: invalid input".into());
@@ -117,12 +113,12 @@ fn simulate_table(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-fn print_equity_tables(ranges: &[impl AsRef<RangeTable>], equity_tables: &[EquityTable]) {
+fn print_equity_tables(ranges: &[RangeTable], equity_tables: &[EquityTable]) {
     assert!(equity_tables.len() >= 2);
     for (i, equity_table) in equity_tables.iter().enumerate() {
         println!("player {}: {}", i + 1, equity_table.total_equity());
 
-        let range = ranges[i].as_ref();
+        let range = &ranges[i];
         let mut hands: Vec<_> = range.into_iter().collect();
         hands.sort_by(|a, b| {
             let a = equity_table.equity(*a);
