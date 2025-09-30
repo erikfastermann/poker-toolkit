@@ -107,7 +107,7 @@ fn produce_hand() -> Result<Game> {
 
     assert!(player_strategies.iter().all(|s| !s.custom_show_or_muck()));
 
-    let mut ranges = Map::new();
+    let mut range_info = Map::new();
 
     for _ in 0..100_000 {
         match game.state() {
@@ -126,8 +126,13 @@ fn produce_hand() -> Result<Game> {
                 action.apply_to_game(&mut game)?;
 
                 if let Some(range) = range {
-                    let range = serde_json::to_value(range.to_data())?;
-                    ranges.insert(game.actions().len().to_string(), range);
+                    let actions: Vec<_> = range
+                        .action_kinds()
+                        .map(|action| (action, range.frequency(action)))
+                        .collect();
+
+                    let actions = serde_json::to_value(actions)?;
+                    range_info.insert(game.actions().len().to_string(), actions);
                 }
 
                 for (villain, strat) in player_strategies.iter_mut().enumerate() {
@@ -160,12 +165,12 @@ fn produce_hand() -> Result<Game> {
 
                 let range = player_strategies[player].current_range();
                 let range = serde_json::to_value(range.clone())?;
-                ranges.insert(game.actions().len().to_string(), range);
+                range_info.insert(game.actions().len().to_string(), range);
             }
             State::ShowdownOrNextRunout => game.showdown_simple()?,
             State::End => {
                 game.additional_metadata_mut()
-                    .insert(Arc::from("ranges"), ranges.into());
+                    .insert(Arc::from("range_info"), range_info.into());
 
                 return Ok(game);
             }

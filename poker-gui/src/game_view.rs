@@ -19,10 +19,7 @@ use poker_core::{
     deck::Deck,
     game::{Action, Game, GameData, State, Street},
     hand::Hand,
-    range::{
-        PreFlopRangeConfig, PreFlopRangeConfigData, RangeConfigEntry, RangeConfigEntryData,
-        RangeTableWith,
-    },
+    range::{PreFlopRangeConfig, PreFlopRangeConfigData, RangeActionKind, RangeTableWith},
     result::Result,
 };
 use rand::thread_rng;
@@ -850,18 +847,28 @@ impl GameView {
     }
 
     fn view_ranges(&mut self, ctx: &Context) {
-        let (ranges, log_offset) = if let Some((ranges, log_offset)) = self
+        let Some(action) = self.game.actions().last() else {
+            return;
+        };
+
+        let Some(player) = action.player_all() else {
+            return;
+        };
+
+        let (ranges, log) = if let Some((ranges, log_offset)) = self
             .current_range_histories
             .get(&self.game.actions().len())
             .cloned()
         {
-            (ranges, log_offset)
-        } else if let Some(ranges) = self.game.additional_metadata().get("ranges") {
-            let range_config = ranges
+            let log = self.current_generator_logs[player][..log_offset].to_owned();
+
+            (ranges, log)
+        } else if let Some(ranges) = self.game.additional_metadata().get("range_info") {
+            let range_info = ranges
                 .as_object()
                 .and_then(|ranges| ranges.get(&self.game.actions().len().to_string()));
 
-            let Some(range_config) = range_config.cloned() else {
+            let Some(range_info) = range_info.cloned() else {
                 return;
             };
 
@@ -872,27 +879,26 @@ impl GameView {
             };
 
             if matches!(action, Action::Shows { .. } | Action::MucksOrUnknown(_)) {
-                let range: RangeTableWith<u16> = serde_json::from_value(range_config).unwrap();
+                let range: RangeTableWith<u16> = serde_json::from_value(range_info).unwrap();
 
-                (vec![RangeValue::Simple(range)], 0)
+                (vec![RangeValue::Simple(range)], String::new())
             } else {
-                let range_config: RangeConfigEntryData =
-                    serde_json::from_value(range_config).unwrap();
-                let range_config = RangeConfigEntry::from_data(range_config).unwrap();
+                let range_config: Vec<(RangeActionKind, f64)> =
+                    serde_json::from_value(range_info).unwrap();
 
-                (vec![RangeValue::Full(range_config)], 0)
+                let log: String = range_config
+                    .into_iter()
+                    .map(|info| format!("{info:?}\n"))
+                    .collect();
+
+                (vec![RangeValue::None], log)
             }
         } else {
             return;
         };
 
-        let action = self.game.actions().last().unwrap();
-
-        let player = action.player_all().unwrap();
-
         self.range_viewer.replace_ranges(ranges);
-        self.range_viewer
-            .set_details(self.current_generator_logs[player][..log_offset].to_owned());
+        self.range_viewer.set_details(log);
 
         let villain_title = if self.range_viewer.selected() != 0 {
             // TODO: A little hacky that this depends on the concrete insertion order in the array.
