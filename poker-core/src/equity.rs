@@ -3,6 +3,7 @@ use core::fmt;
 use rand::{rngs::SmallRng, seq::SliceRandom, Rng, SeedableRng};
 
 use crate::{
+    bitset::Bitset,
     card::Card,
     cards::{Cards, Score},
     deck::Deck,
@@ -158,9 +159,17 @@ impl Equity {
     ) -> Option<Vec<Equity>> {
         let mut wins = vec![0.0; ranges.len()];
         let mut ties = vec![0.0; ranges.len()];
-        let total = simulate(start_community_cards, ranges, rounds, |_, scores, diff| {
-            showdown_simulate(scores, &mut wins, &mut ties, diff);
-        })?;
+        let mut rng = SmallRng::from_entropy();
+
+        let total = simulate(
+            start_community_cards,
+            ranges,
+            rounds,
+            &mut rng,
+            |_, scores, diff| {
+                showdown_simulate(scores, &mut wins, &mut ties, diff);
+            },
+        )?;
         Some(Self::from_total_wins_ties_simulate(total, &wins, &ties))
     }
 
@@ -265,13 +274,25 @@ impl EquityTable {
         ranges: &[RangeTable],
         rounds: u64,
     ) -> Option<Vec<Self>> {
+        let mut rng = SmallRng::from_entropy();
+        Self::simulate_with(start_community_cards, ranges, rounds, &mut rng)
+    }
+
+    pub fn simulate_with(
+        start_community_cards: Cards,
+        ranges: &[RangeTable],
+        rounds: u64,
+        rng: &mut impl Rng,
+    ) -> Option<Vec<Self>> {
         let mut totals = vec![RangeTableWith::default(); ranges.len()];
         let mut wins = vec![RangeTableWith::default(); ranges.len()];
         let mut ties = vec![RangeTableWith::default(); ranges.len()];
+
         let total = simulate(
             start_community_cards,
             ranges,
             rounds,
+            rng,
             |hands, scores, diff| {
                 showdown_table(hands, scores, &mut totals, &mut wins, &mut ties, diff);
             },
@@ -364,6 +385,7 @@ fn simulate(
     start_community_cards: Cards,
     ranges: &[RangeTable],
     rounds: u64,
+    rng: &mut impl Rng,
     mut f: impl FnMut(&[Hand], &[Score], f64),
 ) -> Option<f64> {
     if !valid_input(start_community_cards, ranges) {
@@ -373,7 +395,6 @@ fn simulate(
         return None;
     }
 
-    let mut rng = SmallRng::from_entropy();
     let remaining_community_cards = 5 - start_community_cards.count();
     let player_count = ranges.len();
     let full_ranges_original: Vec<_> = ranges
@@ -382,9 +403,15 @@ fn simulate(
         .collect();
     let mut full_ranges = full_ranges_original.clone();
 
+    let is_unfiltered_range = ranges
+        .iter()
+        .enumerate()
+        .filter(|(_, range)| **range == RangeTable::FULL)
+        .fold(Bitset::<2>::EMPTY, |s, (player, _)| s.with(player));
+
     let mut hands = vec![Hand::UNDEFINED; player_count];
     let mut scores = vec![Score::ZERO; player_count];
-    let mut deck = Deck::from_cards(&mut rng, start_community_cards);
+    let mut deck = Deck::from_cards(rng, start_community_cards);
     let mut total = 0.0;
 
     let community_card_factor: u64 = {
@@ -400,7 +427,7 @@ fn simulate(
         let community_cards = {
             let mut community_cards = start_community_cards;
             for _ in 0..remaining_community_cards {
-                community_cards.add(deck.draw(&mut rng).unwrap());
+                community_cards.add(deck.draw(rng).unwrap());
             }
             community_cards
         };
@@ -408,11 +435,29 @@ fn simulate(
         let mut seen_cards = community_cards;
         let mut factor = u128::from(community_card_factor);
         for (i, range) in full_ranges.iter_mut().enumerate() {
-            let range = filter_hands(&full_ranges_original[i], range, seen_cards);
-            factor *= u128::try_from(range.len()).unwrap();
-            let Some(hand) = range.choose(&mut rng).copied() else {
+            let (hand, range_len) = if is_unfiltered_range.has(i) {
+                let hand = deck.hand(rng).unwrap();
+
+                let remaining_cards = Card::COUNT - usize::from(seen_cards.count());
+                let range_len = remaining_cards * (remaining_cards - 1) / 2;
+
+                debug_assert_eq!(
+                    filter_hands(&full_ranges_original[i], range, seen_cards).len(),
+                    range_len,
+                );
+
+                (Some(hand), range_len)
+            } else {
+                let range = filter_hands(&full_ranges_original[i], range, seen_cards);
+                (range.choose(rng).copied(), range.len())
+            };
+
+            let Some(hand) = hand else {
                 continue 'outer;
             };
+
+            factor *= u128::try_from(range_len).unwrap();
+
             hands[i] = hand;
             scores[i] = community_cards
                 .with_unchecked(hand.high())

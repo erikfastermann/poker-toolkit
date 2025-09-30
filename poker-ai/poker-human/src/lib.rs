@@ -788,7 +788,14 @@ fn showdown_input_equity(board: Board, street: Street) -> EquityTable {
 
     const RANGES: [RangeTable; 2] = [RangeTable::FULL, RangeTable::FULL];
 
-    let mut equity = EquityTable::simulate(board, &RANGES, 100_000).unwrap();
+    let mut equity = EquityTable::simulate_with(
+        board,
+        &RANGES,
+        5_000_000,
+        &mut SmallRng::seed_from_u64(42), // deterministic
+    )
+    .unwrap();
+
     equity.pop().unwrap()
 }
 

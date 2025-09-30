@@ -796,7 +796,7 @@ pub struct EquityStrategy {
     current_range: RangeTableWith<u16>,
 }
 
-static EQUITY_PRE_FLOP_CACHE: LazyLock<RwLock<HashMap<(RangeTableWith<u16>, usize), EquityTable>>> =
+static EQUITY_PRE_FLOP_CACHE: LazyLock<RwLock<HashMap<usize, EquityTable>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
 impl EquityStrategy {
@@ -810,31 +810,27 @@ impl EquityStrategy {
         &self.current_range
     }
 
-    fn equity_table(&self, game: &Game) -> EquityTable {
+    fn equity_table(game: &Game) -> EquityTable {
         let not_folded = game.players_not_folded().count();
         assert!(not_folded >= 2);
 
         if game.board().street() == Street::PreFlop {
             let cache = EQUITY_PRE_FLOP_CACHE.read().unwrap();
 
-            let equity_table = cache.get(&(self.current_range.clone(), not_folded));
+            let equity_table = cache.get(&not_folded);
 
             if let Some(equity_table) = equity_table {
                 return equity_table.clone();
             }
         }
 
-        let ranges: Vec<_> = iter::once(self.current_range.clone())
-            .chain(
-                iter::repeat(RangeTable::FULL.to_frequencies(MAX_FREQUENCY)).take(not_folded - 1),
-            )
-            .collect();
+        let ranges: Vec<_> = iter::repeat(RangeTable::FULL).take(not_folded).collect();
 
         let board = game.board().cards_set();
-        let mut equity = EquityTable::simulate_frequencies_with(
+        let mut equity = EquityTable::simulate_with(
             board,
             &ranges,
-            100_000,
+            5_000_000,
             &mut SmallRng::seed_from_u64(42), // deterministic
         )
         .unwrap();
@@ -847,10 +843,7 @@ impl EquityStrategy {
 
             let mut cache = EQUITY_PRE_FLOP_CACHE.write().unwrap();
 
-            cache.insert(
-                (self.current_range.clone(), not_folded),
-                equity_table.clone(),
-            );
+            cache.insert(not_folded, equity_table.clone());
         }
 
         equity_table
@@ -888,7 +881,7 @@ impl PlayerActionGenerator for EquityStrategy {
         let board = game.board().cards_set();
         let player = game.current_player().unwrap();
 
-        let equity = self.equity_table(game);
+        let equity = Self::equity_table(game);
 
         let mut check_fold = RangeTableWith::default();
         let mut check_call = RangeTableWith::default();
@@ -912,21 +905,26 @@ impl PlayerActionGenerator for EquityStrategy {
 
             let scaled_equity = equity.equity_percent(hand).powf(equity_scale_factor);
 
-            if scaled_equity > 0.75 {
+            if scaled_equity > 0.8 {
                 bet_raise_2[hand] = MAX_FREQUENCY;
                 bet_raise_2_count += 1;
-            } else if scaled_equity > 0.5 {
+            } else if scaled_equity > 0.6 {
                 bet_raise_1[hand] = MAX_FREQUENCY;
                 bet_raise_1_count += 1;
-            } else if scaled_equity > 0.25 {
+            } else if scaled_equity > 0.3 {
                 if can_open {
                     bet_raise_1[hand] = MAX_FREQUENCY;
                 } else {
                     check_call[hand] = MAX_FREQUENCY;
                 }
+            } else if game.board().street() != Street::PreFlop && scaled_equity > 0.2 {
+                check_call[hand] = MAX_FREQUENCY;
             } else {
                 check_fold[hand] = MAX_FREQUENCY;
-                would_fold.push(hand);
+
+                if self.current_range[hand] != 0 {
+                    would_fold.push(hand);
+                }
             }
         }
 
