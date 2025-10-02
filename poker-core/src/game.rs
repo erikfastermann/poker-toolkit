@@ -351,7 +351,11 @@ pub struct Game {
     date: Option<NaiveDateTime>,
     table_name: Option<Arc<String>>,
     hand_name: Option<Arc<String>>,
-    additional_metadata: HashMap<Arc<str>, Value>,
+    /// Contains json data. Not using serde_json RawValue,
+    /// because it does not implement Eq.
+    /// Not using serde_json Value, because it is not compact
+    /// enough here.
+    additional_metadata: HashMap<Arc<str>, String>,
     /// Set to u8::MAX if no hero is set.
     hero_index: u8,
     hands: [Hand; Self::MAX_PLAYERS],
@@ -659,7 +663,12 @@ impl Game {
         if let Some(hand_name) = data.hand_name.clone() {
             game.set_hand_name(hand_name);
         }
-        game.additional_metadata = data.additional_metadata.clone();
+        game.additional_metadata = data
+            .additional_metadata
+            .iter()
+            // Converting a serde_json::Value to String should never fail.
+            .map(|(key, value)| (key.clone(), serde_json::to_string(value).unwrap()))
+            .collect();
         if let Some(hero_index) = data.hero_index {
             game.set_hero(usize::from(hero_index))?;
         }
@@ -758,13 +767,20 @@ impl Game {
             None
         };
 
+        let additional_metadata = self
+            .additional_metadata
+            .iter()
+            // Should never fail, because we only allow storing valid json as a value.
+            .map(|(key, value)| (key.clone(), serde_json::from_str(&value).unwrap()))
+            .collect();
+
         GameData {
             unit: self.unit(),
             max_players: self.max_players().map(|n| u8::try_from(n).unwrap()),
             location: self.location(),
             table_name: self.table_name(),
             hand_name: self.hand_name(),
-            additional_metadata: self.additional_metadata.clone(),
+            additional_metadata,
             hero_index: self.hero().map(|n| u8::try_from(n).unwrap()),
             date: self.date(),
             players,
@@ -898,12 +914,25 @@ impl Game {
         self.hand_name = None;
     }
 
-    pub fn additional_metadata(&self) -> &HashMap<Arc<str>, Value> {
-        &self.additional_metadata
+    pub fn additional_metadata<'de, T: Deserialize<'de>>(&'de self, key: &str) -> Result<T> {
+        let Some(value) = self.additional_metadata.get(key) else {
+            return Err(format!("additional metadata: key {key} does not exist").into());
+        };
+        Ok(serde_json::from_str(&value)?)
     }
 
-    pub fn additional_metadata_mut(&mut self) -> &mut HashMap<Arc<str>, Value> {
-        &mut self.additional_metadata
+    pub fn set_additional_metadata<T: Serialize>(
+        &mut self,
+        key: Arc<str>,
+        value: &T,
+    ) -> Result<()> {
+        self.additional_metadata
+            .insert(key, serde_json::to_string(value)?);
+        Ok(())
+    }
+
+    pub fn clear_additional_metadata<T: Serialize>(&mut self, key: &str) {
+        self.additional_metadata.remove(key);
     }
 
     pub fn hero(&self) -> Option<usize> {

@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     iter,
     sync::{
         mpsc::{self, Sender},
@@ -13,9 +14,9 @@ use poker_core::{
     db::DB,
     game::{Game, Player, State},
     init::init,
+    range::RangeInfo,
     result::Result,
 };
-use serde_json::Map;
 
 const DB_PATH: &str = "equity.db";
 const WORKER_THREADS: usize = 10;
@@ -107,7 +108,7 @@ fn produce_hand() -> Result<Game> {
 
     assert!(player_strategies.iter().all(|s| !s.custom_show_or_muck()));
 
-    let mut range_info = Map::new();
+    let mut range_info = BTreeMap::new();
 
     for _ in 0..100_000 {
         match game.state() {
@@ -131,8 +132,7 @@ fn produce_hand() -> Result<Game> {
                         .map(|action| (action, range.frequency(action)))
                         .collect();
 
-                    let actions = serde_json::to_value(actions)?;
-                    range_info.insert(game.actions().len().to_string(), actions);
+                    range_info.insert(game.actions().len(), RangeInfo::Frequencies(actions));
                 }
 
                 for (villain, strat) in player_strategies.iter_mut().enumerate() {
@@ -164,14 +164,11 @@ fn produce_hand() -> Result<Game> {
                 }
 
                 let range = player_strategies[player].current_range();
-                let range = serde_json::to_value(range.clone())?;
-                range_info.insert(game.actions().len().to_string(), range);
+                range_info.insert(game.actions().len(), RangeInfo::Range(range.clone()));
             }
             State::ShowdownOrNextRunout => game.showdown_simple()?,
             State::End => {
-                game.additional_metadata_mut()
-                    .insert(Arc::from("range_info"), range_info.into());
-
+                game.set_additional_metadata(Arc::from("range_info"), &range_info)?;
                 return Ok(game);
             }
         }

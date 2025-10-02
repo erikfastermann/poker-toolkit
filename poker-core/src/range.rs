@@ -2204,3 +2204,11 @@ pub fn frequency_to_f64(n: u16) -> f64 {
     let n = cmp::min(n, MAX_FREQUENCY);
     f64::from(n) / f64::from(MAX_FREQUENCY)
 }
+
+/// Used in game metadata.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum RangeInfo {
+    Frequencies(Vec<(RangeActionKind, f64)>),
+    Range(RangeTableWith<u16>),
+}

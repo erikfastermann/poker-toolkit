@@ -19,7 +19,7 @@ use poker_core::{
     deck::Deck,
     game::{Action, Game, GameData, State, Street},
     hand::Hand,
-    range::{PreFlopRangeConfig, PreFlopRangeConfigData, RangeActionKind, RangeTableWith},
+    range::{PreFlopRangeConfig, PreFlopRangeConfigData, RangeInfo},
     result::Result,
 };
 use rand::thread_rng;
@@ -847,6 +847,10 @@ impl GameView {
     }
 
     fn view_ranges(&mut self, ctx: &Context) {
+        if self.game.state() == State::End {
+            return;
+        }
+
         let Some(action) = self.game.actions().last() else {
             return;
         };
@@ -863,35 +867,26 @@ impl GameView {
             let log = self.current_generator_logs[player][..log_offset].to_owned();
 
             (ranges, log)
-        } else if let Some(ranges) = self.game.additional_metadata().get("range_info") {
-            let range_info = ranges
-                .as_object()
-                .and_then(|ranges| ranges.get(&self.game.actions().len().to_string()));
+        } else if let Ok(range_info) = self
+            .game
+            .additional_metadata::<HashMap<usize, RangeInfo>>("range_info")
+        {
+            // TODO: Handle errors gracefully below.
 
-            let Some(range_info) = range_info.cloned() else {
+            let Some(range_info) = range_info.get(&self.game.actions().len()) else {
                 return;
             };
 
-            // TODO: Handle errors gracefully.
+            match range_info {
+                RangeInfo::Frequencies(frequencies) => {
+                    let log: String = frequencies
+                        .iter()
+                        .map(|info| format!("{info:?}\n"))
+                        .collect();
 
-            let Some(action) = self.game.actions().last().copied() else {
-                return;
-            };
-
-            if matches!(action, Action::Shows { .. } | Action::MucksOrUnknown(_)) {
-                let range: RangeTableWith<u16> = serde_json::from_value(range_info).unwrap();
-
-                (vec![RangeValue::Simple(range)], String::new())
-            } else {
-                let range_config: Vec<(RangeActionKind, f64)> =
-                    serde_json::from_value(range_info).unwrap();
-
-                let log: String = range_config
-                    .into_iter()
-                    .map(|info| format!("{info:?}\n"))
-                    .collect();
-
-                (vec![RangeValue::None], log)
+                    (vec![RangeValue::None], log)
+                }
+                RangeInfo::Range(range) => (vec![RangeValue::Simple(range.clone())], String::new()),
             }
         } else {
             return;
