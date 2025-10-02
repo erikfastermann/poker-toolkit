@@ -2245,8 +2245,13 @@ impl Game {
 
     pub fn should_show(&self) -> Result<bool> {
         let State::ShowOrMuck(player) = self.state() else {
-            return Err("should muck: not in show or muck state".into());
+            return Err("should show: not in show or muck state".into());
         };
+
+        if self.board().street() != Street::River {
+            // Could muck when drawing dead, but keep it simple for now.
+            return Ok(true);
+        }
 
         let winners_by_pot = self.showdown_winners_by_pot()?;
 

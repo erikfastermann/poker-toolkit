@@ -978,6 +978,8 @@ impl PlayerActionGenerator for EquityStrategy {
 
         let bet_raise_actions = if game.can_bet().is_none() && game.can_raise().is_none() {
             for hand in Hand::all() {
+                // TODO: Does not work with the added bluffs.
+
                 check_call[hand] = check_call[hand].checked_add(bet_raise_1[hand]).unwrap();
                 check_call[hand] = check_call[hand].checked_add(bet_raise_2[hand]).unwrap();
 
