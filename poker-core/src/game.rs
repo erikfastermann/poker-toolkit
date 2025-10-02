@@ -215,7 +215,7 @@ impl Street {
 
     pub const STREETS: [Street; Self::COUNT] = [Self::PreFlop, Self::Flop, Self::Turn, Self::River];
 
-    pub fn previous(self) -> Option<Self> {
+    pub const fn previous(self) -> Option<Self> {
         match self {
             Street::PreFlop => None,
             Street::Flop => Some(Street::PreFlop),
@@ -224,7 +224,7 @@ impl Street {
         }
     }
 
-    pub fn next(self) -> Option<Self> {
+    pub const fn next(self) -> Option<Self> {
         match self {
             Street::PreFlop => Some(Street::Flop),
             Street::Flop => Some(Street::Turn),
@@ -233,7 +233,7 @@ impl Street {
         }
     }
 
-    pub fn to_usize(self) -> usize {
+    pub const fn to_usize(self) -> usize {
         self as usize
     }
 
