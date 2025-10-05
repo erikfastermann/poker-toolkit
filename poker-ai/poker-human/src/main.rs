@@ -3,18 +3,18 @@ use eframe::{
     Frame,
 };
 use poker_core::{
-    ai::{AiAction, PlayerActionGenerator},
+    ai::{AiAction, EquityStrategy, PlayerActionGenerator},
     game::Game,
     hand::Hand,
     init::init,
-    range::{RangeConfigEntry, RangeTableWith},
+    range::{RangeConfigEntry, RangeInfo, RangeTableWith},
     result::Result,
 };
 use poker_gui::game_view::{GameView, PlayerActionGeneratorEntry};
 use poker_human::{ActionHead, ActionProbabilities, ShowdownHead, ShowdownProbabilities};
 use pyo3::{prelude::*, types::PyList};
 use rand::thread_rng;
-use std::fmt::Write;
+use std::{env, fmt::Write};
 
 const ACTION_MODEL_PATH: &str = "action.pt";
 
@@ -23,12 +23,22 @@ const SHOWDOWN_MODEL_PATH: &str = "showdown.pt";
 fn main() -> Result<()> {
     unsafe { init() };
 
-    gui()
+    let args: Vec<_> = env::args().collect();
+
+    if args.len() != 2 {
+        return Err("invalid command".into());
+    }
+
+    match args.get(1).map(|s| s.as_str()) {
+        Some("model") => gui(false),
+        Some("baseline") => gui(true),
+        _ => Err("invalid command".into()),
+    }
 }
 
 // TODO: Could unify the gui code more with poker-app.
 
-fn gui() -> Result<()> {
+fn gui(with_baseline: bool) -> Result<()> {
     // TODO: Workaround
     Python::with_gil(|py| {
         let sys = py.import("sys")?;
@@ -53,7 +63,7 @@ fn gui() -> Result<()> {
             };
             cc.egui_ctx.set_style(style);
             egui_extras::install_image_loaders(&cc.egui_ctx);
-            Ok(Box::new(App::new()?))
+            Ok(Box::new(App::new(with_baseline)?))
         }),
     )
     .map_err(|err| err.to_string())?;
@@ -119,22 +129,96 @@ impl PlayerActionGenerator for HumanActionGenerator {
     }
 }
 
+struct BaselineActionGenerator {
+    baseline: EquityStrategy,
+    action_head: ActionHead,
+    showdown_head: ShowdownHead, // TODO
+}
+
+impl BaselineActionGenerator {
+    fn new(action_head: ActionHead, showdown_head: ShowdownHead) -> Self {
+        Self {
+            action_head,
+            showdown_head,
+            baseline: EquityStrategy::new(),
+        }
+    }
+}
+
+impl PlayerActionGenerator for BaselineActionGenerator {
+    fn update_villain(&mut self, game: &Game, log: &mut String) -> Result<()> {
+        self.baseline.update_villain(game, log)
+    }
+
+    fn update_hero(
+        &mut self,
+        game: &Game,
+        log: &mut String,
+    ) -> Result<(
+        AiAction,
+        Option<RangeConfigEntry>,
+        Option<&[RangeTableWith<u16>]>,
+    )> {
+        let probs = ActionProbabilities::predict(&self.action_head, game)?;
+        let (action, range, villains) = self.baseline.update_hero(game, log)?;
+
+        if let Some(range) = range.as_ref() {
+            let baseline_probs = ActionProbabilities::from_range(game, range)?;
+
+            writeln!(
+                log,
+                "Probabilities (Actual | Predicted):\n{}",
+                baseline_probs.comparison_string(&probs),
+            )?;
+        } else {
+            writeln!(log, "Predicted probabilities:\n{probs}")?;
+        }
+
+        Ok((action, range, villains))
+    }
+
+    fn showdown_info(&self, game: &Game) -> Result<Option<RangeInfo>> {
+        let probs = ShowdownProbabilities::predict(&self.showdown_head, game)?;
+
+        let ranges = vec![
+            ("Actual".to_owned(), self.baseline.current_range().clone()),
+            ("Predicted".to_owned(), probs.range()),
+        ];
+
+        Ok(Some(RangeInfo::Ranges(ranges)))
+    }
+}
+
 impl App {
-    fn new() -> Result<Self> {
+    fn new(with_baseline: bool) -> Result<Self> {
         let action_head = ActionHead::new(ACTION_MODEL_PATH)?;
         let showdown_head = ShowdownHead::new(SHOWDOWN_MODEL_PATH)?;
 
-        let action_generator = PlayerActionGeneratorEntry::new(
-            "Human",
-            Box::new(move || {
-                Python::with_gil(|py| {
-                    Box::new(HumanActionGenerator::new(
-                        action_head.clone_ref(py),
-                        showdown_head.clone_ref(py),
-                    ))
-                })
-            }),
-        );
+        let action_generator = if with_baseline {
+            PlayerActionGeneratorEntry::new(
+                "Baseline",
+                Box::new(move || {
+                    Python::with_gil(|py| {
+                        Box::new(BaselineActionGenerator::new(
+                            action_head.clone_ref(py),
+                            showdown_head.clone_ref(py),
+                        ))
+                    })
+                }),
+            )
+        } else {
+            PlayerActionGeneratorEntry::new(
+                "Human",
+                Box::new(move || {
+                    Python::with_gil(|py| {
+                        Box::new(HumanActionGenerator::new(
+                            action_head.clone_ref(py),
+                            showdown_head.clone_ref(py),
+                        ))
+                    })
+                }),
+            )
+        };
 
         let game = GameView::new_with_action_generators([action_generator], Some(0))?;
 

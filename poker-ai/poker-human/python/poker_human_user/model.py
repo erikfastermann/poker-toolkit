@@ -26,6 +26,14 @@ class ActionHead(nn.Module):
             nn.Dropout(0.2),
             nn.Linear(4096, 4096), nn.ReLU(),
             nn.Dropout(0.2),
+            nn.Linear(4096, 4096), nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(4096, 4096), nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(4096, 4096), nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(4096, 4096), nn.ReLU(),
+            nn.Dropout(0.2),
             nn.Linear(4096, Dataset.ACTION_TARGET_LEN)  # raw logits
         )
 
@@ -65,6 +73,10 @@ class ShowdownHead(nn.Module):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(Dataset.SHOWDOWN_INPUT_LEN, 10_000), nn.ReLU(),
+            nn.Linear(10_000, 10_000), nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(10_000, 10_000), nn.ReLU(),
+            nn.Dropout(0.2),
             nn.Linear(10_000, 10_000), nn.ReLU(),
             nn.Dropout(0.2),
             nn.Linear(10_000, 10_000), nn.ReLU(),

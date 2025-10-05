@@ -1,6 +1,8 @@
 use core::fmt;
 use std::{
-    cmp, iter,
+    cmp,
+    fmt::Write,
+    iter,
     panic::{catch_unwind, AssertUnwindSafe, UnwindSafe},
     sync::{Arc, LazyLock},
 };
@@ -15,7 +17,7 @@ use poker_core::{
     game::{milli_big_blind_to_amount_rounded, Action, Board, Game, MilliBigBlind, State, Street},
     hand::Hand,
     init::init,
-    range::{RangeTable, RangeTableWith},
+    range::{RangeActionKind, RangeConfigEntry, RangeTable, RangeTableWith, MAX_FREQUENCY},
     rank::Rank,
     result::Result,
     suite::Suite,
@@ -141,7 +143,7 @@ impl Dataset {
         catch_unwind_helper(AssertUnwindSafe(|| {
             let game = self.get_action_index_game(index);
 
-            let target_index = Self::encode_action_target_index(game);
+            let target_index = encode_action_target_index(game);
 
             assert!(game.previous());
 
@@ -328,72 +330,6 @@ impl Dataset {
         }
 
         panic!("too many actions in single game");
-    }
-
-    fn encode_action_target_index(game: &mut Game) -> usize {
-        assert!(game.small_blind() <= game.big_blind());
-
-        let current_action = game.actions().last().copied().unwrap();
-        let player = current_action.player().unwrap();
-
-        assert!(game.previous());
-        assert_eq!(game.current_player(), Some(player));
-
-        let can_call = game.can_call();
-        assert!(game.can_check() || can_call.is_some());
-
-        let pot = game.total_pot();
-        let call_amount = can_call.unwrap_or(0);
-
-        let can_open = can_open(game);
-
-        assert!(game.next());
-
-        let target_action_index = match current_action {
-            Action::Fold(_) => TARGET_FOLD_INDEX,
-            Action::Check(_) | Action::Call { .. } => TARGET_CHECK_CALL_INDEX,
-            Action::Bet { amount, .. } | Action::Raise { amount, .. } => {
-                let is_all_in = game.current_stacks()[usize::from(player)] == 0;
-
-                if is_all_in {
-                    if DEBUG {
-                        eprintln!("target: all-in");
-                    }
-
-                    TARGET_ALL_IN_INDEX
-                } else if can_open {
-                    let to = match current_action {
-                        Action::Raise { to, .. } => to,
-                        _ => unreachable!(),
-                    };
-
-                    let class_index =
-                        class_index(&OPEN_SIZES, game.amount_to_milli_big_blinds_rounded(to));
-
-                    if DEBUG {
-                        eprintln!("target: open raise to {}", OPEN_SIZES[class_index]);
-                    }
-
-                    TARGET_BET_RAISE_INDEX + class_index
-                } else {
-                    let percent_pot = percent_pot(pot, call_amount, amount);
-
-                    let class_index = class_index(&BET_RAISE_PERCENTAGES, i64::from(percent_pot));
-
-                    if DEBUG {
-                        eprintln!(
-                            "target: bet/raise to {}",
-                            BET_RAISE_PERCENTAGES[class_index]
-                        );
-                    }
-
-                    TARGET_BET_RAISE_INDEX + class_index
-                }
-            }
-            _ => unreachable!(),
-        };
-
-        target_action_index
     }
 
     fn create_action_target(index: usize) -> Vec<f32> {
@@ -921,6 +857,72 @@ pub fn encode_action_legal_mask(game: &Game) -> Vec<i8> {
     legal_mask
 }
 
+fn encode_action_target_index(game: &mut Game) -> usize {
+    assert!(game.small_blind() <= game.big_blind());
+
+    let current_action = game.actions().last().copied().unwrap();
+    let player = current_action.player().unwrap();
+
+    assert!(game.previous());
+    assert_eq!(game.current_player(), Some(player));
+
+    let can_call = game.can_call();
+    assert!(game.can_check() || can_call.is_some());
+
+    let pot = game.total_pot();
+    let call_amount = can_call.unwrap_or(0);
+
+    let can_open = can_open(game);
+
+    assert!(game.next());
+
+    let target_action_index = match current_action {
+        Action::Fold(_) => TARGET_FOLD_INDEX,
+        Action::Check(_) | Action::Call { .. } => TARGET_CHECK_CALL_INDEX,
+        Action::Bet { amount, .. } | Action::Raise { amount, .. } => {
+            let is_all_in = game.current_stacks()[usize::from(player)] == 0;
+
+            if is_all_in {
+                if DEBUG {
+                    eprintln!("target: all-in");
+                }
+
+                TARGET_ALL_IN_INDEX
+            } else if can_open {
+                let to = match current_action {
+                    Action::Raise { to, .. } => to,
+                    _ => unreachable!(),
+                };
+
+                let class_index =
+                    class_index(&OPEN_SIZES, game.amount_to_milli_big_blinds_rounded(to));
+
+                if DEBUG {
+                    eprintln!("target: open raise to {}", OPEN_SIZES[class_index]);
+                }
+
+                TARGET_BET_RAISE_INDEX + class_index
+            } else {
+                let percent_pot = percent_pot(pot, call_amount, amount);
+
+                let class_index = class_index(&BET_RAISE_PERCENTAGES, i64::from(percent_pot));
+
+                if DEBUG {
+                    eprintln!(
+                        "target: bet/raise to {}",
+                        BET_RAISE_PERCENTAGES[class_index]
+                    );
+                }
+
+                TARGET_BET_RAISE_INDEX + class_index
+            }
+        }
+        _ => unreachable!(),
+    };
+
+    target_action_index
+}
+
 static SHOWDOWN_PRE_FLOP_EQUITY: LazyLock<EquityTable> =
     LazyLock::new(|| showdown_input_equity(Board::EMPTY, Street::PreFlop));
 
@@ -1103,24 +1105,55 @@ pub struct ActionProbabilities {
 
 impl fmt::Display for ActionProbabilities {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "fold = {}", self.fold)?;
-        writeln!(f, "check/call = {}", self.check_call)?;
+        writeln!(f, "fold = {:.3}", self.fold)?;
+        writeln!(f, "check/call = {:.3}", self.check_call)?;
 
         for index in 0..TARGET_BET_RAISE_COUNT {
             writeln!(
                 f,
-                "bet/raise {} ({}BB) = {}",
+                "bet/raise {} ({}BB) = {:.3}",
                 self.bet_raise_size_string(index),
                 self.bet_raise_size(index) as f64 / 1000.0,
                 self.bet_raise(index)
             )?;
         }
 
-        writeln!(f, "all_in = {}", self.all_in)
+        writeln!(f, "all_in = {:.3}", self.all_in)
     }
 }
 
 impl ActionProbabilities {
+    pub fn from_range(game: &Game, range: &RangeConfigEntry) -> Result<Self> {
+        let legal_mask = encode_action_legal_mask(&game);
+
+        let mut game = game.clone();
+        let mut probs = [0.0f32; ACTION_TARGET_LEN];
+
+        for action in range.action_kinds() {
+            match action {
+                RangeActionKind::Post { .. } => {
+                    return Err("probabilities from range: action post not supported".into())
+                }
+                RangeActionKind::Straddle { .. } => {
+                    return Err("probabilities from range: action straddle not supported".into())
+                }
+                _ => (),
+            }
+
+            let freq = range.frequency(action) as f32;
+
+            // TODO: Does not work if game is not at final state.
+            let action = AiAction::from_range(&game, action)?;
+            action.apply_to_game(&mut game)?;
+            let index = encode_action_target_index(&mut game);
+            game.undo()?;
+
+            probs[index] = freq;
+        }
+
+        Self::from_probabilities(&game, &probs, &legal_mask)
+    }
+
     pub fn predict(action_head: &ActionHead, game: &Game) -> Result<Self> {
         let action_input = encode_action_input(game);
         let legal_mask = encode_action_legal_mask(game);
@@ -1131,6 +1164,12 @@ impl ActionProbabilities {
                 .call_method1(py, "predict", (action_input, &legal_mask))?
                 .extract(py)
         })?;
+
+        Self::from_probabilities(game, &probs, &legal_mask)
+    }
+
+    fn from_probabilities(game: &Game, probs: &[f32], legal_mask: &[i8]) -> Result<Self> {
+        assert_eq!(legal_mask.len(), ACTION_TARGET_LEN);
 
         if probs.len() != ACTION_TARGET_LEN {
             return Err("model actions output has bad len".into());
@@ -1206,6 +1245,34 @@ impl ActionProbabilities {
             min_amount,
             max_amount,
         })
+    }
+
+    pub fn comparison_string(&self, other: &Self) -> String {
+        let mut s = String::new();
+
+        writeln!(&mut s, "fold = {:.3} | {:.3}", self.fold, other.fold).unwrap();
+        writeln!(
+            &mut s,
+            "check/call = {:.3} | {:.3}",
+            self.check_call, other.check_call
+        )
+        .unwrap();
+
+        for index in 0..TARGET_BET_RAISE_COUNT {
+            writeln!(
+                &mut s,
+                "bet/raise {} ({}BB) = {:.3} | {:.3}",
+                self.bet_raise_size_string(index),
+                self.bet_raise_size(index) as f64 / 1000.0,
+                self.bet_raise(index),
+                other.bet_raise(index)
+            )
+            .unwrap();
+        }
+
+        writeln!(&mut s, "all_in = {:.3} | {:.3}", self.all_in, other.all_in).unwrap();
+
+        s
     }
 
     pub fn fold(&self) -> f32 {
@@ -1371,6 +1438,18 @@ impl ShowdownProbabilities {
         };
 
         Some(Hand::from_index(weights.sample(rng)))
+    }
+
+    pub fn range(&self) -> RangeTableWith<u16> {
+        let mut out = RangeTableWith::default();
+
+        for (hand, freq) in self.range.iter() {
+            let freq = (*freq * f32::from(MAX_FREQUENCY)).round() as u16;
+            assert!(freq <= MAX_FREQUENCY);
+            out[hand] = freq;
+        }
+
+        out
     }
 }
 

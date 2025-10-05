@@ -47,6 +47,7 @@ pub struct GameView {
     /// The keys are the indices of the inserted action values.
     /// The values contain the length of the matching generator logs.
     current_range_histories: HashMap<usize, (Vec<RangeValue>, usize)>,
+    showdown_info: HashMap<usize, RangeInfo>,
     current_generator_logs: Vec<String>,
     last_applied_action_index: usize,
     range_viewer: RangeViewer,
@@ -118,6 +119,7 @@ impl GameView {
             player_action_generators,
             current_player_action_generators: HashMap::new(),
             current_range_histories: HashMap::new(),
+            showdown_info: HashMap::new(),
             current_generator_logs: vec![String::new(); Game::MAX_PLAYERS],
             last_applied_action_index: 2, // Skip initial posts.
             range_viewer: RangeViewer::new(),
@@ -231,8 +233,17 @@ impl GameView {
                 self.game.uncalled_bet()?;
             }
             State::ShowOrMuck(player) => {
+                let action_generator = self.current_player_action_generators.get(&player);
+
+                if let Some(action_generator) = action_generator {
+                    // TODO: Properly handle error.
+                    if let Some(range_info) = action_generator.showdown_info(&self.game)? {
+                        self.showdown_info.insert(player, range_info);
+                    }
+                }
+
                 if self.game.get_hand(player).is_none() {
-                    let action_generator = &self.current_player_action_generators[&player];
+                    let action_generator = action_generator.unwrap();
                     assert!(action_generator.custom_show_or_muck());
 
                     let mut temp_log = String::new();
@@ -809,6 +820,7 @@ impl GameView {
         self.set_pick_community_cards(config.pick_community_cards);
 
         self.current_range_histories = HashMap::new();
+        self.showdown_info = HashMap::new();
         self.current_generator_logs
             .iter_mut()
             .for_each(String::clear);
@@ -847,11 +859,13 @@ impl GameView {
     }
 
     fn view_ranges(&mut self, ctx: &Context) {
+        // TODO: Handle errors gracefully below.
+
         if self.game.state() == State::End {
             return;
         }
 
-        let Some(action) = self.game.actions().last() else {
+        let Some(action) = self.game.actions().last().copied() else {
             return;
         };
 
@@ -859,35 +873,38 @@ impl GameView {
             return;
         };
 
-        let (ranges, log) = if let Some((ranges, log_offset)) = self
+        let (ranges, log, additional_titles) = if let Some((ranges, log_offset)) = self
             .current_range_histories
             .get(&self.game.actions().len())
             .cloned()
         {
             let log = self.current_generator_logs[player][..log_offset].to_owned();
 
-            (ranges, log)
+            // TODO: A little hacky that this depends on the concrete insertion order in the array.
+            let villains = self
+                .game
+                .players_not_folded()
+                .filter(|villain| *villain != player)
+                .map(|villain| self.game.player_name(villain).to_owned());
+
+            let additional_titles = iter::once(String::new()).chain(villains).collect();
+
+            (ranges, log, additional_titles)
         } else if let Ok(range_info) = self
             .game
             .additional_metadata::<HashMap<usize, RangeInfo>>("range_info")
         {
-            // TODO: Handle errors gracefully below.
-
             let Some(range_info) = range_info.get(&self.game.actions().len()) else {
                 return;
             };
 
-            match range_info {
-                RangeInfo::Frequencies(frequencies) => {
-                    let log: String = frequencies
-                        .iter()
-                        .map(|info| format!("{info:?}\n"))
-                        .collect();
+            view_range_from_info(range_info)
+        } else if let Action::Shows { player, .. } | Action::MucksOrUnknown(player) = action {
+            let Some(range_info) = self.showdown_info.get(&usize::from(player)) else {
+                return;
+            };
 
-                    (vec![RangeValue::None], log)
-                }
-                RangeInfo::Range(range) => (vec![RangeValue::Simple(range.clone())], String::new()),
-            }
+            view_range_from_info(range_info)
         } else {
             return;
         };
@@ -895,31 +912,14 @@ impl GameView {
         self.range_viewer.replace_ranges(ranges);
         self.range_viewer.set_details(log);
 
-        let villain_title = if self.range_viewer.selected() != 0 {
-            // TODO: A little hacky that this depends on the concrete insertion order in the array.
-            let villain = self
-                .game
-                .players_not_folded()
-                .filter(|villain| *villain != player)
-                .nth(self.range_viewer.selected() - 1)
-                .unwrap();
+        let additional_title = additional_titles
+            .get(self.range_viewer.selected())
+            .filter(|s| !s.is_empty())
+            .map(|s| format!(" ({})", s))
+            .unwrap_or_default();
 
-            format!(" ({})", self.game.player_name(villain))
-        } else {
-            String::new()
-        };
+        let title = format!("{}{}", self.game.player_name(player), additional_title);
 
-        let kind = match action {
-            Action::Shows { .. } | Action::MucksOrUnknown(_) => "Showdown",
-            _ => "Range",
-        };
-
-        let title = format!(
-            "{} - {}{}",
-            kind,
-            self.game.player_name(player),
-            villain_title
-        );
         // TODO: Nicer rendering and default position of window.
         self.range_viewer.window(ctx, Id::new("Range"), title);
     }
@@ -964,6 +964,34 @@ impl GameView {
             self.game.get_hand(player)
         } else {
             None
+        }
+    }
+}
+
+fn view_range_from_info(range_info: &RangeInfo) -> (Vec<RangeValue>, String, Vec<String>) {
+    match range_info {
+        RangeInfo::Frequencies(frequencies) => {
+            let log: String = frequencies
+                .iter()
+                .map(|info| format!("{info:?}\n"))
+                .collect();
+
+            (vec![RangeValue::None], log, Vec::new())
+        }
+        RangeInfo::Range(range) => (
+            vec![RangeValue::Simple(range.clone())],
+            String::new(),
+            Vec::new(),
+        ),
+        RangeInfo::Ranges(ranges) => {
+            let additional_titles = ranges.iter().map(|(name, _)| name.clone()).collect();
+
+            let ranges: Vec<_> = ranges
+                .iter()
+                .map(|(_, range)| RangeValue::Simple(range.clone()))
+                .collect();
+
+            (ranges, String::new(), additional_titles)
         }
     }
 }

@@ -18,8 +18,8 @@ use crate::{
     game::{milli_big_blind_to_amount_rounded, Action, Game, Street},
     hand::Hand,
     range::{
-        range_remove_cards, PreFlopAction, PreFlopRangeConfig, PreFlopRangeTable, RangeAction,
-        RangeActionKind, RangeConfigEntry, RangeEntry, RangeTable, RangeTableWith, MAX_FREQUENCY,
+        range_remove_cards, PreFlopRangeConfig, PreFlopRangeTable, RangeAction, RangeActionKind,
+        RangeConfigEntry, RangeEntry, RangeInfo, RangeTable, RangeTableWith, MAX_FREQUENCY,
     },
     rank::Rank,
     result::Result,
@@ -47,25 +47,7 @@ pub enum AiAction {
 }
 
 impl AiAction {
-    pub fn from_pre_flop(action: PreFlopAction, big_blind: u32) -> Result<Self> {
-        match action {
-            PreFlopAction::Post { .. } | PreFlopAction::Straddle { .. } => {
-                Err("ai action from pre flop: straddle and post currently not supported".into())
-            }
-            PreFlopAction::Fold => Ok(AiAction::Fold),
-            PreFlopAction::Check => Ok(AiAction::CheckFold),
-            PreFlopAction::Call => Ok(AiAction::CheckCall),
-            PreFlopAction::Raise(amount) => {
-                if let Some(amount) = milli_big_blind_to_amount_rounded(amount, big_blind) {
-                    Ok(AiAction::BetRaise(amount))
-                } else {
-                    Err("ai action from pre flop action: conversion of raise amount failed".into())
-                }
-            }
-        }
-    }
-
-    pub fn from_range(action: RangeActionKind, big_blind: u32) -> Result<Self> {
+    pub fn from_range(game: &Game, action: RangeActionKind) -> Result<Self> {
         match action {
             RangeActionKind::Post { .. } | RangeActionKind::Straddle { .. } => {
                 Err("ai action from range: straddle and post currently not supported".into())
@@ -74,7 +56,17 @@ impl AiAction {
             RangeActionKind::Check => Ok(AiAction::CheckFold),
             RangeActionKind::Call => Ok(AiAction::CheckCall),
             RangeActionKind::Bet(amount) | RangeActionKind::Raise(amount) => {
-                if let Some(amount) = milli_big_blind_to_amount_rounded(amount, big_blind) {
+                // TODO: Remove with AiAction raise amount.
+                let min_amount = game
+                    .can_bet()
+                    .or_else(|| game.can_raise().map(|(_, to)| to))
+                    .unwrap_or(0);
+
+                // TODO: Use amount here with AiAction raise amount.
+                let max_amount = game.previous_street_stack().unwrap();
+
+                if let Some(amount) = milli_big_blind_to_amount_rounded(amount, game.big_blind()) {
+                    let amount = cmp::min(cmp::max(amount, min_amount), max_amount);
                     Ok(AiAction::BetRaise(amount))
                 } else {
                     Err("ai action from range: conversion of bet or raise amount failed".into())
@@ -189,6 +181,10 @@ pub trait PlayerActionGenerator {
     fn show_or_muck(&self, _game: &Game, _log: &mut String) -> Result<Option<Hand>> {
         Err("custom show or muck not implemented".into())
     }
+
+    fn showdown_info(&self, _game: &Game) -> Result<Option<RangeInfo>> {
+        Ok(None)
+    }
 }
 
 pub struct AlwaysFold;
@@ -295,7 +291,7 @@ impl PlayerActionGenerator for SimpleStrategy {
         let action = range.pick(&mut self.rng, game.current_hand().unwrap());
         self.current_ranges[game.current_player().unwrap()] = range.action_range(action).unwrap();
 
-        let action = AiAction::from_range(action, game.big_blind())?;
+        let action = AiAction::from_range(game, action)?;
         Ok((action, Some(range), Some(&self.current_ranges)))
     }
 }
@@ -1037,10 +1033,11 @@ impl PlayerActionGenerator for EquityStrategy {
         let action = config.pick(&mut rand::thread_rng(), game.current_hand().unwrap());
         self.current_range = config.action_range(action).unwrap();
 
-        let action = AiAction::from_range(action, game.big_blind()).unwrap();
+        let action = AiAction::from_range(game, action).unwrap();
 
         let action = if let AiAction::BetRaise(amount) = action {
             // Avoid rounding issues.
+            // TODO: Probably not needed anymore.
             let size = [size_1, size_2]
                 .into_iter()
                 .min_by_key(|size| size.abs_diff(amount))

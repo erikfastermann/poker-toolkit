@@ -2211,4 +2211,5 @@ pub fn frequency_to_f64(n: u16) -> f64 {
 pub enum RangeInfo {
     Frequencies(Vec<(RangeActionKind, f64)>),
     Range(RangeTableWith<u16>),
+    Ranges(Vec<(String, RangeTableWith<u16>)>),
 }
