@@ -215,7 +215,7 @@ impl Equity {
     }
 }
 
-#[derive(Clone)]
+#[derive(Default, Clone)]
 pub struct EquityTable {
     total_win_percent: f64,
     total_tie_percent: f64,

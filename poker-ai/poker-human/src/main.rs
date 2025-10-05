@@ -4,10 +4,12 @@ use eframe::{
 };
 use poker_core::{
     ai::{AiAction, EquityStrategy, PlayerActionGenerator},
+    cards::Cards,
+    equity::EquityTable,
     game::Game,
     hand::Hand,
     init::init,
-    range::{RangeConfigEntry, RangeInfo, RangeTableWith},
+    range::{RangeConfigEntry, RangeInfo, RangeTable, RangeTableWith, MAX_FREQUENCY},
     result::Result,
 };
 use poker_gui::game_view::{GameView, PlayerActionGeneratorEntry};
@@ -178,15 +180,42 @@ impl PlayerActionGenerator for BaselineActionGenerator {
     }
 
     fn showdown_info(&self, game: &Game) -> Result<Option<RangeInfo>> {
+        let baseline_range = self.baseline.current_range().clone();
+        let baseline_equities = equities_from_range(game.board().cards_set(), &baseline_range);
+
         let probs = ShowdownProbabilities::predict(&self.showdown_head, game)?;
+        let model_range = probs.range();
+        let model_equities = equities_from_range(game.board().cards_set(), &model_range);
 
         let ranges = vec![
-            ("Actual".to_owned(), self.baseline.current_range().clone()),
-            ("Predicted".to_owned(), probs.range()),
+            ("Actual".to_owned(), baseline_range),
+            ("Predicted".to_owned(), model_range),
+            ("Actual equities".to_owned(), baseline_equities),
+            ("Predicted equities".to_owned(), model_equities),
         ];
 
         Ok(Some(RangeInfo::Ranges(ranges)))
     }
+}
+
+fn equities_from_range(community_cards: Cards, range: &RangeTableWith<u16>) -> RangeTableWith<u16> {
+    let ranges = vec![
+        RangeTable::FULL.to_frequencies(MAX_FREQUENCY),
+        range.clone(),
+    ];
+
+    let equities = EquityTable::simulate_frequencies(community_cards, &ranges, 1_000_000);
+    let equity = equities.map(|e| e[0].clone()).unwrap_or_default();
+
+    let mut out = RangeTableWith::default();
+
+    for hand in Hand::all() {
+        let equity = equity.equity_percent(hand) * f64::from(MAX_FREQUENCY);
+        out[hand] = equity as u16;
+        assert!(out[hand] <= MAX_FREQUENCY)
+    }
+
+    out
 }
 
 impl App {
