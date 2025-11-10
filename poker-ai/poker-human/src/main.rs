@@ -18,29 +18,29 @@ use pyo3::{prelude::*, types::PyList};
 use rand::thread_rng;
 use std::{env, fmt::Write};
 
-const ACTION_MODEL_PATH: &str = "action.pt";
-
-const SHOWDOWN_MODEL_PATH: &str = "showdown.pt";
-
 fn main() -> Result<()> {
     unsafe { init() };
 
     let args: Vec<_> = env::args().collect();
 
-    if args.len() != 2 {
+    if args.len() != 4 {
         return Err("invalid command".into());
     }
 
-    match args.get(1).map(|s| s.as_str()) {
-        Some("model") => gui(false),
-        Some("baseline") => gui(true),
-        _ => Err("invalid command".into()),
-    }
+    let with_baseline = match args[1].as_str() {
+        "model" => false,
+        "baseline" => true,
+        _ => return Err("invalid command".into()),
+    };
+
+    let action_model_path = args[2].as_str();
+    let showdown_model_path = args[3].as_str();
+    gui(with_baseline, action_model_path, showdown_model_path)
 }
 
 // TODO: Could unify the gui code more with poker-app.
 
-fn gui(with_baseline: bool) -> Result<()> {
+fn gui(with_baseline: bool, action_model_path: &str, showdown_model_path: &str) -> Result<()> {
     // TODO: Workaround
     Python::with_gil(|py| {
         let sys = py.import("sys")?;
@@ -65,7 +65,11 @@ fn gui(with_baseline: bool) -> Result<()> {
             };
             cc.egui_ctx.set_style(style);
             egui_extras::install_image_loaders(&cc.egui_ctx);
-            Ok(Box::new(App::new(with_baseline)?))
+            Ok(Box::new(App::new(
+                with_baseline,
+                action_model_path,
+                showdown_model_path,
+            )?))
         }),
     )
     .map_err(|err| err.to_string())?;
@@ -219,9 +223,13 @@ fn equities_from_range(community_cards: Cards, range: &RangeTableWith<u16>) -> R
 }
 
 impl App {
-    fn new(with_baseline: bool) -> Result<Self> {
-        let action_head = ActionHead::new(ACTION_MODEL_PATH)?;
-        let showdown_head = ShowdownHead::new(SHOWDOWN_MODEL_PATH)?;
+    fn new(
+        with_baseline: bool,
+        action_model_path: &str,
+        showdown_model_path: &str,
+    ) -> Result<Self> {
+        let action_head = ActionHead::new(action_model_path)?;
+        let showdown_head = ShowdownHead::new(showdown_model_path)?;
 
         let action_generator = if with_baseline {
             PlayerActionGeneratorEntry::new(
