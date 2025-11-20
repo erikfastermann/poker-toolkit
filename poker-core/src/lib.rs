@@ -21,3 +21,4 @@ pub mod range;
 pub mod rank;
 pub mod result;
 pub mod suite;
+pub mod xml_parser;

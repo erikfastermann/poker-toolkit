@@ -379,7 +379,7 @@ pub struct Game {
 }
 
 impl Game {
-    const MAX_RUNOUTS: usize = 4;
+    pub const MAX_RUNOUTS: usize = 4;
 
     pub const MIN_PLAYERS: usize = 2;
     // TODO: Check that nothing is broken with 10 players.
@@ -1976,7 +1976,14 @@ impl Game {
         }
 
         if total_pot.checked_add(total_rake) != Some(self.total_pot()) {
-            return Err("showdown: total pot and supplied pot shares with rake don't match".into());
+            return Err(format!(
+                "{}: total_winnings={} total_rake={} total_pot={}",
+                "showdown: total pot and supplied pot shares with rake don't match",
+                total_pot,
+                total_rake,
+                self.total_pot(),
+            )
+            .into());
         }
         self.at_end = true;
         Ok(())

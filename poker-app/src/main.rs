@@ -15,6 +15,7 @@ use poker_core::parser::GGHandHistoryParser;
 use poker_core::phh_parser::{parse_phhs_str, SkipReasons};
 use poker_core::range::RangeTable;
 use poker_core::result::Result;
+use poker_core::xml_parser::parse_xml_str;
 use poker_gui::game_view::GameView;
 use poker_gui::history_viewer::HistoryView;
 use rusqlite::types::Value;
@@ -33,6 +34,7 @@ fn main() -> Result<()> {
         Some("simulate-table") => simulate_table(&args[2..]),
         Some("parse-gg") => parse_gg(&args[2..]),
         Some("parse-phhs") => parse_phhs(&args[2..]),
+        Some("parse-xml") => parse_xml(&args[2..]),
         Some("query") => query(&args[2..]),
         Some("gui") => gui(&args[2..]),
         Some("history-gui") => history_gui(&args[2..]),
@@ -308,6 +310,102 @@ fn parse_phhs_file(path: &Path, db: &mut DB, skip_reasons: &mut SkipReasons) -> 
         Ok(new_hands_count) => (new_hands_count, error_count),
         Err(err) => {
             eprintln!("error writing phh hands from path {path:?} to the db: {err}");
+            (0, 1)
+        }
+    }
+}
+
+fn parse_xml(args: &[String]) -> Result<()> {
+    let [db_path, hand_history_path] = args else {
+        return Err(INVALID_COMMAND_ERROR.into());
+    };
+
+    let start_time = Instant::now();
+
+    let mut db = DB::open_and_create(&db_path)?;
+
+    let hand_history_path = Path::new(hand_history_path);
+
+    let (new_hands_count, error_count) = if hand_history_path.is_dir() {
+        let mut new_hands_count = 0u64;
+        let mut error_count = 0u64;
+
+        let entries = WalkDir::new(&hand_history_path)
+            .into_iter()
+            .filter_map(std::result::Result::ok);
+
+        for entry in entries {
+            let path = entry.path();
+            if path.is_file() && path.extension().is_some_and(|e| e == "xml") {
+                eprintln!("--- parsing file {path:?} ---");
+
+                let (current_new_hands, current_errors) = parse_xml_file(path, &mut db);
+
+                new_hands_count = new_hands_count.saturating_add(current_new_hands);
+                error_count = error_count.saturating_add(current_errors);
+
+                eprintln!(
+                    "--- added {current_new_hands} new hand(s) with {current_errors} error(s) ---"
+                );
+            }
+        }
+
+        (new_hands_count, error_count)
+    } else {
+        parse_xml_file(hand_history_path, &mut db)
+    };
+
+    eprintln!(
+        "--- took {:?} to parse and write {new_hands_count} new hand(s) to the database ---",
+        start_time.elapsed(),
+    );
+
+    if error_count > 0 {
+        let message =
+            format!("parse-xml: {error_count} error(s) occurred while parsing the hand history");
+        Err(message.into())
+    } else {
+        Ok(())
+    }
+}
+
+fn parse_xml_file(path: &Path, db: &mut DB) -> (u64, u64) {
+    let content = match read_to_string(path) {
+        Ok(content) => content,
+        Err(err) => {
+            eprintln!("error reading the xml file from path {path:?}: {err}");
+            return (0, 1);
+        }
+    };
+
+    let entries = match parse_xml_str(&content) {
+        Ok(entries) => entries,
+        Err(err) => {
+            eprintln!("parsing of xml file from path {path:?} failed: {err}");
+            return (0, 1);
+        }
+    };
+
+    let mut error_count = 0u64;
+    let mut games = Vec::new();
+
+    for entry in entries {
+        match entry {
+            Ok(game) => {
+                game.internal_asserts_full(); // TODO
+                games.push(game);
+            }
+            Err(err) => {
+                eprintln!("error parsing xml entry from path {path:?}:\n{err}\n");
+                error_count += 1;
+            }
+        }
+    }
+
+    match db.add_games(games.iter()) {
+        Ok(new_hands_count) => (new_hands_count, error_count),
+        Err(err) => {
+            eprintln!("error writing xml hands from path {path:?} to the db: {err}");
             (0, 1)
         }
     }
