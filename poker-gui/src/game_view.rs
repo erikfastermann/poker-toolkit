@@ -6,8 +6,8 @@ use std::{
 };
 
 use eframe::egui::{
-    Align, Align2, Button, Color32, Context, DragValue, FontFamily, FontId, Id, Layout, Painter,
-    Pos2, Rect, Rgba, Shape, Slider, Stroke, StrokeKind, TextStyle, Ui, UiBuilder, Vec2,
+    Align, Align2, Button, Color32, Context, DragValue, FontFamily, FontId, Id, Key, Layout,
+    Painter, Pos2, Rect, Rgba, Shape, Slider, Stroke, StrokeKind, TextStyle, Ui, UiBuilder, Vec2,
 };
 
 use poker_core::{
@@ -55,6 +55,7 @@ pub struct GameView {
     current_amount: u32,
     pick_community_cards: bool,
     show_all_hands: bool,
+    big_blind_mode: bool,
 }
 
 impl GameView {
@@ -126,6 +127,7 @@ impl GameView {
             current_amount: 0,
             pick_community_cards: false,
             show_all_hands: true,
+            big_blind_mode: false,
         };
 
         game_view.game.draw_unset_hands(&mut rand::thread_rng());
@@ -140,6 +142,22 @@ impl GameView {
 
     pub fn set_pick_community_cards(&mut self, pick_community_cards: bool) {
         self.pick_community_cards = pick_community_cards;
+    }
+
+    pub fn big_blind_mode(&self) -> bool {
+        self.big_blind_mode
+    }
+
+    pub fn set_big_blind_mode(&mut self, big_blind_mode: bool) {
+        self.big_blind_mode = big_blind_mode;
+    }
+
+    pub fn show_all_hands(&self) -> bool {
+        self.show_all_hands
+    }
+
+    pub fn set_show_all_hands(&mut self, show_all_hands: bool) {
+        self.show_all_hands = show_all_hands;
     }
 
     pub fn with_game_mut(&mut self, f: impl FnOnce(&mut Game)) -> Result<()> {
@@ -349,7 +367,7 @@ impl GameView {
 
         draw_text_with_background(
             painter,
-            format!("Total Pot: {}", self.game.total_pot()),
+            format!("Total Pot: {}", self.chips_string(self.game.total_pot())),
             bounding_rect.height() / 30.0,
             bounding_rect.center() - Vec2::new(0.0, card_size.y * 0.75),
             Rgba::from_black_alpha(0.3),
@@ -445,8 +463,8 @@ impl GameView {
                 ui.add_sized(button_size, Button::new("<"))
             })
             .inner;
-        if previous_button.clicked() {
-            assert!(self.game.previous());
+        if previous_button.clicked() || ui.ctx().input(|input| input.key_pressed(Key::ArrowLeft)) {
+            self.game.previous();
         }
 
         let next_button = ui
@@ -454,8 +472,8 @@ impl GameView {
                 ui.add_sized(button_size, Button::new(">"))
             })
             .inner;
-        if next_button.clicked() {
-            assert!(self.game.next());
+        if next_button.clicked() || ui.ctx().input(|input| input.key_pressed(Key::ArrowRight)) {
+            self.game.next();
         }
 
         let forward_button = ui
@@ -547,6 +565,7 @@ impl GameView {
         }
 
         ui.checkbox(&mut self.show_all_hands, "Show all");
+        ui.checkbox(&mut self.big_blind_mode, "BB");
 
         Ok(())
     }
@@ -748,7 +767,7 @@ impl GameView {
             }
         }
 
-        self.game.current_stacks()[player].to_string()
+        self.chips_string(self.game.current_stacks()[player])
     }
 
     fn draw_invested(
@@ -769,7 +788,7 @@ impl GameView {
         let text_size = bounding_rect.height() / 30.0;
         draw_text_with_background(
             painter,
-            invested.to_string(),
+            self.chips_string(invested),
             text_size,
             invested_point,
             Rgba::from_black_alpha(0.3),
@@ -960,10 +979,23 @@ impl GameView {
             || self.game.hand_shown(player)
             || (self.enable_game_builder
                 && !self.current_player_action_generators.contains_key(&player))
+            || self.game.hero().is_some_and(|hero| hero == player)
         {
             self.game.get_hand(player)
         } else {
             None
+        }
+    }
+
+    fn chips_string(&self, chips: u32) -> String {
+        if self.big_blind_mode && self.game.big_blind() != 0 {
+            let big_blind = f64::from(chips) / f64::from(self.game.big_blind());
+            format!("{big_blind:.2}")
+                .trim_end_matches('0')
+                .trim_end_matches('.')
+                .to_owned()
+        } else {
+            chips.to_string()
         }
     }
 }

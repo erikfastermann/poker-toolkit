@@ -8,6 +8,7 @@ use std::{
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Deserializer};
 use serde_with::DeserializeFromStr;
+use serde_xml_rs::SerdeXml;
 
 use crate::{
     card::Card,
@@ -21,7 +22,7 @@ use crate::{
 pub fn parse_xml_str(xml: &str) -> Result<Vec<Result<Game>>> {
     // TODO: As Iterator.
 
-    let session: Session = serde_xml_rs::from_str(xml)?;
+    let mut session: Session = SerdeXml::new().overlapping_sequences(true).from_str(xml)?;
 
     if session.general.mode != "real" {
         return Err("session mode is not `real`".into());
@@ -46,12 +47,17 @@ pub fn parse_xml_str(xml: &str) -> Result<Vec<Result<Game>>> {
     }
 
     if session.general.game_count != session.games.len() {
-        return Err("`gamecount` does not match number of games".into());
+        return Err(format!(
+            "`gamecount` ({}) does not match number of games ({})",
+            session.general.game_count,
+            session.games.len(),
+        )
+        .into());
     }
 
     let mut out = Vec::new();
 
-    for game in session.games {
+    for game in &mut session.games {
         let result = game
             .to_game(
                 session.general.table_name.clone(),
@@ -106,13 +112,18 @@ struct GameData {
 
 impl GameData {
     fn to_game(
-        &self,
+        &mut self,
         table_name: Arc<String>,
         hero_name: &str,
         table_size: u8,
         small_blind: Price,
         big_blind: Price,
     ) -> Result<Game> {
+        self.general
+            .players
+            .players
+            .sort_by_key(|player| player.seat);
+
         if !self
             .general
             .players
@@ -550,13 +561,13 @@ struct PlayerData {
     #[serde(rename = "@bet")]
     bet: Price,
 
-    #[serde(rename = "@cashout")]
+    #[serde(rename = "@cashout", default)]
     cash_out: bool,
 
-    #[serde(rename = "@cashout_fee")]
+    #[serde(rename = "@cashout_fee", default)]
     cash_out_fee: Price,
 
-    #[serde(rename = "@rakeamount")]
+    #[serde(rename = "@rakeamount", default)]
     rake_amount: Price,
 }
 
@@ -581,7 +592,11 @@ struct CardsData {
     #[serde(rename = "@player")]
     player: Option<String>,
 
-    #[serde(rename = "@board", default = "default_board")]
+    #[serde(
+        rename = "@board",
+        default = "default_board",
+        deserialize_with = "de_board"
+    )]
     board: u8,
 
     #[serde(rename = "#text")]
@@ -663,6 +678,19 @@ where
     ActionKind::try_from(n).map_err(serde::de::Error::custom)
 }
 
+fn de_board<'de, D>(deserializer: D) -> StdResult<u8, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+
+    value
+        .strip_prefix("board")
+        .unwrap_or(&value)
+        .parse()
+        .map_err(serde::de::Error::custom)
+}
+
 fn de_datetime<'de, D>(deserializer: D) -> StdResult<NaiveDateTime, D::Error>
 where
     D: Deserializer<'de>,
@@ -671,7 +699,7 @@ where
     NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S").map_err(serde::de::Error::custom)
 }
 
-#[derive(Debug, Clone, Copy, DeserializeFromStr, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, DeserializeFromStr, Default, PartialEq, Eq)]
 struct Price(u32);
 
 impl FromStr for Price {
@@ -682,7 +710,9 @@ impl FromStr for Price {
             return Err(format!("price {price}: missing prefix unit symbol {UNIT_SYMBOL}").into());
         };
 
-        let mut split = without_unit.split('.');
+        let decimal_separator = if without_unit.contains(',') { ',' } else { '.' };
+
+        let mut split = without_unit.split(decimal_separator);
         let dollar: u32 = split.next().unwrap().parse()?;
         let cent = match split.next() {
             Some(s) => {

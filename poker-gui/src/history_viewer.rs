@@ -1,5 +1,5 @@
 use eframe::egui::{
-    Align, CentralPanel, Context, Layout, ScrollArea, Sense, TextStyle, TopBottomPanel, Ui,
+    Align, CentralPanel, Context, Key, Layout, ScrollArea, Sense, TextStyle, TopBottomPanel, Ui,
     UiBuilder,
 };
 use egui_extras::{Column, TableBody, TableBuilder, TableRow};
@@ -62,6 +62,12 @@ impl HistoryView {
                 self.scroll_to_current_entry = true;
             }
 
+            let (show_all_hands, big_blind_mode) = self
+                .game_view
+                .as_ref()
+                .map(|game_view| (game_view.show_all_hands(), game_view.big_blind_mode()))
+                .unwrap_or((false, true));
+
             // TODO:
             // - Handle errors
             // - Run in background
@@ -70,10 +76,15 @@ impl HistoryView {
             game.rewind();
 
             let mut game_view = GameView::new();
+
             game_view.set_enable_game_builder(false);
             game_view
                 .with_game_mut(|current_game| *current_game = game)
                 .unwrap();
+
+            game_view.set_show_all_hands(show_all_hands);
+            game_view.set_big_blind_mode(big_blind_mode);
+
             self.game_view = Some(game_view);
         } else {
             self.game_view = None;
@@ -91,6 +102,20 @@ impl HistoryView {
     }
 
     fn table(&mut self, ui: &mut Ui) {
+        if let Some(current_entry) = self.current_entry {
+            ui.ctx().input(|input| {
+                if input.key_pressed(Key::ArrowUp) && current_entry != 0 {
+                    self.current_entry = Some(current_entry - 1);
+                    self.scroll_to_current_entry = true;
+                }
+
+                if input.key_pressed(Key::ArrowDown) && current_entry != self.entries.len() - 1 {
+                    self.current_entry = Some(current_entry + 1);
+                    self.scroll_to_current_entry = true;
+                }
+            })
+        }
+
         let available_height = ui.available_height();
         let text_height = Self::text_height(ui);
 
@@ -119,7 +144,7 @@ impl HistoryView {
             .sense(Sense::click());
 
         if self.scroll_to_current_entry {
-            builder = builder.scroll_to_row(self.current_entry.unwrap(), Some(Align::TOP));
+            builder = builder.scroll_to_row(self.current_entry.unwrap(), Some(Align::Center));
             self.scroll_to_current_entry = false;
         }
 
