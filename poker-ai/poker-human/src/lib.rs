@@ -366,7 +366,9 @@ impl Dataset {
                 // how the data source handles show / muck.
                 // Also easier to implement.
                 //
-                // TODO: Use the actual showdown order.
+                // TODO:
+                // Could use the actual showdown order,
+                // but this requires changes to the parser and Game repr.
                 let worst_score = game
                     .showdown_winners_by_pot()
                     .unwrap()
@@ -444,7 +446,7 @@ const ACTION_AMOUNT_OFFSET: usize = ACTION_PLAYER_OFFSET + ACTION_PLAYER_LEN;
 const ACTION_RELATIVE_AMOUNT_OFFSET: usize = ACTION_AMOUNT_OFFSET + 1;
 const ACTION_LEN: usize = ACTION_RELATIVE_AMOUNT_OFFSET + 1;
 
-const ACTIONS_PER_STREET: usize = 30; // TODO: Probably too much.
+const ACTIONS_PER_STREET: usize = 30; // Enough for the handhq dataset.
 
 const ACTIONS_INDEX: usize = STREET_ACTION_COUNT_INDEX + Street::COUNT;
 const ACTIONS_STREET_LEN: usize = ACTIONS_PER_STREET * ACTION_LEN;

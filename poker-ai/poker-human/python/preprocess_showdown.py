@@ -26,9 +26,9 @@ def get_entry(index):
 
 if __name__ == '__main__':
     db_path = '../../poker-app/phh_full.db'
-    limit = 1000
+    limit = None
     out_path = 'showdown.pkl'
-    max_workers = 10
+    max_workers = 140
 
 
     dataset = ShowdownDataset(db_path, limit)

@@ -19,10 +19,10 @@ use poker_core::{
 };
 
 const DB_PATH: &str = "equity.db";
-const WORKER_THREADS: usize = 10;
-const TOTAL_HANDS: usize = 100;
-const REPORT_INTERVAL: usize = 10;
-const WRITE_TO_DB_INTERVAL: usize = 100;
+const WORKER_THREADS: usize = 140;
+const TOTAL_HANDS: usize = 1_000_000;
+const REPORT_INTERVAL: usize = 500;
+const WRITE_TO_DB_INTERVAL: usize = 500;
 
 const PLAYER_COUNT: usize = 6;
 const STARTING_STACK: u32 = 1000;

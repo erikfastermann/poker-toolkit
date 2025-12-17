@@ -51,8 +51,8 @@ def evaluate(model, dataloader, criterion, device):
 if __name__ == "__main__":
     dataset_preprocessed_path = "showdown.pkl"
     out_model_dir = "showdown"
-    batch_size = 64
-    learning_rate = 1e-3
+    batch_size = 256
+    learning_rate = 1e-4
     epochs = 100
 
 

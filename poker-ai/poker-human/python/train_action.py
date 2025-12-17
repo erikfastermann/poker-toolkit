@@ -46,10 +46,10 @@ def evaluate(model, dataloader, criterion, device):
 
 if __name__ == "__main__":
     db_path = "../../poker-app/phh_full.db"
-    limit = 1000
+    limit = None
     out_model_dir = "action"
-    batch_size = 512
-    learning_rate = 1e-3 # TODO: Maybe test smaller or dynamic.
+    batch_size = 4096 * 4
+    learning_rate = 1e-4
     epochs = 100
 
 

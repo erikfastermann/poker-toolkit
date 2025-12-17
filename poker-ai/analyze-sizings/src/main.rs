@@ -50,7 +50,8 @@ fn process_game(mut game: Game, dist: &mut Dist) -> Result<()> {
 
     game.rewind();
 
-    // TODO: Check how many posters / straddlers appear in the handhq data.
+    // No posters / straddlers appear in the handhq data.
+    // This is weird, but ignore that for now.
 
     // Skip blinds/straddles.
     while game.can_next() {

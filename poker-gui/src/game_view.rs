@@ -827,6 +827,8 @@ impl GameView {
     }
 
     fn view_game_builder(&mut self, ctx: &Context) -> Result<()> {
+        // TODO: Don't allow picking a hand when picked by the action generator.
+
         if !self.enable_game_builder {
             return Ok(());
         }
