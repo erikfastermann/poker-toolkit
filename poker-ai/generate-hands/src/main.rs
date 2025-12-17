@@ -13,7 +13,6 @@ use poker_core::{
     ai::{EquityStrategy, PlayerActionGenerator},
     db::DB,
     game::{Game, Player, State},
-    init::init,
     range::RangeInfo,
     result::Result,
 };
@@ -30,10 +29,6 @@ const SMALL_BLIND: u32 = 5;
 const BIG_BLIND: u32 = 10;
 
 fn main() -> Result<()> {
-    unsafe {
-        init();
-    }
-
     spawn_workers()
 }
 

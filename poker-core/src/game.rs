@@ -2805,10 +2805,6 @@ mod tests {
 
     #[test]
     fn test_game_with_sample_hands() {
-        unsafe {
-            crate::init::init();
-        }
-
         let path = Path::new("src")
             .join("test_data")
             .join("game_validation_data.json");

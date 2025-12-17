@@ -16,7 +16,6 @@ use poker_core::{
     equity::EquityTable,
     game::{milli_big_blind_to_amount_rounded, Action, Board, Game, MilliBigBlind, State, Street},
     hand::Hand,
-    init::init,
     range::{RangeActionKind, RangeConfigEntry, RangeTable, RangeTableWith, MAX_FREQUENCY},
     rank::Rank,
     result::Result,
@@ -77,12 +76,6 @@ impl Dataset {
     #[new]
     #[pyo3(signature = (db_path, limit=None))]
     fn new(py: Python<'_>, db_path: &str, limit: Option<usize>) -> PyResult<Self> {
-        // SAFETY:
-        // If this library is only used from Python,
-        // it is not possible to read from another thread
-        // while init runs.
-        unsafe { init() };
-
         let db = DB::open(db_path).py()?;
 
         let mut showdowns = Vec::new();

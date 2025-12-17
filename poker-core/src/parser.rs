@@ -905,10 +905,6 @@ mod tests {
 
     #[test]
     fn parse_example_gg_hand_history() {
-        unsafe {
-            crate::init::init();
-        }
-
         let path = Path::new("src")
             .join("test_data")
             .join("gg_hands_example.txt");

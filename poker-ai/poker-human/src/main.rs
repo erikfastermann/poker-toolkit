@@ -8,7 +8,6 @@ use poker_core::{
     equity::EquityTable,
     game::Game,
     hand::Hand,
-    init::init,
     range::{RangeConfigEntry, RangeInfo, RangeTable, RangeTableWith, MAX_FREQUENCY},
     result::Result,
 };
@@ -19,8 +18,6 @@ use rand::thread_rng;
 use std::{env, fmt::Write};
 
 fn main() -> Result<()> {
-    unsafe { init() };
-
     let args: Vec<_> = env::args().collect();
 
     if args.len() != 4 {
