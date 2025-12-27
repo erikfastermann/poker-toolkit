@@ -47,8 +47,8 @@ class ActionHead(nn.Module):
         return probs, masked_logits
 
     def predict(self, x, legal_mask):
-        x = torch.tensor(x)
-        legal_mask = torch.tensor(legal_mask)
+        x = torch.as_tensor(x)
+        legal_mask = torch.as_tensor(legal_mask)
 
         with torch.no_grad():
             probs, _ = self(x, legal_mask)
@@ -94,8 +94,8 @@ class ShowdownHead(nn.Module):
         return probs, masked_logits
 
     def predict(self, x, legal_mask):
-        x = torch.tensor(x)
-        legal_mask = torch.tensor(legal_mask)
+        x = torch.as_tensor(x)
+        legal_mask = torch.as_tensor(legal_mask)
 
         with torch.no_grad():
             probs, _ = self(x, legal_mask)

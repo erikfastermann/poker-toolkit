@@ -27,6 +27,12 @@ class ActionDataset(TorchDataset):
     def info(self, idx):
         return self.dataset.action_info(idx)
 
+    def frequencies(self, idx):
+        return self.dataset.action_range_info_frequencies(idx)
+
+    def state_probability(self, idx):
+        return self.dataset.action_state_probability(idx)
+
 
 class ShowdownDataset(TorchDataset):
     def __init__(self, db_path, limit=None):
@@ -49,6 +55,12 @@ class ShowdownDataset(TorchDataset):
 
     def info(self, idx):
         return self.dataset.showdown_info(idx)
+
+    def frequencies(self, idx):
+        return self.dataset.showdown_range_info(idx)
+
+    def state_probability(self, idx):
+        return self.dataset.showdown_state_probability(idx)
 
 
 class ShowdownPreprocessedDataset(TorchDataset):

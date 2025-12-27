@@ -1,6 +1,7 @@
 use core::fmt;
 use std::{
     cmp,
+    collections::BTreeMap,
     fmt::Write,
     iter,
     panic::{catch_unwind, AssertUnwindSafe, UnwindSafe},
@@ -17,7 +18,10 @@ use poker_core::{
     game::{milli_big_blind_to_amount_rounded, Action, Board, Game, MilliBigBlind, State, Street},
     hand::Hand,
     init::init,
-    range::{RangeActionKind, RangeConfigEntry, RangeTable, RangeTableWith, MAX_FREQUENCY},
+    range::{
+        range_frequencies_empty, range_frequencies_valid, RangeActionKind, RangeConfigEntry,
+        RangeInfo, RangeTable, RangeTableWith, MAX_FREQUENCY,
+    },
     rank::Rank,
     result::Result,
     suite::Suite,
@@ -165,6 +169,34 @@ impl Dataset {
         (hand_name, info)
     }
 
+    fn action_range_info_frequencies(
+        &mut self,
+        index: usize,
+    ) -> PyResult<[f32; ACTION_TARGET_LEN]> {
+        let game = self.get_action_index_game(index);
+
+        let range_info: BTreeMap<usize, RangeInfo> = game.additional_metadata("range_info").py()?;
+
+        let Some(range_info_entry) = range_info.get(&game.actions().len()) else {
+            return Err("current action has no associated range info".into()).py();
+        };
+
+        let RangeInfo::Frequencies(frequencies) = range_info_entry else {
+            return Err("associated range info does not contain frequencies".into()).py();
+        };
+
+        assert!(game.previous());
+        let probs = ActionProbabilities::from_frequencies(game, frequencies).py()?;
+
+        Ok(probs.to_probabilities())
+    }
+
+    fn action_state_probability(&mut self, index: usize) -> PyResult<f64> {
+        let game = self.get_action_index_game(index);
+        assert!(game.previous());
+        Self::state_probability(game).py()
+    }
+
     fn get_showdown_item(&mut self, index: usize) -> PyResult<(Vec<f32>, Vec<i8>, Vec<f32>)> {
         // TODO: Could consider hands with revealed cards without showdown.
 
@@ -189,6 +221,42 @@ impl Dataset {
         let info = format!("{:?}", game.state());
 
         (hand_name, info)
+    }
+
+    fn showdown_range_info(&mut self, index: usize) -> PyResult<Vec<f32>> {
+        let game_index = self.get_showdown_index_game(index);
+        let game = &self.games[game_index].0;
+
+        let range_info: BTreeMap<usize, RangeInfo> = game.additional_metadata("range_info").py()?;
+
+        let Some(range_info_entry) = range_info.get(&(game.actions().len() + 1)) else {
+            return Err("current showdown has no associated range info".into()).py();
+        };
+
+        let RangeInfo::Range(range) = range_info_entry else {
+            return Err("associated range info does not contain range".into()).py();
+        };
+
+        if !range_frequencies_valid(range) || range_frequencies_empty(range) {
+            return Err("associated range is not valid or empty".into()).py();
+        }
+
+        let frequency_sum: u32 = range.iter().map(|(_, freq)| u32::from(*freq)).sum();
+        let mut target = vec![0.0f32; Self::SHOWDOWN_TARGET_LEN];
+
+        for (hand, freq) in range.iter() {
+            let total_freq = f64::from(*freq) / f64::from(frequency_sum);
+            target[hand.to_index()] = total_freq as f32;
+        }
+
+        Ok(target)
+    }
+
+    fn showdown_state_probability(&mut self, index: usize) -> PyResult<f64> {
+        let game_index = self.get_showdown_index_game(index);
+        let game = &self.games[game_index].0;
+        // Not considering the probability of a player having a specific range or mucking.
+        Self::state_probability(game).py()
     }
 }
 
@@ -410,6 +478,96 @@ impl Dataset {
         let mut target = vec![0.0f32; Self::SHOWDOWN_TARGET_LEN];
         target[hero_hand.to_index()] = 1.0;
         target
+    }
+
+    fn state_probability(game: &Game) -> Result<f64> {
+        let range_info: BTreeMap<usize, RangeInfo> = game.additional_metadata("range_info").py()?;
+
+        if !matches!(game.state(), State::Player(_) | State::ShowOrMuck(_)) {
+            return Err("current state should be player or show/muck".into());
+        }
+
+        let mut probability = 1.0;
+
+        for (index, action) in game.actions().iter().copied().enumerate() {
+            match action {
+                Action::Fold(_)
+                | Action::Check(_)
+                | Action::Call { .. }
+                | Action::Bet { .. }
+                | Action::Raise { .. } => (),
+
+                // The given probabilities of selecting a random flop, turn, or river,
+                // ignoring suite symmetries here.
+                Action::Flop(_) => {
+                    probability *= 1.0 / ((52.0 * 51.0 * 50.0) / 6.0);
+                    continue;
+                }
+                Action::Turn(_) => {
+                    probability *= 1.0 / 49.0;
+                    continue;
+                }
+                Action::River(_) => {
+                    probability *= 1.0 / 48.0;
+                    continue;
+                }
+
+                Action::Post { .. }
+                | Action::Straddle { .. }
+                | Action::UncalledBet { .. }
+                | Action::Shows { .. }
+                | Action::MucksOrUnknown(_) => continue,
+            }
+
+            let Some(range_info_entry) = range_info.get(&(index + 1)) else {
+                return Err("action has no associated range info".into());
+            };
+
+            let RangeInfo::Frequencies(frequencies) = range_info_entry else {
+                return Err("associated range info does not contain frequencies".into());
+            };
+
+            let mut frequency_best_match = -1.0;
+            let mut amount_best_diff = u64::MAX;
+
+            for (range_action, frequency) in frequencies.iter().copied() {
+                frequency_best_match = match (range_action, action) {
+                    (RangeActionKind::Post { .. } | RangeActionKind::Straddle { .. }, _) => {
+                        return Err(
+                            "post or straddle not allowed in associated range info frequencies"
+                                .into(),
+                        )
+                    }
+
+                    (RangeActionKind::Fold, Action::Fold(_))
+                    | (RangeActionKind::Check, Action::Check(_))
+                    | (RangeActionKind::Call, Action::Call { .. }) => frequency,
+
+                    (RangeActionKind::Bet(amount_range), Action::Bet { amount, .. })
+                    | (RangeActionKind::Raise(amount_range), Action::Raise { to: amount, .. }) => {
+                        let diff = game
+                            .amount_to_milli_big_blinds_rounded(amount)
+                            .abs_diff(amount_range);
+
+                        if diff < amount_best_diff {
+                            amount_best_diff = diff;
+                            frequency
+                        } else {
+                            continue;
+                        }
+                    }
+                    _ => continue,
+                };
+            }
+
+            if frequency_best_match < 0.0 || frequency_best_match > 1.0 {
+                return Err("associated range info best match frequency not found or not between zero and one".into());
+            }
+
+            probability *= frequency_best_match;
+        }
+
+        Ok(probability)
     }
 }
 
@@ -1125,6 +1283,47 @@ impl fmt::Display for ActionProbabilities {
 }
 
 impl ActionProbabilities {
+    pub fn from_frequencies(game: &Game, frequencies: &[(RangeActionKind, f64)]) -> Result<Self> {
+        if !matches!(game.state(), State::Player(_)) {
+            return Err("probabilities from frequencies: requires a player action".into());
+        }
+
+        let legal_mask = encode_action_legal_mask(&game);
+        let original_game = game;
+        let mut game = original_game.clone();
+        let mut probs = [0.0f32; ACTION_TARGET_LEN];
+
+        let action_count = game.actions().len();
+        game.forward();
+
+        while game.actions().len() != action_count {
+            game.undo()?;
+        }
+
+        for (action, freq) in frequencies.iter().copied() {
+            match action {
+                RangeActionKind::Post { .. } => {
+                    return Err("probabilities from frequencies: action post not supported".into())
+                }
+                RangeActionKind::Straddle { .. } => {
+                    return Err(
+                        "probabilities from frequencies: action straddle not supported".into(),
+                    )
+                }
+                _ => (),
+            }
+
+            let action = AiAction::from_range(&game, action)?;
+            action.apply_to_game(&mut game)?;
+            let index = encode_action_target_index(&mut game);
+            game.undo()?;
+
+            probs[index] = freq as f32;
+        }
+
+        Self::from_probabilities(&game, &probs, &legal_mask)
+    }
+
     pub fn from_range(game: &Game, range: &RangeConfigEntry) -> Result<Self> {
         let legal_mask = encode_action_legal_mask(&game);
 
@@ -1315,6 +1514,17 @@ impl ActionProbabilities {
 
     pub fn all_in(&self) -> f32 {
         self.all_in
+    }
+
+    pub fn to_probabilities(&self) -> [f32; ACTION_TARGET_LEN] {
+        let mut probs = [0.0f32; ACTION_TARGET_LEN];
+
+        probs[TARGET_FOLD_INDEX] = self.fold;
+        probs[TARGET_CHECK_CALL_INDEX] = self.check_call;
+        probs[TARGET_BET_RAISE_INDEX..][..TARGET_BET_RAISE_COUNT].copy_from_slice(&self.bet_raise);
+        probs[TARGET_ALL_IN_INDEX] = self.all_in;
+
+        probs
     }
 
     pub fn choose(&self, rng: &mut impl Rng) -> (AiAction, String) {
