@@ -300,7 +300,7 @@ impl Dataset {
         let game = &self.games[game_index].0;
 
         let legal_mask = encode_showdown_legal_mask(game);
-        let probs = ShowdownProbabilities::from_probabilities(&range, &legal_mask).py()?;
+        let probs = ShowdownProbabilities::from_probabilities(&range, Some(&legal_mask)).py()?;
 
         let equity = equities_from_range(game.board().cards_set(), &probs.range());
         let equity = equity
@@ -1690,18 +1690,10 @@ impl ShowdownProbabilities {
                 .extract(py)
         })?;
 
-        Self::from_probabilities(&probs, &legal_mask)
+        Self::from_probabilities(&probs, Some(&legal_mask))
     }
 
-    pub fn from_probabilities(probs: &[f32], legal_mask: &[i8]) -> Result<Self> {
-        if legal_mask.len() != SHOWDOWN_TARGET_LEN {
-            return Err("legal mask has bad len".into());
-        }
-
-        if legal_mask.iter().any(|v| *v != 0 && *v != 1) {
-            return Err("legal mask has entry which is not zero or one".into());
-        }
-
+    pub fn from_probabilities(probs: &[f32], legal_mask: Option<&[i8]>) -> Result<Self> {
         if probs.len() != SHOWDOWN_TARGET_LEN {
             return Err("showdown model output has bad len".into());
         }
@@ -1715,13 +1707,23 @@ impl ShowdownProbabilities {
             return Err("showdown model output is not a valid probability distribution".into());
         }
 
-        for (index, b) in legal_mask.iter().copied().enumerate() {
-            if b != 0 && b != 1 {
-                return Err("showdown model legal mask entry is not zero or one".into());
+        if let Some(legal_mask) = legal_mask {
+            if legal_mask.len() != SHOWDOWN_TARGET_LEN {
+                return Err("legal mask has bad len".into());
             }
 
-            if b == 0 && probs[index] != 0.0 {
-                return Err("showdown model has illegal hand with non zero probability".into());
+            if legal_mask.iter().any(|v| *v != 0 && *v != 1) {
+                return Err("legal mask has entry which is not zero or one".into());
+            }
+
+            for (index, b) in legal_mask.iter().copied().enumerate() {
+                if b != 0 && b != 1 {
+                    return Err("showdown model legal mask entry is not zero or one".into());
+                }
+
+                if b == 0 && probs[index] != 0.0 {
+                    return Err("showdown model has illegal hand with non zero probability".into());
+                }
             }
         }
 

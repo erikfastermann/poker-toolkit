@@ -301,13 +301,20 @@ impl Cards {
     }
 
     pub fn from_slice(s: &[Card]) -> Option<Self> {
+        Self::from_iter(s.iter().copied())
+    }
+
+    pub fn from_iter(iter: impl IntoIterator<Item = Card>) -> Option<Self> {
         let mut cards = Self::EMPTY;
-        for card in s.iter().copied() {
+
+        for card in iter.into_iter() {
             if cards.has(card) {
                 return None;
             }
+
             cards.add(card);
         }
+
         Some(cards)
     }
 

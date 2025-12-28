@@ -1,46 +1,59 @@
 use eframe::{
-    egui::{CentralPanel, Context, Rect, Style, UiBuilder, Vec2, ViewportBuilder, Visuals},
+    egui::{
+        CentralPanel, Context, Id, Key, Rect, Style, Ui, UiBuilder, Vec2, ViewportBuilder, Visuals,
+        Window,
+    },
     Frame,
 };
 use poker_core::{
     ai::{AiAction, EquityStrategy, PlayerActionGenerator},
+    card::Card,
+    cards::Cards,
     game::Game,
     hand::Hand,
     init::init,
-    range::{RangeConfigEntry, RangeInfo, RangeTableWith},
+    range::{RangeConfigEntry, RangeInfo, RangeTable, RangeTableWith, MAX_FREQUENCY},
     result::Result,
 };
-use poker_gui::game_view::{GameView, PlayerActionGeneratorEntry};
+use poker_gui::{
+    game_view::{GameView, PlayerActionGeneratorEntry},
+    range_viewer::{RangeValue, RangeViewer},
+};
 use poker_human::{
     equities_from_range, ActionHead, ActionProbabilities, ShowdownHead, ShowdownProbabilities,
 };
 use pyo3::{prelude::*, types::PyList};
 use rand::thread_rng;
-use std::{env, fmt::Write};
+use serde::Deserialize;
+use std::{env, fmt::Write, fs::File, io::BufReader, str::FromStr, thread};
 
 fn main() -> Result<()> {
     unsafe { init() };
 
     let args: Vec<_> = env::args().collect();
 
-    if args.len() != 4 {
+    if args.len() < 2 {
         return Err("invalid command".into());
     }
 
-    let with_baseline = match args[1].as_str() {
-        "model" => false,
-        "baseline" => true,
+    match args[1].as_str() {
+        "model" => game_gui(false, &args[2..]),
+        "baseline" => game_gui(true, &args[2..]),
+        "ranges" => range_gui(&args[2..]),
         _ => return Err("invalid command".into()),
-    };
-
-    let action_model_path = args[2].as_str();
-    let showdown_model_path = args[3].as_str();
-    gui(with_baseline, action_model_path, showdown_model_path)
+    }
 }
 
 // TODO: Could unify the gui code more with poker-app.
 
-fn gui(with_baseline: bool, action_model_path: &str, showdown_model_path: &str) -> Result<()> {
+fn game_gui(with_baseline: bool, args: &[String]) -> Result<()> {
+    if args.len() != 2 {
+        return Err("invalid command".into());
+    }
+
+    let action_model_path = args[0].as_str();
+    let showdown_model_path = args[1].as_str();
+
     // TODO: Workaround
     Python::with_gil(|py| {
         let sys = py.import("sys")?;
@@ -65,7 +78,7 @@ fn gui(with_baseline: bool, action_model_path: &str, showdown_model_path: &str) 
             };
             cc.egui_ctx.set_style(style);
             egui_extras::install_image_loaders(&cc.egui_ctx);
-            Ok(Box::new(App::new(
+            Ok(Box::new(GameApp::new(
                 with_baseline,
                 action_model_path,
                 showdown_model_path,
@@ -77,7 +90,38 @@ fn gui(with_baseline: bool, action_model_path: &str, showdown_model_path: &str) 
     Ok(())
 }
 
-struct App {
+fn range_gui(args: &[String]) -> Result<()> {
+    if args.len() != 1 {
+        return Err("invalid command".into());
+    }
+
+    let data_path = args[0].as_str();
+
+    env_logger::init();
+    let options = eframe::NativeOptions {
+        viewport: ViewportBuilder::default().with_maximized(true),
+        ..Default::default()
+    };
+
+    eframe::run_native(
+        "Poker Toolkit - Ranges",
+        options,
+        Box::new(|cc| {
+            let style = Style {
+                visuals: Visuals::dark(),
+                ..Style::default()
+            };
+            cc.egui_ctx.set_style(style);
+            egui_extras::install_image_loaders(&cc.egui_ctx);
+            Ok(Box::new(RangeApp::new(data_path)?))
+        }),
+    )
+    .map_err(|err| err.to_string())?;
+
+    Ok(())
+}
+
+struct GameApp {
     game: GameView,
 }
 
@@ -202,7 +246,7 @@ impl PlayerActionGenerator for BaselineActionGenerator {
     }
 }
 
-impl App {
+impl GameApp {
     fn new(
         with_baseline: bool,
         action_model_path: &str,
@@ -243,7 +287,7 @@ impl App {
     }
 }
 
-impl eframe::App for App {
+impl eframe::App for GameApp {
     fn update(&mut self, ctx: &Context, _frame: &mut Frame) {
         CentralPanel::default().show(ctx, |ui| {
             let table_height = ui.clip_rect().height() * 0.9;
@@ -259,4 +303,148 @@ impl eframe::App for App {
             });
         });
     }
+}
+
+struct RangeApp {
+    expected: RangeViewer,
+    got: RangeViewer,
+    uniform: RangeViewer,
+
+    data: Vec<RangeEntry>,
+    current_entry: usize,
+}
+
+impl RangeApp {
+    fn new(data_path: &str) -> Result<Self> {
+        let data: Vec<RangeEntry> =
+            serde_json::from_reader(BufReader::new(File::open(data_path)?))?;
+
+        if data.is_empty() {
+            return Err("empty dataset".into());
+        }
+
+        let mut app = Self {
+            expected: RangeViewer::new(),
+            got: RangeViewer::new(),
+            uniform: RangeViewer::new(),
+            data,
+            current_entry: 0,
+        };
+
+        app.update_ranges()?;
+        Ok(app)
+    }
+
+    fn view(&mut self, ctx: &Context) {
+        // Quick and dirty ui.
+
+        // TODO: Handle errors properly.
+
+        let old_entry = self.current_entry;
+
+        self.expected
+            .window(ctx, Id::new("expected"), "Expected".to_owned());
+
+        self.got.window(ctx, Id::new("got"), "Got".to_owned());
+
+        self.uniform
+            .window(ctx, Id::new("uniform"), "Uniform".to_owned());
+
+        Window::new("Navigate").show(ctx, |ui| self.navigation(ui));
+
+        if self.current_entry != old_entry {
+            self.update_ranges().unwrap()
+        }
+    }
+
+    fn navigation(&mut self, ui: &mut Ui) {
+        let previous_button = ui
+            .add_enabled_ui(self.current_entry != 0, |ui| ui.button("<"))
+            .inner;
+
+        if previous_button.clicked() || ui.ctx().input(|input| input.key_pressed(Key::ArrowLeft)) {
+            self.current_entry -= 1;
+        }
+
+        let next_button = ui
+            .add_enabled_ui(self.current_entry != self.data.len() - 1, |ui| {
+                ui.button(">")
+            })
+            .inner;
+
+        if next_button.clicked() || ui.ctx().input(|input| input.key_pressed(Key::ArrowRight)) {
+            self.current_entry += 1;
+        }
+    }
+
+    fn update_ranges(&mut self) -> Result<()> {
+        let entry = &self.data[self.current_entry];
+
+        let board = entry
+            .board
+            .iter()
+            .map(|card| Card::from_str(card))
+            .collect::<Result<Vec<Card>>>()?;
+
+        let Some(board) = Cards::from_slice(&board) else {
+            return Err("duplicate card on board".into());
+        };
+
+        let expected = ShowdownProbabilities::from_probabilities(&entry.expected, None)?;
+        let got = ShowdownProbabilities::from_probabilities(&entry.got, None)?;
+
+        let handle_expected = thread::spawn(move || equities_from_range(board, &expected.range()));
+        let handle_got = thread::spawn(move || equities_from_range(board, &got.range()));
+        let handle_uniform = thread::spawn(move || {
+            equities_from_range(board, &RangeTable::FULL.to_frequencies(MAX_FREQUENCY))
+        });
+
+        let expected_equities = handle_expected.join().unwrap();
+        let got_equities = handle_got.join().unwrap();
+        let uniform_equities = handle_uniform.join().unwrap();
+
+        let mae = mean_absolute_error(&expected_equities, &got_equities);
+        let mae_uniform = mean_absolute_error(&expected_equities, &uniform_equities);
+
+        self.expected
+            .replace_ranges(vec![RangeValue::Simple(expected_equities)]);
+
+        self.got
+            .replace_ranges(vec![RangeValue::Simple(got_equities)]);
+
+        self.uniform
+            .replace_ranges(vec![RangeValue::Simple(uniform_equities)]);
+
+        let details = format!(
+            "{}\n{}\n{:?}\nMAE: {}\nMAE (uniform): {}",
+            entry.idx, entry.prob, entry.board, mae, mae_uniform
+        );
+        self.expected.set_details(details);
+
+        Ok(())
+    }
+}
+
+impl eframe::App for RangeApp {
+    fn update(&mut self, ctx: &Context, _frame: &mut Frame) {
+        self.view(ctx)
+    }
+}
+
+fn mean_absolute_error(expected: &RangeTableWith<u16>, got: &RangeTableWith<u16>) -> f64 {
+    let absolute_error: u32 = expected
+        .iter()
+        .map(|(hand, equity)| u32::from(equity.abs_diff(got[hand])))
+        .sum();
+
+    (f64::from(absolute_error) / f64::from(MAX_FREQUENCY)) / Hand::COUNT as f64
+}
+
+#[derive(Deserialize)]
+struct RangeEntry {
+    idx: u64,
+    expected: Vec<f32>,
+    got: Vec<f32>,
+    prob: f64,
+    board: Vec<String>,
 }
