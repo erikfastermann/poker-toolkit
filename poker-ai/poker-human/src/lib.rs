@@ -19,8 +19,8 @@ use poker_core::{
     hand::Hand,
     init::init,
     range::{
-        range_frequencies_empty, range_frequencies_valid, RangeActionKind, RangeConfigEntry,
-        RangeInfo, RangeTable, RangeTableWith, MAX_FREQUENCY,
+        frequency_to_f64, range_frequencies_empty, range_frequencies_valid, RangeActionKind,
+        RangeConfigEntry, RangeInfo, RangeTable, RangeTableWith, MAX_FREQUENCY,
     },
     rank::Rank,
     result::Result,
@@ -197,6 +197,38 @@ impl Dataset {
         Self::state_probability(game).py()
     }
 
+    fn action_street(&mut self, index: usize) -> String {
+        let game = self.get_action_index_game(index);
+        game.board().street().to_string()
+    }
+
+    fn action_board(&mut self, index: usize) -> Vec<String> {
+        let game = self.get_action_index_game(index);
+
+        game.board()
+            .cards()
+            .iter()
+            .map(|card| card.to_string())
+            .collect()
+    }
+
+    fn action_hands(&mut self, index: usize) -> Vec<(usize, String)> {
+        let game = self.get_action_index_game(index);
+
+        (0..game.player_count())
+            .filter_map(|player| game.get_hand(player).map(|hand| (player, hand.to_string())))
+            .collect()
+    }
+
+    fn action_actions(&mut self, index: usize) -> Vec<String> {
+        let game = self.get_action_index_game(index);
+
+        game.actions()
+            .iter()
+            .map(|action| format!("{action:?}"))
+            .collect()
+    }
+
     fn get_showdown_item(&mut self, index: usize) -> PyResult<(Vec<f32>, Vec<i8>, Vec<f32>)> {
         // TODO: Could consider hands with revealed cards without showdown.
 
@@ -257,6 +289,62 @@ impl Dataset {
         let game = &self.games[game_index].0;
         // Not considering the probability of a player having a specific range or mucking.
         Self::state_probability(game).py()
+    }
+
+    fn showdown_equities_from_range(
+        &mut self,
+        index: usize,
+        range: Vec<f32>,
+    ) -> PyResult<Vec<f32>> {
+        let game_index = self.get_showdown_index_game(index);
+        let game = &self.games[game_index].0;
+
+        let legal_mask = encode_showdown_legal_mask(game);
+        let probs = ShowdownProbabilities::from_probabilities(&range, &legal_mask).py()?;
+
+        let equity = equities_from_range(game.board().cards_set(), &probs.range());
+        let equity = equity
+            .iter()
+            .map(|(_, v)| frequency_to_f64(*v) as f32)
+            .collect();
+
+        Ok(equity)
+    }
+
+    fn showdown_street(&mut self, index: usize) -> String {
+        let game_index = self.get_showdown_index_game(index);
+        let game = &self.games[game_index].0;
+        game.board().street().to_string()
+    }
+
+    fn showdown_board(&mut self, index: usize) -> Vec<String> {
+        let game_index = self.get_showdown_index_game(index);
+        let game = &self.games[game_index].0;
+
+        game.board()
+            .cards()
+            .iter()
+            .map(|card| card.to_string())
+            .collect()
+    }
+
+    fn showdown_hands(&mut self, index: usize) -> Vec<(usize, String)> {
+        let game_index = self.get_showdown_index_game(index);
+        let game = &self.games[game_index].0;
+
+        (0..game.player_count())
+            .filter_map(|player| game.get_hand(player).map(|hand| (player, hand.to_string())))
+            .collect()
+    }
+
+    fn showdown_actions(&mut self, index: usize) -> Vec<String> {
+        let game_index = self.get_showdown_index_game(index);
+        let game = &self.games[game_index].0;
+
+        game.actions()
+            .iter()
+            .map(|action| format!("{action:?}"))
+            .collect()
     }
 }
 
@@ -1602,6 +1690,18 @@ impl ShowdownProbabilities {
                 .extract(py)
         })?;
 
+        Self::from_probabilities(&probs, &legal_mask)
+    }
+
+    pub fn from_probabilities(probs: &[f32], legal_mask: &[i8]) -> Result<Self> {
+        if legal_mask.len() != SHOWDOWN_TARGET_LEN {
+            return Err("legal mask has bad len".into());
+        }
+
+        if legal_mask.iter().any(|v| *v != 0 && *v != 1) {
+            return Err("legal mask has entry which is not zero or one".into());
+        }
+
         if probs.len() != SHOWDOWN_TARGET_LEN {
             return Err("showdown model output has bad len".into());
         }
@@ -1626,7 +1726,7 @@ impl ShowdownProbabilities {
         }
 
         Ok(Self {
-            range: RangeTableWith::from_iter(probs)?,
+            range: RangeTableWith::from_iter(probs.iter().copied())?,
         })
     }
 
@@ -1663,6 +1763,29 @@ impl ShowdownProbabilities {
 
         out
     }
+}
+
+pub fn equities_from_range(
+    community_cards: Cards,
+    range: &RangeTableWith<u16>,
+) -> RangeTableWith<u16> {
+    let ranges = vec![
+        RangeTable::FULL.to_frequencies(MAX_FREQUENCY),
+        range.clone(),
+    ];
+
+    let equities = EquityTable::simulate_frequencies(community_cards, &ranges, 2_500_000);
+    let equity = equities.map(|e| e[0].clone()).unwrap_or_default();
+
+    let mut out = RangeTableWith::default();
+
+    for hand in Hand::all() {
+        let equity = equity.equity_percent(hand) * f64::from(MAX_FREQUENCY);
+        out[hand] = equity as u16;
+        assert!(out[hand] <= MAX_FREQUENCY)
+    }
+
+    out
 }
 
 fn catch_unwind_helper<F: FnOnce() -> R + UnwindSafe, R>(f: F) -> PyResult<R> {

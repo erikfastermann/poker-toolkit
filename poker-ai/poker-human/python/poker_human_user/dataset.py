@@ -24,6 +24,18 @@ class ActionDataset(TorchDataset):
         target = torch.tensor(target, dtype=torch.float32)
         return x, legal_mask, target
 
+    def street(self, idx):
+        return self.dataset.action_street(idx)
+
+    def board(self, idx):
+        return self.dataset.action_board(idx)
+
+    def hands(self, idx):
+        return self.dataset.action_hands(idx)
+
+    def actions(self, idx):
+        return self.dataset.action_actions(idx)
+
     def info(self, idx):
         return self.dataset.action_info(idx)
 
@@ -56,8 +68,23 @@ class ShowdownDataset(TorchDataset):
     def info(self, idx):
         return self.dataset.showdown_info(idx)
 
+    def street(self, idx):
+        return self.dataset.showdown_street(idx)
+
+    def board(self, idx):
+        return self.dataset.showdown_board(idx)
+
+    def hands(self, idx):
+        return self.dataset.showdown_hands(idx)
+
+    def actions(self, idx):
+        return self.dataset.showdown_actions(idx)
+
     def frequencies(self, idx):
         return self.dataset.showdown_range_info(idx)
+
+    def equities_from_range(self, idx, x):
+        return self.dataset.showdown_equities_from_range(idx, x)
 
     def state_probability(self, idx):
         return self.dataset.showdown_state_probability(idx)

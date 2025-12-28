@@ -4,16 +4,16 @@ use eframe::{
 };
 use poker_core::{
     ai::{AiAction, EquityStrategy, PlayerActionGenerator},
-    cards::Cards,
-    equity::EquityTable,
     game::Game,
     hand::Hand,
     init::init,
-    range::{RangeConfigEntry, RangeInfo, RangeTable, RangeTableWith, MAX_FREQUENCY},
+    range::{RangeConfigEntry, RangeInfo, RangeTableWith},
     result::Result,
 };
 use poker_gui::game_view::{GameView, PlayerActionGeneratorEntry};
-use poker_human::{ActionHead, ActionProbabilities, ShowdownHead, ShowdownProbabilities};
+use poker_human::{
+    equities_from_range, ActionHead, ActionProbabilities, ShowdownHead, ShowdownProbabilities,
+};
 use pyo3::{prelude::*, types::PyList};
 use rand::thread_rng;
 use std::{env, fmt::Write};
@@ -200,26 +200,6 @@ impl PlayerActionGenerator for BaselineActionGenerator {
 
         Ok(Some(RangeInfo::Ranges(ranges)))
     }
-}
-
-fn equities_from_range(community_cards: Cards, range: &RangeTableWith<u16>) -> RangeTableWith<u16> {
-    let ranges = vec![
-        RangeTable::FULL.to_frequencies(MAX_FREQUENCY),
-        range.clone(),
-    ];
-
-    let equities = EquityTable::simulate_frequencies(community_cards, &ranges, 1_000_000);
-    let equity = equities.map(|e| e[0].clone()).unwrap_or_default();
-
-    let mut out = RangeTableWith::default();
-
-    for hand in Hand::all() {
-        let equity = equity.equity_percent(hand) * f64::from(MAX_FREQUENCY);
-        out[hand] = equity as u16;
-        assert!(out[hand] <= MAX_FREQUENCY)
-    }
-
-    out
 }
 
 impl App {
