@@ -22,7 +22,11 @@ def evaluate(name, dataset, model):
     data = []
 
     for idx in tqdm(test.indices):
-        x, legal_mask, _ = dataset[idx]
+        try:
+            x, legal_mask, _ = dataset[idx]
+        except Exception as e:
+            print(f'Skipping {idx}: {e}')
+            continue
 
         expected = dataset.frequencies(idx)
         got = model.predict(x, legal_mask)

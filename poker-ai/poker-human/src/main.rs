@@ -25,7 +25,16 @@ use poker_human::{
 use pyo3::{prelude::*, types::PyList};
 use rand::thread_rng;
 use serde::Deserialize;
-use std::{env, fmt::Write, fs::File, io::BufReader, str::FromStr, thread};
+use std::{
+    collections::HashMap,
+    env,
+    fmt::Write,
+    fs::File,
+    io::{BufReader, BufWriter},
+    str::FromStr,
+    sync::{Arc, Mutex},
+    thread,
+};
 
 fn main() -> Result<()> {
     unsafe { init() };
@@ -40,6 +49,7 @@ fn main() -> Result<()> {
         "model" => game_gui(false, &args[2..]),
         "baseline" => game_gui(true, &args[2..]),
         "ranges" => range_gui(&args[2..]),
+        "showdown-equities" => showdown_equities(&args[2..]),
         _ => return Err("invalid command".into()),
     }
 }
@@ -91,11 +101,12 @@ fn game_gui(with_baseline: bool, args: &[String]) -> Result<()> {
 }
 
 fn range_gui(args: &[String]) -> Result<()> {
-    if args.len() != 1 {
+    if args.len() != 2 {
         return Err("invalid command".into());
     }
 
-    let data_path = args[0].as_str();
+    let range_data_path = args[0].as_str();
+    let equity_data_path = args[1].as_str();
 
     env_logger::init();
     let options = eframe::NativeOptions {
@@ -113,7 +124,7 @@ fn range_gui(args: &[String]) -> Result<()> {
             };
             cc.egui_ctx.set_style(style);
             egui_extras::install_image_loaders(&cc.egui_ctx);
-            Ok(Box::new(RangeApp::new(data_path)?))
+            Ok(Box::new(RangeApp::new(range_data_path, equity_data_path)?))
         }),
     )
     .map_err(|err| err.to_string())?;
@@ -310,24 +321,33 @@ struct RangeApp {
     got: RangeViewer,
     uniform: RangeViewer,
 
-    data: Vec<RangeEntry>,
+    range_data: Vec<RangeEntry>,
+    equity_data: HashMap<u64, [RangeTableWith<u16>; 3]>,
     current_entry: usize,
 }
 
 impl RangeApp {
-    fn new(data_path: &str) -> Result<Self> {
-        let data: Vec<RangeEntry> =
-            serde_json::from_reader(BufReader::new(File::open(data_path)?))?;
+    fn new(range_data_path: &str, equity_data_path: &str) -> Result<Self> {
+        let range_data: Vec<RangeEntry> =
+            serde_json::from_reader(BufReader::new(File::open(range_data_path)?))?;
 
-        if data.is_empty() {
+        if range_data.is_empty() {
             return Err("empty dataset".into());
+        }
+
+        let equity_data: HashMap<u64, [RangeTableWith<u16>; 3]> =
+            serde_json::from_reader(BufReader::new(File::open(equity_data_path)?))?;
+
+        if range_data.len() != equity_data.len() {
+            return Err("range and equity data lengths don't match".into());
         }
 
         let mut app = Self {
             expected: RangeViewer::new(),
             got: RangeViewer::new(),
             uniform: RangeViewer::new(),
-            data,
+            range_data,
+            equity_data,
             current_entry: 0,
         };
 
@@ -367,7 +387,7 @@ impl RangeApp {
         }
 
         let next_button = ui
-            .add_enabled_ui(self.current_entry != self.data.len() - 1, |ui| {
+            .add_enabled_ui(self.current_entry != self.range_data.len() - 1, |ui| {
                 ui.button(">")
             })
             .inner;
@@ -378,42 +398,22 @@ impl RangeApp {
     }
 
     fn update_ranges(&mut self) -> Result<()> {
-        let entry = &self.data[self.current_entry];
+        let entry = &self.range_data[self.current_entry];
 
-        let board = entry
-            .board
-            .iter()
-            .map(|card| Card::from_str(card))
-            .collect::<Result<Vec<Card>>>()?;
-
-        let Some(board) = Cards::from_slice(&board) else {
-            return Err("duplicate card on board".into());
+        let Some([expected, got, uniform]) = self.equity_data.get(&entry.idx).cloned() else {
+            return Err("missing index in range data".into());
         };
 
-        let expected = ShowdownProbabilities::from_probabilities(&entry.expected, None)?;
-        let got = ShowdownProbabilities::from_probabilities(&entry.got, None)?;
-
-        let handle_expected = thread::spawn(move || equities_from_range(board, &expected.range()));
-        let handle_got = thread::spawn(move || equities_from_range(board, &got.range()));
-        let handle_uniform = thread::spawn(move || {
-            equities_from_range(board, &RangeTable::FULL.to_frequencies(MAX_FREQUENCY))
-        });
-
-        let expected_equities = handle_expected.join().unwrap();
-        let got_equities = handle_got.join().unwrap();
-        let uniform_equities = handle_uniform.join().unwrap();
-
-        let mae = mean_absolute_error(&expected_equities, &got_equities);
-        let mae_uniform = mean_absolute_error(&expected_equities, &uniform_equities);
+        let mae = mean_absolute_error(&expected, &got);
+        let mae_uniform = mean_absolute_error(&expected, &uniform);
 
         self.expected
-            .replace_ranges(vec![RangeValue::Simple(expected_equities)]);
+            .replace_ranges(vec![RangeValue::Simple(expected)]);
 
-        self.got
-            .replace_ranges(vec![RangeValue::Simple(got_equities)]);
+        self.got.replace_ranges(vec![RangeValue::Simple(got)]);
 
         self.uniform
-            .replace_ranges(vec![RangeValue::Simple(uniform_equities)]);
+            .replace_ranges(vec![RangeValue::Simple(uniform)]);
 
         let details = format!(
             "{}\n{}\n{:?}\nMAE: {}\nMAE (uniform): {}",
@@ -447,4 +447,104 @@ struct RangeEntry {
     got: Vec<f32>,
     prob: f64,
     board: Vec<String>,
+}
+
+impl RangeEntry {
+    fn board(&self) -> Result<Cards> {
+        let board = self
+            .board
+            .iter()
+            .map(|card| Card::from_str(card))
+            .collect::<Result<Vec<Card>>>()?;
+
+        let Some(board) = Cards::from_slice(&board) else {
+            return Err("duplicate card on board".into());
+        };
+
+        Ok(board)
+    }
+}
+
+const WORKER_THREADS: usize = 140;
+const REPORT_INTERVAL: usize = 500;
+
+fn showdown_equities(args: &[String]) -> Result<()> {
+    if args.len() != 2 {
+        return Err("invalid command".into());
+    }
+
+    let data_path = args[0].as_str();
+    let out_path = args[1].as_str();
+
+    let data: Vec<RangeEntry> = serde_json::from_reader(BufReader::new(File::open(data_path)?))?;
+    let out = spawn_workers(data)?;
+    serde_json::to_writer(BufWriter::new(File::create(out_path)?), &out)?;
+
+    Ok(())
+}
+
+fn spawn_workers(data: Vec<RangeEntry>) -> Result<HashMap<u64, [RangeTableWith<u16>; 3]>> {
+    println!("Processing {} entries...", data.len());
+
+    let queue = Arc::new(Mutex::new(data));
+    let out = Arc::new(Mutex::new(HashMap::new()));
+
+    let mut handles = Vec::new();
+
+    for _ in 0..WORKER_THREADS {
+        let queue = Arc::clone(&queue);
+        let out = Arc::clone(&out);
+
+        handles.push(thread::spawn(move || worker_loop(queue, out)));
+    }
+
+    for handle in handles {
+        handle.join().unwrap()?;
+    }
+
+    Ok(Arc::try_unwrap(out).unwrap().into_inner().unwrap())
+}
+
+fn worker_loop(
+    queue: Arc<Mutex<Vec<RangeEntry>>>,
+    out: Arc<Mutex<HashMap<u64, [RangeTableWith<u16>; 3]>>>,
+) -> Result<()> {
+    loop {
+        let entry = {
+            let mut queue = queue.lock().unwrap();
+
+            if !queue.is_empty() && queue.len() % REPORT_INTERVAL == 0 {
+                println!("{} remaining", queue.len());
+            }
+
+            queue.pop()
+        };
+
+        let Some(entry) = entry else {
+            return Ok(());
+        };
+
+        let board = entry.board()?;
+
+        let expected = ShowdownProbabilities::from_probabilities(&entry.expected, None)?;
+        let got = ShowdownProbabilities::from_probabilities(&entry.got, None)?;
+
+        let expected_equities = equities_from_range(board, &expected.range());
+        let got_equities = equities_from_range(board, &got.range());
+        let uniform_equities =
+            equities_from_range(board, &RangeTable::FULL.to_frequencies(MAX_FREQUENCY));
+
+        {
+            let mut out = out.lock().unwrap();
+
+            let old_entry = out.insert(
+                entry.idx,
+                [expected_equities, got_equities, uniform_equities],
+            );
+
+            if old_entry.is_some() {
+                return Err("duplicate index".into());
+            }
+        }
+    }
 }
