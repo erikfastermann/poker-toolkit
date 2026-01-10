@@ -1,8 +1,24 @@
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib import rcParams
 import pickle
 import json
 import copy
+
+
+plt.style.use('seaborn-v0_8-paper')
+rcParams.update({
+    "font.size": 12,
+    "axes.labelsize": 13,
+    "axes.titlesize": 14,
+    "legend.fontsize": 11,
+    "xtick.labelsize": 11,
+    "ytick.labelsize": 11,
+    "axes.grid": True,
+    "grid.linestyle": "--",
+    "grid.alpha": 0.6,
+    "lines.linewidth": 2,
+})
 
 
 def load_pickle(file_path):
@@ -36,6 +52,7 @@ def histogram(name, info, values):
     plt.grid(axis='y', alpha=0.3)
 
     plt.savefig(f'dump_{name}_histogram.png')
+    plt.close()
 
 
 def rarity(name, info, values, probs):
@@ -48,7 +65,6 @@ def rarity(name, info, values, probs):
     z = np.polyfit(values, log_probs, 1)
     p = np.poly1d(z)
     x_range = np.linspace(min(values), max(values), 100)
-    plt.plot(x_range, 10**p(x_range), "r--", linewidth=2, label='Log-Linear Trend')
 
     plt.title(info['title'])
     plt.xlabel(info['x_label'])
@@ -57,10 +73,19 @@ def rarity(name, info, values, probs):
     plt.legend()
 
     plt.savefig(f'dump_{name}_rarity_analysis.png')
+    plt.close()
+
+
+def total_variation_distance(a, b):
+    return 0.5 * np.sum(np.abs(a - b))
+
+
+def mean_squared_error(a, b):
+    return np.mean(np.abs(a - b))
 
 
 def evaluate_single(name, info, data):
-    tvd_values = [0.5 * np.sum(np.abs(e['expected'] - e['got'])) for e in data]
+    tvd_values = [total_variation_distance(e['expected'], e['got']) for e in data]
     state_probabilities = [e['prob'] for e in data]
 
     histogram(name, info['histogram'], tvd_values)
@@ -70,12 +95,12 @@ def evaluate_single(name, info, data):
 def evaluate_action(data):
     info = {
         'histogram': {
-            'title': 'Distribution of Total Variation Distance (TVD) for the Action Model',
+            'title': 'Action Model Evaluation - Histogram',
             'x_label': 'Total Variation Distance (Lower is better)',
             'y_label': 'Frequency in Percent',
         },
         'rarity': {
-            'title': 'Relationship between Sample Rarity and TVD for the Action Model',
+            'title': 'Action Model Evaluation - Sample Rarity',
             'x_label': 'Total Variation Distance (Lower is better)',
             'y_label': 'Occurrence Probability (Log Scale)',
         },
@@ -108,15 +133,22 @@ def preprocess_equity_data(equity_data):
         }
 
 
+def swap_entry_got_uniform(entry):
+    entry = copy.deepcopy(entry)
+    length = len(entry['got'])
+    entry['got'] = np.full(length, 1 / length)
+    return entry
+
+
 def evaluate_showdown(range_data, equity_data):
     info = {
         'histogram': {
-            'title': 'Distribution of Total Variation Distance (TVD) for the Showdown Model',
+            'title': 'Showdown Model Evaluation - Histogram',
             'x_label': 'Total Variation Distance (Lower is better)',
             'y_label': 'Frequency in Percent',
         },
         'rarity': {
-            'title': 'Relationship between Sample Rarity and TVD for the Showdown Model',
+            'title': 'Showdown Model Evaluation - Sample Rarity',
             'x_label': 'Total Variation Distance (Lower is better)',
             'y_label': 'Occurrence Probability (Log Scale)',
         },
@@ -124,35 +156,40 @@ def evaluate_showdown(range_data, equity_data):
 
     evaluate_single('showdown', info, range_data)
 
-    mae_histogram_info = {
-        'title': 'Distribution of Mean Absolute Error (MAE) for the Showdown Model Equities',
-        'x_label': 'Mean Absolute Error (Lower is better)',
+    mse_histogram_info = {
+        'title': 'Showdown Equities Evaluation - Model',
+        'x_label': 'Mean Squared Error (Lower is better)',
         'y_label': 'Frequency in Percent',
     }
 
-    mae_histogram_uniform_info = {
-        'title': 'Distribution of Mean Absolute Error (MAE) for the Uniform Range Showdown Equities',
-        'x_label': 'Mean Absolute Error (Lower is better)',
+    mse_histogram_uniform_info = {
+        'title': 'Showdown Equities Evaluation - Uniform Range',
+        'x_label': 'Mean Squared Error (Lower is better)',
         'y_label': 'Frequency in Percent',
     }
 
-    mae_values = [np.sum(np.abs(e['expected'] - e['got'])) / 1326 for e in equity_data]
-    mae_uniform_values = [np.sum(np.abs(e['expected'] - e['uniform'])) / 1326 for e in equity_data]
+    mse_values = [mean_squared_error(e['expected'], e['got']) for e in equity_data]
+    mse_uniform_values = [mean_squared_error(e['expected'], e['uniform']) for e in equity_data]
 
-    histogram('showdown_mae', mae_histogram_info, mae_values)
-    histogram('showdown_mae_uniform', mae_histogram_uniform_info, mae_uniform_values)
+    histogram('showdown_mse', mse_histogram_info, mse_values)
+    histogram('showdown_mse_uniform', mse_histogram_uniform_info, mse_uniform_values)
 
 
 if __name__ == '__main__':
-    action_data_path = 'dump_action_eval_full.pkl'
-    showdown_data_path = 'dump_showdown_eval_full.pkl'
-    equity_data_path = 'dump_showdown_equities_full.json'
+    action_data_path = 'dump_action_eval.pkl'
+    showdown_data_path = 'dump_showdown_eval.pkl'
+    equity_data_path = 'dump_showdown_equities.json'
+
 
     action_data = load_pickle(action_data_path)
     showdown_data = load_pickle(showdown_data_path)
 
     # Assumes consistent insertion order of range dicts.
     equity_data = list(preprocess_equity_data(load_json(equity_data_path)))
+    assert len(equity_data) == len(showdown_data)
+
+    print('Action:', len(action_data))
+    print('Showdown:', len(showdown_data))
 
     evaluate_action(action_data)
     evaluate_showdown(showdown_data, equity_data)

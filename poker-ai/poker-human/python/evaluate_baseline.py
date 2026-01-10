@@ -56,7 +56,7 @@ def evaluate(name, dataset, model):
 
 
 if __name__ == "__main__":
-    db_path = "equity.db"
+    db_path = "../generate-hands/equity.db"
     limit = None
     action_model_path = "action_baseline.pt"
     showdown_model_path = "showdown_baseline.pt"
