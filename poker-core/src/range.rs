@@ -12,9 +12,7 @@ use serde::{de, Deserialize, Serialize, Serializer};
 
 use crate::card::Card;
 use crate::cards::{Cards, CardsByRank};
-use crate::game::{
-    milli_big_blind_to_f64_approximate, Action, Game, MilliBigBlind, Player, State, Street,
-};
+use crate::game::{Action, Amount, Game, MilliBigBlind, Player, PlayerData, State, Street};
 use crate::hand::Hand;
 use crate::rank::Rank;
 use crate::result::{Error, Result};
@@ -921,8 +919,14 @@ impl<T> IndexMut<Hand> for RangeTableWith<T> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PreFlopAction {
-    Post { player: u8, amount: MilliBigBlind },
-    Straddle { player: u8, amount: MilliBigBlind },
+    Post {
+        player: Player,
+        amount: MilliBigBlind,
+    },
+    Straddle {
+        player: Player,
+        amount: MilliBigBlind,
+    },
     Fold,
     Check,
     Call,
@@ -943,12 +947,23 @@ impl PreFlopAction {
     }
 
     fn apply_to_game(self, game: &mut Game) -> Result<()> {
+        // TODO:
+        // Previous code just converted mbb directly to chip amounts,
+        // which was probably not correct.
+        // Fixed for now.
+
         match self {
             PreFlopAction::Post { player, amount } => {
-                game.additional_post(usize::from(player), u32::try_from(amount)?, false)
+                let Some(amount) = amount.to_amount_rounded(game.big_blind()) else {
+                    return Err("apply preflop action: failed converting amount to chips".into());
+                };
+                game.additional_post(player, amount, false)
             }
             PreFlopAction::Straddle { player, amount } => {
-                game.straddle(usize::from(player), u32::try_from(amount)?)
+                let Some(amount) = amount.to_amount_rounded(game.big_blind()) else {
+                    return Err("apply preflop action: failed converting amount to chips".into());
+                };
+                game.straddle(player, amount)
             }
             PreFlopAction::Fold => game.fold(),
             PreFlopAction::Check => game.check(),
@@ -956,7 +971,12 @@ impl PreFlopAction {
             // TODO:
             // In the GTO Wizard crawler some raises are smaller than the minimum,
             // so we sadly have to use this function.
-            PreFlopAction::Raise(to) => game.unsafe_raise_min_bet_unchecked(u32::try_from(to)?),
+            PreFlopAction::Raise(to) => {
+                let Some(to) = to.to_amount_rounded(game.big_blind()) else {
+                    return Err("apply preflop action: failed converting amount to chips".into());
+                };
+                game.unsafe_raise_min_bet_unchecked(to)
+            }
         }
     }
 
@@ -1208,9 +1228,20 @@ impl PreFlopRangeConfigEntry {
         small_blind: MilliBigBlind,
         previous_actions: &[PreFlopAction],
     ) -> Result<Game> {
-        let depth = u32::try_from(depth)?;
-        let players = vec![Player::with_starting_stack(depth); max_players];
-        let mut game = Game::new(&players, 0, u32::try_from(small_blind)?, 1_000)?;
+        const BIG_BLIND: Amount = Amount::new(1_000);
+
+        let Some(depth) = depth.to_amount_rounded(BIG_BLIND) else {
+            return Err("game from preflop range: failed converting depth to chip amount".into());
+        };
+
+        let Some(small_blind) = small_blind.to_amount_rounded(BIG_BLIND) else {
+            return Err(
+                "game from preflop range: failed converting small blind to chip amount".into(),
+            );
+        };
+
+        let players = vec![PlayerData::with_starting_stack(depth); max_players];
+        let mut game = Game::new(&players, Player::ZERO, small_blind, BIG_BLIND)?;
         game.post_small_and_big_blind()?;
 
         for action in previous_actions.iter().copied() {
@@ -1297,7 +1328,7 @@ impl PreFlopRangeConfigEntry {
                 // Super simple difference.
                 (PreFlopAction::Raise(current_to), Action::Raise { to, .. }) => {
                     let to = game.amount_to_milli_big_blinds_rounded(to);
-                    Some(i64::from(current_to).abs_diff(to))
+                    Some(i64::from(current_to).abs_diff(to.into()))
                 }
                 (PreFlopAction::Raise(_), _) | (_, Action::Raise { .. }) => unreachable!(),
                 _ => None,
@@ -1447,19 +1478,19 @@ impl PreFlopRangeConfig {
     const DEFAULT: Self = Self {
         description: None,
         max_players: Game::MAX_PLAYERS,
-        depth: 100_000,
-        small_blind: 500,
+        depth: MilliBigBlind::new(100_000),
+        small_blind: MilliBigBlind::new(500),
         ranges: Vec::new(),
     };
 
     pub fn from_data(data: PreFlopRangeConfigData) -> Result<Self> {
-        if data.depth < 1_000 {
+        if data.depth < MilliBigBlind::BIG_BLIND {
             return Err("range config: depth must be greater or equal to one big blind".into());
         }
         if data.max_players < Game::MIN_PLAYERS || data.max_players > Game::MAX_PLAYERS {
             return Err("range config: invalid max players value".into());
         }
-        if data.small_blind <= 0 || data.small_blind > 1_000 {
+        if data.small_blind <= MilliBigBlind::ZERO || data.small_blind > MilliBigBlind::BIG_BLIND {
             return Err("range config: invalid small blind size".into());
         }
 
@@ -1597,8 +1628,14 @@ impl PreFlopRangeConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RangeActionKind {
-    Post { player: u8, amount: MilliBigBlind },
-    Straddle { player: u8, amount: MilliBigBlind },
+    Post {
+        player: Player,
+        amount: MilliBigBlind,
+    },
+    Straddle {
+        player: Player,
+        amount: MilliBigBlind,
+    },
     Fold,
     Check,
     Call,
@@ -1612,23 +1649,23 @@ impl fmt::Display for RangeActionKind {
             RangeActionKind::Post { player, amount } => write!(
                 f,
                 "Post from {player} to {:.2}",
-                milli_big_blind_to_f64_approximate(amount)
+                amount.to_f64_approximate()
             ),
             RangeActionKind::Straddle { player, amount } => {
                 write!(
                     f,
                     "Straddle from {player} to {:.2}",
-                    milli_big_blind_to_f64_approximate(amount)
+                    amount.to_f64_approximate()
                 )
             }
             RangeActionKind::Fold => write!(f, "Fold"),
             RangeActionKind::Check => write!(f, "Check"),
             RangeActionKind::Call => write!(f, "Call"),
             RangeActionKind::Bet(amount) => {
-                write!(f, "Bet {:.2}", milli_big_blind_to_f64_approximate(amount))
+                write!(f, "Bet {:.2}", amount.to_f64_approximate())
             }
             RangeActionKind::Raise(to) => {
-                write!(f, "Raise {:.2}", milli_big_blind_to_f64_approximate(to))
+                write!(f, "Raise {:.2}", to.to_f64_approximate())
             }
         }
     }
@@ -1638,17 +1675,14 @@ impl RangeActionKind {
     pub fn from_game_action(game: &Game, action: Action) -> Result<Self> {
         match action {
             Action::Post { player, amount, .. } => {
-                let Some(player) = Game::player_to_button_offset(
-                    game.player_count(),
-                    game.button_index(),
-                    usize::from(player),
-                ) else {
+                let Some(player) =
+                    Game::player_to_button_offset(game.player_count(), game.button(), player)
+                else {
                     return Err(
                         "range action from game action: failed converting player to button offset"
                             .into(),
                     );
                 };
-                let player = u8::try_from(player).unwrap();
 
                 Ok(Self::Post {
                     player,
@@ -1656,17 +1690,14 @@ impl RangeActionKind {
                 })
             }
             Action::Straddle { player, amount } => {
-                let Some(player) = Game::player_to_button_offset(
-                    game.player_count(),
-                    game.button_index(),
-                    usize::from(player),
-                ) else {
+                let Some(player) =
+                    Game::player_to_button_offset(game.player_count(), game.button(), player)
+                else {
                     return Err(
                         "range action from game action: failed converting player to button offset"
                             .into(),
                     );
                 };
-                let player = u8::try_from(player).unwrap();
 
                 Ok(Self::Straddle {
                     player,

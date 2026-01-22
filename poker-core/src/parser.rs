@@ -6,7 +6,7 @@ use regex::Regex;
 use crate::{
     bitset::Bitset,
     card::Card,
-    game::{Board, Game, Player, State, Street},
+    game::{Amount, Board, Game, Player, PlayerData, Seat, State, Street},
     hand::Hand,
     result::Result,
 };
@@ -192,14 +192,16 @@ impl GGHandHistoryParser {
         let (hand_name, small_blind, big_blind, date) = self.parse_description(&mut lines)?;
         let (table_name, button_seat) = self.parse_table_info(&mut lines)?;
         let players = self.parse_stacks(&mut lines, seats)?;
-        let Some(button_index) = players
+
+        let Some(button) = players
             .iter()
             .position(|player| player.seat == Some(button_seat))
+            .and_then(|button_index| Player::try_from(button_index).ok())
         else {
             return Err("parse: invalid button seat".into());
         };
 
-        let mut game = Game::new(&players, button_index, small_blind, big_blind)?;
+        let mut game = Game::new(&players, button, small_blind, big_blind)?;
         game.set_unit(self.unit.clone());
         game.set_max_players(6)?;
         game.set_location(self.location.clone());
@@ -246,7 +248,7 @@ impl GGHandHistoryParser {
     fn parse_description<'a>(
         &self,
         lines: &mut impl Iterator<Item = &'a str>,
-    ) -> Result<(Arc<String>, u32, u32, NaiveDateTime)> {
+    ) -> Result<(Arc<String>, Amount, Amount, NaiveDateTime)> {
         let description = option_to_result(lines.next(), "first line (description) missing")?;
         let [hand_name, small_blind, big_blind, date] = option_to_result(
             self.re_description.captures(description),
@@ -265,7 +267,7 @@ impl GGHandHistoryParser {
     fn parse_table_info<'a>(
         &self,
         lines: &mut impl Iterator<Item = &'a str>,
-    ) -> Result<(Arc<String>, u8)> {
+    ) -> Result<(Arc<String>, Seat)> {
         let table_info = option_to_result(lines.next(), "second line (table info) missing")?;
         let [table_name, button_seat_one_based] = option_to_result(
             self.re_table_info.captures(table_info),
@@ -279,14 +281,14 @@ impl GGHandHistoryParser {
         let Some(button_seat) = button_seat_one_based.checked_sub(1) else {
             return Err("table info: invalid button seat".into());
         };
-        Ok((table_name, button_seat))
+        Ok((table_name, Seat::try_from(button_seat).unwrap()))
     }
 
     fn parse_stacks<'a>(
         &self,
         lines: &mut Peekable<impl Iterator<Item = &'a str>>,
         seats: Bitset<2>,
-    ) -> Result<Vec<Player>> {
+    ) -> Result<Vec<PlayerData>> {
         let mut players = Vec::new();
         loop {
             let seat_config = option_to_result(lines.peek(), "seat config line missing")?;
@@ -303,14 +305,14 @@ impl GGHandHistoryParser {
                 .unwrap();
             let starting_stack = Self::parse_price_as_cent(stack)?;
 
-            // TODO: Option to add player even if not listed in showdown?
+            // TODO: Option to add player if not listed in showdown?
             if !seats.has(usize::from(seat)) {
                 continue;
             }
 
-            players.push(Player {
+            players.push(PlayerData {
                 name: Some(Arc::new(name.to_owned())),
-                seat: Some(seat),
+                seat: Some(Seat::try_from(seat).unwrap()),
                 hand: None,
                 starting_stack,
             });
@@ -324,13 +326,13 @@ impl GGHandHistoryParser {
         lines: &mut Peekable<impl Iterator<Item = &'a str>>,
         game: &mut Game,
     ) -> Result<()> {
-        let small_blind_name = game.player_name(game.small_blind_index());
+        let small_blind_name = game.player_name(game.small_blind_player());
         let (name, kind, _) = self.parse_post_inner(lines)?;
         if name != small_blind_name || kind != "small" {
             return Err("post: invalid small blind format".into());
         }
 
-        let big_blind_name = game.player_name(game.big_blind_index());
+        let big_blind_name = game.player_name(game.big_blind_player());
         let (name, kind, _) = self.parse_post_inner(lines)?;
         if name != big_blind_name || kind != "big" {
             return Err("post: invalid big blind format".into());
@@ -348,7 +350,7 @@ impl GGHandHistoryParser {
                 return Err(format!("post: invalid player name '{name}'").into());
             };
 
-            let post_actions = &mut additional_posters[player];
+            let post_actions = &mut additional_posters[usize::from(player)];
             match kind {
                 "big" => post_actions.push((true, price)),
                 "small" | "missed" => post_actions.push((false, price)),
@@ -356,13 +358,13 @@ impl GGHandHistoryParser {
             }
         }
 
-        let players =
-            (game.small_blind_index()..game.player_count()).chain(0..game.small_blind_index());
+        let players = (usize::from(game.small_blind_player())..game.player_count())
+            .chain(0..usize::from(game.small_blind_player()));
         for player in players {
             let post_actions = &mut additional_posters[player];
             post_actions.sort();
             for (not_dead, amount) in post_actions.iter().copied() {
-                game.additional_post(player, amount, !not_dead)?;
+                game.additional_post(Player::try_from(player).unwrap(), amount, !not_dead)?;
             }
         }
 
@@ -372,7 +374,7 @@ impl GGHandHistoryParser {
     fn parse_post_inner<'a>(
         &self,
         lines: &mut impl Iterator<Item = &'a str>,
-    ) -> Result<(&'a str, &'a str, u32)> {
+    ) -> Result<(&'a str, &'a str, Amount)> {
         let post_blind = option_to_result(lines.next(), "post blind line is missing")?;
         let [name, kind, price] = option_to_result(
             self.re_post_blind.captures(post_blind),
@@ -428,7 +430,7 @@ impl GGHandHistoryParser {
             return Ok(());
         }
 
-        for player in 0..game.player_count() {
+        for player in game.players() {
             let deal = option_to_result(lines.next(), "deal line is missing")?;
             let deal = option_to_result(self.re_deal.captures(deal), "deal: invalid format")?;
             let name = &deal[1];
@@ -487,15 +489,15 @@ impl GGHandHistoryParser {
             return Err("action: invalid format".into());
         };
         let name = &action[1];
-        let player_index = game.player_by_name(name);
-        if player_index.is_none() || player_index != game.current_player() {
+        let player = game.player_by_name(name);
+        if player.is_none() || player != game.current_player() {
             return Err(format!(
                 "action: player {name} is not expected index {:?}",
                 game.current_player()
             )
             .into());
         }
-        let player_index = player_index.unwrap();
+        let player = player.unwrap();
 
         const FOLD_INDEX: usize = 3;
         const CHECK_INDEX: usize = 4;
@@ -523,13 +525,17 @@ impl GGHandHistoryParser {
                 .into());
             }
             game.call()?;
-            if action.get(CALL_ALL_IN_INDEX).is_some() && game.current_stacks()[player_index] != 0 {
+            if action.get(CALL_ALL_IN_INDEX).is_some()
+                && game.current_stacks()[usize::from(player)] != Amount::ZERO
+            {
                 return Err("action: invalid call all-in".into());
             }
         } else if action.get(BET_INDEX).is_some() {
             let bet_amount = Self::parse_price_as_cent(&action[BET_INDEX + 1])?;
             game.bet(bet_amount)?;
-            if action.get(BET_ALL_IN_INDEX).is_some() && game.current_stacks()[player_index] != 0 {
+            if action.get(BET_ALL_IN_INDEX).is_some()
+                && game.current_stacks()[usize::from(player)] != Amount::ZERO
+            {
                 return Err("action: invalid bet all-in".into());
             }
         } else if action.get(RAISE_INDEX).is_some() {
@@ -546,7 +552,8 @@ impl GGHandHistoryParser {
             }
 
             game.raise(raise_to)?;
-            if action.get(RAISE_ALL_IN_INDEX).is_some() && game.current_stacks()[player_index] != 0
+            if action.get(RAISE_ALL_IN_INDEX).is_some()
+                && game.current_stacks()[usize::from(player)] != Amount::ZERO
             {
                 return Err("action: invalid raise all-in".into());
             }
@@ -708,18 +715,18 @@ impl GGHandHistoryParser {
                 return Err("shows: invalid hand".into());
             };
 
-            if show_players.has(player) {
+            if show_players.has(player.into()) {
                 return Err("shows: duplicate player show".into());
             }
 
-            show_players.set(player);
+            show_players.set(player.into());
             game.set_hand(player, hand)?;
         }
 
         while let State::ShowOrMuck(player) = game.state() {
-            if show_players.has(player) {
+            if show_players.has(player.into()) {
                 game.show_hand()?;
-                show_players.remove(player);
+                show_players.remove(player.into());
             } else {
                 game.muck_hand()?;
             }
@@ -736,8 +743,8 @@ impl GGHandHistoryParser {
         &self,
         lines: &mut Peekable<impl Iterator<Item = &'a str>>,
         game: &Game,
-    ) -> Result<Vec<u32>> {
-        let mut winnings = vec![0u32; game.player_count()];
+    ) -> Result<Vec<Amount>> {
+        let mut winnings = vec![Amount::ZERO; game.player_count()];
 
         loop {
             if lines
@@ -764,7 +771,7 @@ impl GGHandHistoryParser {
         &self,
         lines: &mut Peekable<impl Iterator<Item = &'a str>>,
         game: &Game,
-        winnings: &mut [u32],
+        winnings: &mut [Amount],
     ) -> Result<()> {
         while lines
             .peek()
@@ -790,10 +797,10 @@ impl GGHandHistoryParser {
             };
 
             let amount_won = Self::parse_price_as_cent(amount_won)?;
-            let Some(new_winnings) = winnings[player].checked_add(amount_won) else {
+            let Some(new_winnings) = winnings[usize::from(player)].checked_add(amount_won) else {
                 return Err("showdown: overflow calculating winnings".into());
             };
-            winnings[player] = new_winnings;
+            winnings[usize::from(player)] = new_winnings;
         }
     }
 
@@ -801,7 +808,7 @@ impl GGHandHistoryParser {
         &self,
         lines: &mut impl Iterator<Item = &'a str>,
         game: &mut Game,
-        winnings: &[u32],
+        winnings: &[Amount],
     ) -> Result<()> {
         let has_header_line = lines.next().is_some_and(|line| line == "*** SUMMARY ***");
         if !has_header_line {
@@ -824,13 +831,13 @@ impl GGHandHistoryParser {
         let jackpot = summary
             .get(JACKPOT_INDEX)
             .map(|jackpot| Self::parse_price_as_cent(jackpot.as_str()))
-            .unwrap_or(Ok(0))?;
+            .unwrap_or(Ok(Amount::ZERO))?;
         for index in [BINGO_INDEX, FORTUNE_INDEX, TAX_INDEX] {
             let amount = summary
                 .get(index)
                 .map(|amount| Self::parse_price_as_cent(amount.as_str()))
-                .unwrap_or(Ok(0))?;
-            if amount != 0 {
+                .unwrap_or(Ok(Amount::ZERO))?;
+            if amount != Amount::ZERO {
                 return Err("summary: bingo, fortune or tax is not zero".into());
             }
         }
@@ -845,9 +852,9 @@ impl GGHandHistoryParser {
             return Err("summary: total rake is larger than the total pot".into());
         };
 
-        let total_winnings = winnings
-            .iter()
-            .fold(Some(0u32), |acc, n| acc.and_then(|acc| acc.checked_add(*n)));
+        let total_winnings = winnings.iter().fold(Some(Amount::ZERO), |acc, n| {
+            acc.and_then(|acc| acc.checked_add(*n))
+        });
         let Some(total_winnings) = total_winnings else {
             return Err("summary: overflow calculating total winnings".into());
         };
@@ -859,11 +866,11 @@ impl GGHandHistoryParser {
             total_rake = total.checked_sub(total_winnings).unwrap();
         }
 
-        let player_pot_share = winnings
-            .iter()
-            .copied()
-            .enumerate()
-            .filter(|(_, winning)| *winning != 0);
+        let player_pot_share = game
+            .players()
+            .zip(winnings.iter().copied())
+            .filter(|(_, winning)| *winning != Amount::ZERO);
+
         game.showdown_custom(total_rake, player_pot_share)?;
 
         // The rest of the summary is currently ignored.
@@ -871,9 +878,11 @@ impl GGHandHistoryParser {
         Ok(())
     }
 
-    fn parse_price_as_cent(price: &str) -> Result<u32> {
+    fn parse_price_as_cent(price: &str) -> Result<Amount> {
         let mut split = price.split('.');
+
         let dollar: u32 = split.next().unwrap().parse()?;
+
         let cent = match split.next() {
             Some(s) => {
                 let cent: u32 = s.parse()?;
@@ -887,12 +896,15 @@ impl GGHandHistoryParser {
             }
             None => 0,
         };
+
         if split.next().is_some() {
             return Err(format!("price {price}: invalid format").into());
         }
+
         dollar
             .checked_mul(100)
             .and_then(|n| n.checked_add(cent))
+            .map(Amount::new)
             .ok_or_else(|| format!("price {price} too large").into())
     }
 }

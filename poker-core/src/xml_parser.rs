@@ -13,7 +13,7 @@ use serde_xml_rs::SerdeXml;
 use crate::{
     card::Card,
     cards::Cards,
-    game::{Action, Game, Player, State},
+    game::{self, Action, Amount, Game, Player, Seat, State},
     rank::Rank,
     result::{Error, Result},
     suite::Suite,
@@ -139,12 +139,15 @@ impl GameData {
             .players
             .players
             .iter()
-            .map(|player| Player {
+            .map(|player| game::PlayerData {
                 name: Some(player.name.clone()),
                 // TODO: Could give a nicer error message if this fails.
-                seat: player.seat.checked_sub(1),
+                seat: player
+                    .seat
+                    .checked_sub(1)
+                    .and_then(|player| Seat::try_from(player).ok()),
                 hand: None,
-                starting_stack: player.chips.0,
+                starting_stack: player.chips.0.into(),
             })
             .collect();
 
@@ -165,7 +168,12 @@ impl GameData {
             .iter()
             .position(|player| player.name.as_str() == hero_name);
 
-        let mut game = Game::new(&players, button_index, small_blind.0, big_blind.0)?;
+        let mut game = Game::new(
+            &players,
+            Player::try_from(button_index).unwrap(),
+            small_blind.0.into(),
+            big_blind.0.into(),
+        )?;
         game.set_max_players(table_size.into())?;
         game.set_unit(UNIT.clone());
         game.set_date(self.general.start_date);
@@ -174,7 +182,7 @@ impl GameData {
         game.set_hand_name(self.game_code.clone());
 
         if let Some(hero_index) = hero_index {
-            game.set_hero(hero_index)?;
+            game.set_hero(Player::try_from(hero_index)?)?;
         };
 
         if self.rounds.len() < 2 || self.rounds.len() > 5 {
@@ -222,13 +230,13 @@ impl GameData {
         let big_blind_action = &self.rounds[0].actions[1];
 
         if small_blind_action.kind != ActionKind::PostSmallBlind
-            || small_blind_action.player != game.player_name(game.small_blind_index())
+            || small_blind_action.player != game.player_name(game.small_blind_player())
         {
             return Err("invalid small blind post".into());
         }
 
         if big_blind_action.kind != ActionKind::PostBigBlind
-            || big_blind_action.player != game.player_name(game.big_blind_index())
+            || big_blind_action.player != game.player_name(game.big_blind_player())
         {
             return Err("invalid big blind post".into());
         }
@@ -247,7 +255,7 @@ impl GameData {
                 return Err("only posts allowed in round zero".into());
             }
 
-            game.additional_post(player, action.sum.0, false)?;
+            game.additional_post(player, action.sum.0.into(), false)?;
         }
 
         for round in &self.rounds[1..] {
@@ -318,18 +326,18 @@ impl GameData {
                         let Some(call_amount) = game.can_call() else {
                             return Err("call not allowed in current state".into());
                         };
-                        if call_amount != action.sum.0 {
+                        if call_amount != action.sum.0.into() {
                             return Err("call amount does not match expected amount".into());
                         }
                         game.call()?;
                     }
                     ActionKind::Check => game.check()?,
-                    ActionKind::Bet => game.bet(action.sum.0)?,
+                    ActionKind::Bet => game.bet(action.sum.0.into())?,
                     ActionKind::AllIn => {
                         if let Some(_) = game.can_all_in() {
                             let amount = game.current_stack().unwrap();
 
-                            if amount != action.sum.0 {
+                            if amount != Amount::from(action.sum.0) {
                                 return Err(format!(
                                     "all-in amount {} does not match expected amount {}",
                                     amount, action.sum.0
@@ -339,7 +347,7 @@ impl GameData {
 
                             game.all_in()?
                         } else if let Some(call_amount) = game.can_call() {
-                            if call_amount != action.sum.0 {
+                            if call_amount != action.sum.0.into() {
                                 return Err("call amount does not match expected amount".into());
                             }
 
@@ -348,7 +356,7 @@ impl GameData {
                             return Err("all-in not allowed in current state".into());
                         }
                     }
-                    ActionKind::Raise => game.raise(action.sum.0)?,
+                    ActionKind::Raise => game.raise(action.sum.0.into())?,
                 }
             }
 
@@ -446,32 +454,36 @@ impl GameData {
                     .players
                     .iter()
                     .map(|player| player.rake_amount)
-                    .fold(Some(0u32), |acc, n| {
-                        acc.and_then(|acc| acc.checked_add(n.0))
+                    .fold(Some(Amount::ZERO), |acc, n| {
+                        acc.and_then(|acc| acc.checked_add(n.0.into()))
                     });
+
                 let Some(total_rake) = total_rake else {
                     return Err("total rake calculation overflowed".into());
                 };
+
                 if total_rake >= game.total_pot() {
                     return Err("total rake greater or equal to the pot".into());
                 }
 
                 // TODO: Could check the winnings.
-                let player_pot_share = self
+                let pot_share = self
                     .general
                     .players
                     .players
                     .iter()
-                    .map(|player| player.win.0)
-                    .enumerate();
+                    .map(|player| Amount::from(player.win.0));
 
-                match game.showdown_custom(total_rake, player_pot_share.clone()) {
+                match game.showdown_custom(total_rake, game.players().zip(pot_share.clone())) {
                     Ok(()) => (),
                     Err(_) => {
                         // In some example hands, the rake was off by one,
                         // probably caused by bad rounding from the site.
                         // Correct for this here.
-                        game.showdown_custom(total_rake.checked_add(1).unwrap(), player_pot_share)?
+                        game.showdown_custom(
+                            total_rake.checked_add(1.into()).unwrap(),
+                            game.players().zip(pot_share.clone()),
+                        )?
                     }
                 }
             }
@@ -514,16 +526,14 @@ struct Players {
 
 impl Players {
     fn check_invested(&self, game: &Game) -> Result<()> {
-        if !self
-            .players
-            .iter()
-            .enumerate()
-            .all(|(index, player)| game.invested(index) == player.bet.0)
+        if !game
+            .players()
+            .zip(&self.players)
+            .all(|(index, player)| game.invested(index) == player.bet.0.into())
         {
-            let investments_formatted: String = self
-                .players
-                .iter()
-                .enumerate()
+            let investments_formatted: String = game
+                .players()
+                .zip(&self.players)
                 .map(|(index, player)| {
                     format!(
                         "{}: expected: {}, got: {}\n",

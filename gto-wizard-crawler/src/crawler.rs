@@ -20,7 +20,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use poker_core::{
-    game::{milli_big_blind_from_f64, Game, MilliBigBlind},
+    game::{Game, MilliBigBlind},
     range::{
         PreFlopAction, PreFlopRangeAction, PreFlopRangeConfig, PreFlopRangeConfigData,
         PreFlopRangeConfigEntry, PreFlopRangeConfigEntryData, PreFlopRangeTable,
@@ -60,7 +60,7 @@ impl Crawler {
     const RANGE_FILE_PREFIX: &str = "range_";
 
     pub async fn new(config: Config) -> Result<Self> {
-        if config.depth < 1_000 || config.depth % 1000 != 0 {
+        if config.depth < MilliBigBlind::BIG_BLIND || i64::from(config.depth) % 1000 != 0 {
             return Err("crawler: invalid depth".into());
         }
         if config.max_players < Game::MIN_PLAYERS || config.max_players > Game::MAX_PLAYERS {
@@ -189,7 +189,7 @@ impl Crawler {
 
     fn build_range_url(&self, pre_flop_actions: &[PreFlopAction]) -> Result<Url> {
         let pre_flop_actions_formatted = self.url_encode_pre_flop_actions(pre_flop_actions)?;
-        let depth = self.depth / 1000;
+        let depth = i64::from(self.depth) / 1000;
         let params: &[(&str, &str)] = &[
             ("gametype", &self.game_type),
             ("depth", &depth.to_string()),
@@ -278,7 +278,7 @@ impl Crawler {
     }
 
     fn format_raise_in_url(&self, to: MilliBigBlind) -> Result<String> {
-        if to < 2_000 {
+        if to < MilliBigBlind::new(2_000) {
             return Err("pre flop actions: raise too small".into());
         }
 
@@ -286,8 +286,8 @@ impl Crawler {
             return Ok("RAI".to_string());
         }
 
-        let full_blinds = to / 1_000;
-        let blind_fraction = to % 1_000;
+        let full_blinds = i64::from(to) / 1_000;
+        let blind_fraction = i64::from(to) % 1_000;
         let blind_fraction = blind_fraction.to_string();
         let blind_fraction = blind_fraction.trim_end_matches('0');
 
@@ -345,7 +345,7 @@ impl Crawler {
                         return Err("parse raw range: bet_size missing with type raise".into());
                     };
                     let raise_amount: f64 = raise_amount.parse()?;
-                    let raise_amount = milli_big_blind_from_f64(raise_amount)?;
+                    let raise_amount = MilliBigBlind::try_from(raise_amount)?;
                     PreFlopAction::Raise(raise_amount)
                 }
                 _ => return Err("parse raw range: unknown strategy type".into()),
@@ -361,7 +361,7 @@ impl Crawler {
                 .into_iter()
                 .zip(HANDS_ORDERED_BY_GTO_WIZARD_API)
             {
-                let current_ev = milli_big_blind_from_f64(current_ev)?;
+                let current_ev = MilliBigBlind::try_from(current_ev)?;
                 ev[RangeEntry::from_str(hand).unwrap()] = current_ev;
             }
 
@@ -415,7 +415,7 @@ impl Crawler {
         };
         let player_position = Game::position_name(
             current_game.player_count(),
-            current_game.button_index(),
+            current_game.button(),
             current_player,
         )
         .unwrap()
@@ -481,7 +481,7 @@ impl Crawler {
 
     fn small_blind(&self) -> MilliBigBlind {
         // Assume small blind is always half the big blind.
-        500
+        MilliBigBlind::new(500)
     }
 
     async fn write_full_config(&self) -> Result<()> {

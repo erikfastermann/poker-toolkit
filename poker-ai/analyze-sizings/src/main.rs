@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use poker_core::{
     db::DB,
-    game::{Action, Game, Street},
+    game::{Action, Amount, Game, Street},
     result::Result,
 };
 
@@ -55,7 +55,7 @@ fn process_game(mut game: Game, dist: &mut Dist) -> Result<()> {
     // Skip blinds/straddles.
     while game.can_next() {
         let pot = game.total_pot();
-        let call_amount = game.can_call().unwrap_or(0);
+        let call_amount = game.can_call().unwrap_or(Amount::ZERO);
 
         assert!(game.next());
 
@@ -71,7 +71,7 @@ fn process_game(mut game: Game, dist: &mut Dist) -> Result<()> {
             _ => continue,
         };
 
-        let is_all_in = game.current_stacks()[usize::from(player)] == 0;
+        let is_all_in = game.current_stacks()[usize::from(player)] == Amount::ZERO;
 
         let percent_pot = if is_all_in {
             u32::MAX
@@ -97,14 +97,14 @@ fn process_game(mut game: Game, dist: &mut Dist) -> Result<()> {
     Ok(())
 }
 
-fn percent_pot(pot: u32, call_amount: u32, amount: u32) -> u32 {
+fn percent_pot(pot: Amount, call_amount: Amount, amount: Amount) -> u32 {
     // We use the calculation for bets/raises, giving the percentage of the pot.
     // This is typically used to give the caller specific pot odds.
     // Often poker software implements them with configurable percent buttons,
     // although sometimes the calculation is different.
     // But I think this is the best solution to abstract the sizes.
 
-    assert_ne!(pot, 0);
+    assert_ne!(pot, Amount::ZERO);
     let pot_with_call = pot.checked_add(call_amount).unwrap();
     let percent = f64::from(amount) / f64::from(pot_with_call);
     let percent = (percent * 100.0).round();
