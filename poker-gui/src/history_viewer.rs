@@ -3,7 +3,11 @@ use eframe::egui::{
     UiBuilder,
 };
 use egui_extras::{Column, TableBody, TableBuilder, TableRow};
-use poker_core::{db, game::Game, result::Result};
+use poker_core::{
+    db,
+    game::{Game, Player},
+    result::Result,
+};
 
 use crate::{card::draw_cards, game_view::GameView};
 
@@ -268,8 +272,8 @@ impl HistoryView {
                 .and_then(|hand_player| {
                     Game::position_name(
                         usize::from(hand.player_count),
-                        usize::from(hand.button_index),
-                        usize::from(hand_player.player),
+                        Player::try_from(hand.button_index).unwrap(),
+                        Player::try_from(hand_player.player).unwrap(),
                     )
                     .map(|(short_name, _)| short_name)
                 })

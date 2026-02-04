@@ -33,8 +33,6 @@ impl FromStr for Hand {
     }
 }
 
-static mut HANDS: [Hand; Hand::COUNT] = [Hand::UNDEFINED; Hand::COUNT];
-
 impl Hand {
     pub(crate) const UNDEFINED: Self = Self(Card::MIN, Card::MIN);
 
@@ -45,27 +43,34 @@ impl Hand {
 
     pub const COUNT: usize = 52 * 51 / 2;
 
-    pub(crate) unsafe fn init() {
-        let mut index = 0;
-        Self::for_each_hand_slow(|hand| {
-            HANDS[index] = hand;
-            index += 1;
-        });
-        assert_eq!(index, Hand::COUNT);
-    }
+    const HANDS: [Self; Self::COUNT] = Self::init_hands();
 
-    fn for_each_hand_slow(mut f: impl FnMut(Hand)) {
-        for a in Card::all_by_rank() {
-            for b in Card::all_by_rank() {
-                if b.cmp_by_rank(a).is_gt() {
-                    f(Hand::of_two_cards(a, b).unwrap());
-                }
+    const fn init_hands() -> [Hand; Hand::COUNT] {
+        let mut hands = [Hand::UNDEFINED; Hand::COUNT];
+        let mut index = 0;
+        let mut a = 0;
+
+        while a < Card::COUNT {
+            let mut b = a + 1;
+
+            while b < Card::COUNT {
+                hands[index] = Hand::of_two_cards_sorted_unchecked(
+                    Card::CARDS_BY_RANK[a],
+                    Card::CARDS_BY_RANK[b],
+                );
+                index += 1;
+                b += 1;
             }
+
+            a += 1;
         }
+
+        assert!(index == Hand::COUNT);
+        hands
     }
 
     pub fn all() -> impl Iterator<Item = Self> {
-        unsafe { HANDS.into_iter() }
+        Self::HANDS.into_iter()
     }
 
     pub fn of_two_cards(a: Card, b: Card) -> Option<Self> {
@@ -78,6 +83,10 @@ impl Hand {
             },
             Ordering::Greater => Some(Self(a, b)),
         }
+    }
+
+    const fn of_two_cards_sorted_unchecked(lt: Card, gt: Card) -> Self {
+        Self(gt, lt)
     }
 
     fn from_cards(cards: Cards) -> Result<Self> {
@@ -93,7 +102,7 @@ impl Hand {
     }
 
     pub fn from_index(index: usize) -> Self {
-        unsafe { HANDS[index] }
+        Self::HANDS[index]
     }
 
     pub fn to_index(self) -> usize {
@@ -144,5 +153,27 @@ impl Hand {
 
     pub fn to_cards(self) -> Cards {
         Cards::EMPTY.with(self.high()).with(self.low())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_const_hands() {
+        let mut index = 0;
+
+        for a in Card::all_by_rank() {
+            for b in Card::all_by_rank() {
+                if b.cmp_by_rank(a).is_gt() {
+                    let hand = Hand::of_two_cards(a, b).unwrap();
+                    assert_eq!(hand, Hand::HANDS[index]);
+                    index += 1;
+                }
+            }
+        }
+
+        assert_eq!(index, Hand::COUNT);
     }
 }

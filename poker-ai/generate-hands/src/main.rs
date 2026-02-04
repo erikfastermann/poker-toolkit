@@ -12,8 +12,7 @@ use std::{
 use poker_core::{
     ai::{EquityStrategy, PlayerActionGenerator},
     db::DB,
-    game::{Game, Player, State},
-    init::init,
+    game::{Amount, Game, Player, PlayerData, State},
     range::RangeInfo,
     result::Result,
 };
@@ -25,15 +24,11 @@ const REPORT_INTERVAL: usize = 500;
 const WRITE_TO_DB_INTERVAL: usize = 500;
 
 const PLAYER_COUNT: usize = 6;
-const STARTING_STACK: u32 = 1000;
-const SMALL_BLIND: u32 = 5;
-const BIG_BLIND: u32 = 10;
+const STARTING_STACK: Amount = Amount::new(1000);
+const SMALL_BLIND: Amount = Amount::new(5);
+const BIG_BLIND: Amount = Amount::new(10);
 
 fn main() -> Result<()> {
-    unsafe {
-        init();
-    }
-
     spawn_workers()
 }
 
@@ -94,11 +89,11 @@ fn worker_loop(tx: Sender<Game>, counter: Arc<Mutex<usize>>, start: Instant) {
 fn produce_hand() -> Result<Game> {
     let mut rng = rand::thread_rng();
 
-    let players: Vec<_> = iter::repeat(Player::with_starting_stack(STARTING_STACK))
+    let players: Vec<_> = iter::repeat(PlayerData::with_starting_stack(STARTING_STACK))
         .take(PLAYER_COUNT)
         .collect();
 
-    let mut game = Game::new(&players, 0, SMALL_BLIND, BIG_BLIND)?;
+    let mut game = Game::new(&players, Player::ZERO, SMALL_BLIND, BIG_BLIND)?;
     game.draw_unset_hands(&mut rng);
     game.post_small_and_big_blind()?;
 
@@ -115,7 +110,8 @@ fn produce_hand() -> Result<Game> {
             State::Post => unreachable!(),
             State::Player(player) => {
                 let mut log = String::new();
-                let (action, range, _) = player_strategies[player].update_hero(&game, &mut log)?;
+                let (action, range, _) =
+                    player_strategies[usize::from(player)].update_hero(&game, &mut log)?;
 
                 if log.len() != 0 {
                     // TODO: Support log.
@@ -135,7 +131,7 @@ fn produce_hand() -> Result<Game> {
                     range_info.insert(game.actions().len(), RangeInfo::Frequencies(actions));
                 }
 
-                for (villain, strat) in player_strategies.iter_mut().enumerate() {
+                for (villain, strat) in game.players().zip(player_strategies.iter_mut()) {
                     if villain == player {
                         continue;
                     }
@@ -163,7 +159,7 @@ fn produce_hand() -> Result<Game> {
                     game.muck_hand()?
                 }
 
-                let range = player_strategies[player].current_range();
+                let range = player_strategies[usize::from(player)].current_range();
                 range_info.insert(game.actions().len(), RangeInfo::Range(range.clone()));
             }
             State::ShowdownOrNextRunout => game.showdown_simple()?,

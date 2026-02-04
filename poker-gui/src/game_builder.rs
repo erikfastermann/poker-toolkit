@@ -5,7 +5,7 @@ use egui_extras::{Column, TableBody, TableBuilder, TableRow};
 
 use poker_core::{
     cards::Cards,
-    game::{Game, GameData, Player},
+    game::{Amount, Game, GameData, Player, PlayerData},
 };
 
 use crate::card_selector::CardSelector;
@@ -18,15 +18,15 @@ pub struct GameBuilderConfig {
 
 #[derive(Clone)]
 pub struct GameBuilderPlayer {
-    pub player: Player,
+    pub player: PlayerData,
     pub action_generator: Option<usize>,
 }
 
 pub struct GameBuilder {
     players: Vec<GameBuilderPlayer>,
-    button_index: u8,
-    small_blind: u32,
-    big_blind: u32,
+    button_index: Player,
+    small_blind: Amount,
+    big_blind: Amount,
     hand_selector: CardSelector,
     hand_selector_for: Option<usize>,
     player_action_generators: Vec<&'static str>,
@@ -101,11 +101,15 @@ impl GameBuilder {
     fn top_controls(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
             ui.label("Small blind:");
-            ui.add(DragValue::new(&mut self.small_blind));
+            let mut small_blind = u32::from(self.small_blind);
+            ui.add(DragValue::new(&mut small_blind));
+            self.small_blind = small_blind.into();
             ui.separator();
 
             ui.label("Big blind:");
-            ui.add(DragValue::new(&mut self.big_blind));
+            let mut big_blind = u32::from(self.big_blind);
+            ui.add(DragValue::new(&mut big_blind));
+            self.big_blind = big_blind.into();
             ui.separator();
 
             if ui.button("100BB Stacks").clicked() {
@@ -172,8 +176,10 @@ impl GameBuilder {
 
         row.col(|ui| {
             let player = &mut self.players[player_index].player;
-            let drag_value = DragValue::new(&mut player.starting_stack).speed(1.0);
+            let mut starting_stack = u32::from(player.starting_stack);
+            let drag_value = DragValue::new(&mut starting_stack).speed(1.0);
             ui.add(drag_value);
+            player.starting_stack = starting_stack.into();
         });
 
         row.col(|ui| self.players_table_hand_column(ui, player_index));
@@ -183,7 +189,7 @@ impl GameBuilder {
         row.col(|ui| {
             ui.radio_value(
                 &mut self.button_index,
-                u8::try_from(player_index).unwrap(),
+                Player::try_from(player_index).unwrap(),
                 "",
             );
         });
@@ -216,10 +222,13 @@ impl GameBuilder {
         let player_count = self.players.len();
         let player = &mut self.players[player_index].player;
 
-        let position_name =
-            Game::position_name(player_count, usize::from(self.button_index), player_index)
-                .map(|(short_name, _)| short_name)
-                .unwrap_or("Player");
+        let position_name = Game::position_name(
+            player_count,
+            self.button_index,
+            Player::try_from(player_index).unwrap(),
+        )
+        .map(|(short_name, _)| short_name)
+        .unwrap_or("Player");
 
         let mut name = player
             .name
@@ -302,7 +311,7 @@ impl GameBuilder {
                 self.players.remove(remove_player);
 
                 if remove_player == usize::from(self.button_index) {
-                    self.button_index = 0;
+                    self.button_index = Player::ZERO;
                 }
             }
         }
@@ -310,8 +319,8 @@ impl GameBuilder {
         if let Some((a, b)) = self.swap_players {
             self.players.swap(a, b);
 
-            let a = u8::try_from(a).unwrap();
-            let b = u8::try_from(b).unwrap();
+            let a = Player::try_from(a).unwrap();
+            let b = Player::try_from(b).unwrap();
             if self.button_index == a {
                 self.button_index = b;
             } else if self.button_index == b {
@@ -380,7 +389,7 @@ impl GameBuilder {
                     {
                         let starting_stack = self.big_blind.saturating_mul(100);
                         self.players.push(GameBuilderPlayer {
-                            player: Player::with_starting_stack(starting_stack),
+                            player: PlayerData::with_starting_stack(starting_stack),
                             action_generator: self.default_player_action_generator,
                         });
                     };

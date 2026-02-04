@@ -47,6 +47,25 @@ impl Card {
 
     pub const COUNT: usize = Suite::COUNT * Rank::COUNT;
 
+    pub const CARDS_BY_RANK: [Self; Self::COUNT] = {
+        let mut cards = [Self::MIN; Self::COUNT];
+        let mut rank = 0;
+
+        while rank < Rank::COUNT {
+            let mut suite = 0;
+
+            while suite < Suite::COUNT {
+                let index = rank * Suite::COUNT + suite;
+                cards[index] = Card::of(Rank::RANKS[rank], Suite::SUITES[suite]);
+                suite += 1;
+            }
+
+            rank += 1
+        }
+
+        cards
+    };
+
     pub const fn of(rank: Rank, suite: Suite) -> Self {
         Self(suite.to_index() + rank.to_i8())
     }

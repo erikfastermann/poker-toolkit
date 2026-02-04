@@ -17,7 +17,7 @@ use poker_core::{
     },
     bitset::Bitset,
     deck::Deck,
-    game::{Action, Game, GameData, State, Street},
+    game::{Action, Amount, Game, GameData, Player, State, Street},
     hand::Hand,
     range::{PreFlopRangeConfig, PreFlopRangeConfigData, RangeInfo},
     result::Result,
@@ -43,16 +43,16 @@ pub struct GameView {
     player_action_generators: Vec<PlayerActionGeneratorEntry>,
 
     // TODO: Offload to background thread.
-    current_player_action_generators: HashMap<usize, Box<dyn PlayerActionGenerator>>,
+    current_player_action_generators: HashMap<Player, Box<dyn PlayerActionGenerator>>,
     /// The keys are the indices of the inserted action values.
     /// The values contain the length of the matching generator logs.
     current_range_histories: HashMap<usize, (Vec<RangeValue>, usize)>,
-    showdown_info: HashMap<usize, RangeInfo>,
+    showdown_info: HashMap<Player, RangeInfo>,
     current_generator_logs: Vec<String>,
     last_applied_action_index: usize,
     range_viewer: RangeViewer,
 
-    current_amount: u32,
+    current_amount: Amount,
     pick_community_cards: bool,
     show_all_hands: bool,
     big_blind_mode: bool,
@@ -124,7 +124,7 @@ impl GameView {
             current_generator_logs: vec![String::new(); Game::MAX_PLAYERS],
             last_applied_action_index: 2, // Skip initial posts.
             range_viewer: RangeViewer::new(),
-            current_amount: 0,
+            current_amount: Amount::ZERO,
             pick_community_cards: false,
             show_all_hands: true,
             big_blind_mode: false,
@@ -169,7 +169,7 @@ impl GameView {
             self.game.post_small_and_big_blind()?;
         }
 
-        self.current_amount = 0;
+        self.current_amount = Amount::ZERO;
 
         Ok(())
     }
@@ -229,8 +229,9 @@ impl GameView {
                         }
 
                         // TODO: Check index is valid.
-                        ranges_history_entry
-                            .push(RangeValue::Simple(ranges[current_player].clone()))
+                        ranges_history_entry.push(RangeValue::Simple(
+                            ranges[usize::from(current_player)].clone(),
+                        ))
                     }
                 }
 
@@ -358,8 +359,9 @@ impl GameView {
 
         let mut card_size = Vec2::ZERO;
         for (player, center) in self
-            .table_player_points(bounding_rect.center(), radius)
-            .enumerate()
+            .game
+            .players()
+            .zip(self.table_player_points(bounding_rect.center(), radius))
         {
             card_size = self.draw_player(painter, player, center, player_size);
             self.draw_invested(player, painter, bounding_rect, center);
@@ -550,7 +552,7 @@ impl GameView {
         }
 
         if did_action {
-            self.current_amount = 0;
+            self.current_amount = Amount::ZERO;
         }
         Ok(())
     }
@@ -580,14 +582,17 @@ impl GameView {
         };
         let bounding_rect = ui.max_rect();
         let current_player = self.game.current_player().unwrap();
-        let value_range = amount..=self.game.previous_street_stacks()[current_player];
-        let drag_value = DragValue::new(&mut self.current_amount)
+        let value_range = u32::from(amount)
+            ..=u32::from(self.game.previous_street_stacks()[usize::from(current_player)]);
+        let mut current_amount = u32::from(self.current_amount);
+        let drag_value = DragValue::new(&mut current_amount)
             .range(value_range.clone())
             .speed(1.0);
         let control_height = bounding_rect.height() * 0.8;
         ui.add_sized([bounding_rect.width() / 10.0, control_height], drag_value);
-        let slider = Slider::new(&mut self.current_amount, value_range).show_value(false);
+        let slider = Slider::new(&mut current_amount, value_range).show_value(false);
         ui.add_sized([bounding_rect.width() / 10.0, control_height], slider);
+        self.current_amount = current_amount.into();
 
         let button_size = [bounding_rect.width() / 15.0, control_height];
         // TODO: Configurable percent / big blind buttons.
@@ -610,10 +615,10 @@ impl GameView {
             if ui.add_sized(button_size, button).clicked() {
                 if use_big_blind_buttons {
                     self.current_amount =
-                        (f64::from(self.game.big_blind()) * button_config.1) as u32;
+                        Amount::from((f64::from(self.game.big_blind()) * button_config.1) as u32);
                 } else {
                     self.current_amount =
-                        (f64::from(self.game.total_pot()) * button_config.1) as u32;
+                        Amount::from((f64::from(self.game.total_pot()) * button_config.1) as u32);
                 }
             }
         }
@@ -652,7 +657,7 @@ impl GameView {
         Ok(())
     }
 
-    fn draw_player(&self, painter: &Painter, player: usize, center: Pos2, size: Vec2) -> Vec2 {
+    fn draw_player(&self, painter: &Painter, player: Player, center: Pos2, size: Vec2) -> Vec2 {
         let bounding_rect = Rect::from_center_size(center, size);
 
         let name_stack_rect = bounding_rect.with_min_y(bounding_rect.bottom() - size.y / 3.2);
@@ -664,7 +669,7 @@ impl GameView {
         painter.add(name_stack_shape);
 
         let full_name_stack_rect = name_stack_rect;
-        if self.game.button_index() == player {
+        if self.game.button() == player {
             let button_radius = name_stack_rect.height() / 4.0;
             let button_center = name_stack_rect.center()
                 + (name_stack_rect.right_center() - name_stack_rect.center()) * 0.75;
@@ -732,7 +737,7 @@ impl GameView {
         card_a_rect.size()
     }
 
-    fn stack_text(&self, player: usize) -> String {
+    fn stack_text(&self, player: Player) -> String {
         let show_last_action = self.game.state() != State::End
             && self
                 .game
@@ -767,12 +772,12 @@ impl GameView {
             }
         }
 
-        self.chips_string(self.game.current_stacks()[player])
+        self.chips_string(self.game.current_stacks()[usize::from(player)])
     }
 
     fn draw_invested(
         &self,
-        player: usize,
+        player: Player,
         painter: &Painter,
         bounding_rect: Rect,
         player_center: Pos2,
@@ -781,7 +786,7 @@ impl GameView {
             return;
         }
         let invested = self.game.invested_in_street(player);
-        if invested == 0 {
+        if invested == Amount::ZERO {
             return;
         }
         let invested_point = player_center + (bounding_rect.center() - player_center) * 0.4;
@@ -837,6 +842,8 @@ impl GameView {
             return Ok(());
         };
 
+        let players = config.game.players();
+
         self.with_game_mut(|game| *game = config.game)?;
         self.set_pick_community_cards(config.pick_community_cards);
 
@@ -851,14 +858,14 @@ impl GameView {
 
         let mut skip_hands = Bitset::<2>::EMPTY;
 
-        for (player_index, player) in config.players.into_iter().enumerate() {
+        for (player_index, player) in players.zip(config.players.into_iter()) {
             let Some(ai_index) = player.action_generator else {
                 continue;
             };
             let action_generator = (self.player_action_generators[ai_index].constructor)();
 
             if action_generator.custom_show_or_muck() {
-                skip_hands.set(player_index);
+                skip_hands.set(player_index.into());
             }
 
             self.current_player_action_generators
@@ -868,8 +875,8 @@ impl GameView {
         let mut rng = thread_rng();
         let mut deck = Deck::from_cards(&mut rng, self.game.known_cards());
 
-        for player in 0..self.game.player_count() {
-            if self.game.get_hand(player).is_none() && !skip_hands.has(player) {
+        for player in self.game.players() {
+            if self.game.get_hand(player).is_none() && !skip_hands.has(player.into()) {
                 let hand = deck.hand(&mut rng).unwrap();
                 self.game.set_hand(player, hand)?;
             }
@@ -899,7 +906,7 @@ impl GameView {
             .get(&self.game.actions().len())
             .cloned()
         {
-            let log = self.current_generator_logs[player][..log_offset].to_owned();
+            let log = self.current_generator_logs[usize::from(player)][..log_offset].to_owned();
 
             // TODO: A little hacky that this depends on the concrete insertion order in the array.
             let villains = self
@@ -921,7 +928,7 @@ impl GameView {
 
             view_range_from_info(range_info)
         } else if let Action::Shows { player, .. } | Action::MucksOrUnknown(player) = action {
-            let Some(range_info) = self.showdown_info.get(&usize::from(player)) else {
+            let Some(range_info) = self.showdown_info.get(&player) else {
                 return;
             };
 
@@ -945,8 +952,8 @@ impl GameView {
         self.range_viewer.window(ctx, Id::new("Range"), title);
     }
 
-    fn write_generator_log(&mut self, player: usize, name: &str, log: &str) -> usize {
-        let out = &mut self.current_generator_logs[player];
+    fn write_generator_log(&mut self, player: Player, name: &str, log: &str) -> usize {
+        let out = &mut self.current_generator_logs[usize::from(player)];
 
         if log.is_empty() {
             out.len() // TODO: Use last len.
@@ -976,7 +983,7 @@ impl GameView {
         }
     }
 
-    fn visible_hand(&self, player: usize) -> Option<Hand> {
+    fn visible_hand(&self, player: Player) -> Option<Hand> {
         if self.show_all_hands
             || self.game.hand_shown(player)
             || (self.enable_game_builder
@@ -989,8 +996,8 @@ impl GameView {
         }
     }
 
-    fn chips_string(&self, chips: u32) -> String {
-        if self.big_blind_mode && self.game.big_blind() != 0 {
+    fn chips_string(&self, chips: Amount) -> String {
+        if self.big_blind_mode && self.game.big_blind() != Amount::ZERO {
             let big_blind = f64::from(chips) / f64::from(self.game.big_blind());
             format!("{big_blind:.2}")
                 .trim_end_matches('0')

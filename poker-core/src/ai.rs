@@ -15,7 +15,7 @@ use rand::{
 use crate::{
     bitset::Bitset,
     equity::EquityTable,
-    game::{milli_big_blind_to_amount_rounded, Action, Game, Street},
+    game::{Action, Amount, Game, Street},
     hand::Hand,
     range::{
         range_remove_cards, PreFlopRangeConfig, PreFlopRangeTable, RangeAction, RangeActionKind,
@@ -42,7 +42,7 @@ pub enum AiAction {
     Fold,
     CheckFold,
     CheckCall,
-    BetRaise(u32),
+    BetRaise(Amount),
     AllIn,
 }
 
@@ -60,12 +60,12 @@ impl AiAction {
                 let min_amount = game
                     .can_bet()
                     .or_else(|| game.can_raise().map(|(_, to)| to))
-                    .unwrap_or(0);
+                    .unwrap_or(Amount::ZERO);
 
                 // TODO: Use amount here with AiAction raise amount.
                 let max_amount = game.previous_street_stack().unwrap();
 
-                if let Some(amount) = milli_big_blind_to_amount_rounded(amount, game.big_blind()) {
+                if let Some(amount) = amount.to_amount_rounded(game.big_blind()) {
                     let amount = cmp::min(cmp::max(amount, min_amount), max_amount);
                     Ok(AiAction::BetRaise(amount))
                 } else {
@@ -273,7 +273,7 @@ impl PlayerActionGenerator for SimpleStrategy {
             return Err("unexpected post flop action".into()); // TODO
         };
 
-        self.current_ranges[player] = range;
+        self.current_ranges[usize::from(player)] = range;
 
         Ok(())
     }
@@ -289,7 +289,8 @@ impl PlayerActionGenerator for SimpleStrategy {
     )> {
         let range = self.player(game, log)?;
         let action = range.pick(&mut self.rng, game.current_hand().unwrap());
-        self.current_ranges[game.current_player().unwrap()] = range.action_range(action).unwrap();
+        self.current_ranges[usize::from(game.current_player().unwrap())] =
+            range.action_range(action).unwrap();
 
         let action = AiAction::from_range(game, action)?;
         Ok((action, Some(range), Some(&self.current_ranges)))
@@ -360,8 +361,7 @@ impl SimpleStrategy {
                 if self.pre_flop_fold_replace.has(index) {
                     // Replace unexpected calls with folds for limpers etc.,
                     // pretty crude but works for now.
-                    let player = u8::try_from(action.player().unwrap()).unwrap();
-                    Action::Fold(player)
+                    Action::Fold(action.player().unwrap())
                 } else {
                     action
                 }
@@ -409,7 +409,7 @@ impl SimpleStrategy {
 
     fn current_range_check_fold(&self, game: &Game) -> Result<RangeConfigEntry> {
         RangeConfigEntry::distribute_action(
-            self.current_ranges[game.current_player().unwrap()].clone(),
+            self.current_ranges[usize::from(game.current_player().unwrap())].clone(),
             AiAction::CheckFold.to_range(game)?,
         )
     }
@@ -431,7 +431,7 @@ impl SimpleStrategy {
                     RangeActionKind::Raise(current_to) => Some(current_to),
                     _ => None,
                 })
-                .min_by_key(|current_to| current_to.abs_diff(to));
+                .min_by_key(|current_to| i64::from(*current_to).abs_diff(to.into()));
 
             let Some(best_raise_to) = best_raise_to else {
                 return Err("villain unexpected pre flop action: raise action \
@@ -538,7 +538,7 @@ impl SimpleStrategy {
         let (players, ranges): (Vec<_>, Vec<_>) = game
             .players_not_folded()
             .map(|player| {
-                let mut range = self.current_ranges[player].clone();
+                let mut range = self.current_ranges[usize::from(player)].clone();
                 range_remove_cards(&mut range, community_cards);
                 (player, range)
             })
@@ -607,14 +607,15 @@ impl SimpleStrategy {
 
         if let Some(call_amount) = game.can_call() {
             if let Some((_, min_raise_to)) = game.can_raise() {
-                let raise_size = (f64::from(game.total_pot()) * 0.7) as u32;
+                let raise_size =
+                    Amount::from((f64::from(u32::from(game.total_pot())) * 0.7) as u32);
                 let raise_size =
                     cmp::min(cmp::max(raise_size, min_raise_to), previous_street_stack);
 
                 // Super simple equity based calculation.
                 // TODO: Not correct with to.
-                let raise_pot_odds =
-                    f64::from(raise_size) / f64::from(raise_size + game.total_pot());
+                let raise_pot_odds = f64::from(u32::from(raise_size))
+                    / f64::from(u32::from(raise_size + game.total_pot()));
 
                 let (range_bottom, range_middle, range_top) =
                     Self::range_bottom_middle_top(&hands, current_equities, current_range, 0.85);
@@ -700,7 +701,7 @@ impl SimpleStrategy {
                 Street::River => (0.5, 0.6),
             };
 
-            let bet_size = (f64::from(game.total_pot()) * bet_size_percent) as u32;
+            let bet_size = Amount::from((f64::from(game.total_pot()) * bet_size_percent) as u32);
             let bet_size = cmp::min(cmp::max(bet_size, game.big_blind()), current_stack);
 
             // Super simple equity based calculation.
@@ -872,7 +873,7 @@ impl PlayerActionGenerator for EquityStrategy {
             .unwrap();
 
         let equity_scale_factor = (1.35f64).powf(f64::from(previous_bet_raise_count))
-            + f64::from(game.total_pot() / game.big_blind() / 10);
+            + f64::from(u32::from(game.total_pot()) / u32::from(game.big_blind()) / 10);
 
         let board = game.board().cards_set();
         let player = game.current_player().unwrap();
@@ -944,7 +945,7 @@ impl PlayerActionGenerator for EquityStrategy {
             check_fold[hand] = 0;
         }
 
-        let call_amount = game.can_call().unwrap_or(0);
+        let call_amount = game.can_call().unwrap_or(Amount::ZERO);
         let pot_with_call = game.total_pot().checked_add(call_amount).unwrap();
 
         let raise_offset = game
@@ -956,7 +957,7 @@ impl PlayerActionGenerator for EquityStrategy {
         let min_bet_raise = game
             .can_bet()
             .or_else(|| game.can_raise().map(|(_, to)| to))
-            .unwrap_or(0);
+            .unwrap_or(Amount::ZERO);
 
         // TODO: Use amount here with AiAction raise amount.
         let max_bet_raise = game.previous_street_stack().unwrap();
@@ -964,11 +965,11 @@ impl PlayerActionGenerator for EquityStrategy {
         // Should not overflow a u32, the percentages are smaller than one.
         // TODO: Use amount here with AiAction raise amount, can remove raise_offset.
 
-        let size_1 = (f64::from(pot_with_call) * SIZE_1_PERCENT).round() as u32;
+        let size_1 = Amount::from((f64::from(pot_with_call) * SIZE_1_PERCENT).round() as u32);
         let size_1 = size_1.checked_add(raise_offset).unwrap();
         let size_1 = cmp::max(cmp::min(size_1, max_bet_raise), min_bet_raise);
 
-        let size_2 = (f64::from(pot_with_call) * SIZE_2_PERCENT).round() as u32;
+        let size_2 = Amount::from((f64::from(pot_with_call) * SIZE_2_PERCENT).round() as u32);
         let size_2 = size_2.checked_add(raise_offset).unwrap();
         let size_2 = cmp::max(cmp::min(size_2, max_bet_raise), min_bet_raise);
 
@@ -1040,7 +1041,7 @@ impl PlayerActionGenerator for EquityStrategy {
             // TODO: Probably not needed anymore.
             let size = [size_1, size_2]
                 .into_iter()
-                .min_by_key(|size| size.abs_diff(amount))
+                .min_by_key(|size| u32::from(*size).abs_diff(amount.into()))
                 .unwrap();
 
             AiAction::BetRaise(size)

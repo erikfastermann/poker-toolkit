@@ -8,7 +8,7 @@ use toml_edit::{Document, Item, Value};
 use crate::{
     bitset::Bitset,
     cards::Cards,
-    game::{Game, Player, State, Street},
+    game::{Amount, Game, Player, PlayerData, Seat, State, Street},
     result::Result,
 };
 
@@ -165,7 +165,7 @@ fn item_to_game_inner(doc: &Document<String>, item: &Item) -> Result<Game> {
         return Err("missing antes field".into());
     };
 
-    let non_zero_ante = antes.iter().any(|ante| *ante != 0);
+    let non_zero_ante = antes.iter().any(|ante| *ante != Amount::ZERO);
     if non_zero_ante {
         return Err("non zero ante not supported".into());
     }
@@ -212,7 +212,7 @@ fn new_game_from_item(doc: &Document<String>, item: &Item, entry: &Entry) -> Res
         blinds_or_straddles.reverse();
     }
 
-    let button_index = player_count - 1;
+    let button = Player::try_from(player_count - 1)?;
 
     // TODO:
     // What if someone straddles from the blinds
@@ -260,11 +260,13 @@ fn new_game_from_item(doc: &Document<String>, item: &Item, entry: &Entry) -> Res
             return Err("invalid seat config: bigger than seat or player count".into());
         }
 
+        let seat = seat.map(|seat| Seat::try_from(seat).unwrap());
+
         let Some(starting_stack) = starting_stacks.get(player_index).copied() else {
             return Err("starting_stacks has invalid length".into());
         };
 
-        let player = Player {
+        let player = PlayerData {
             name,
             seat,
             hand: None,
@@ -274,19 +276,27 @@ fn new_game_from_item(doc: &Document<String>, item: &Item, entry: &Entry) -> Res
         players.push(player);
     }
 
-    let mut game = Game::new(&players, button_index, small_blind, big_blind)?;
+    let mut game = Game::new(&players, button, small_blind, big_blind)?;
 
     game.post_small_and_big_blind()?;
 
     // The PHH format does not differentiate between posts and straddles.
 
-    for (player, post) in blinds_or_straddles.iter().copied().enumerate().skip(2) {
-        if post != 0 && post <= big_blind {
+    for (player, post) in game
+        .players()
+        .zip(blinds_or_straddles.iter().copied())
+        .skip(2)
+    {
+        if post != Amount::ZERO && post <= big_blind {
             game.additional_post(player, post, false)?;
         }
     }
 
-    for (player, straddle) in blinds_or_straddles.iter().copied().enumerate().skip(2) {
+    for (player, straddle) in game
+        .players()
+        .zip(blinds_or_straddles.iter().copied())
+        .skip(2)
+    {
         if straddle > big_blind {
             game.straddle(player, straddle)?;
         }
@@ -380,7 +390,7 @@ fn parse_player_hands(game: &mut Game, actions: &[String]) -> Result<()> {
                 return Err("could not convert cards to player hand".into());
             };
 
-            game.set_hand(usize::from(player), hand)?;
+            game.set_hand(player, hand)?;
         }
     }
 
@@ -450,7 +460,7 @@ fn parse_actions(game: &mut Game, actions: &[String]) -> Result<()> {
             (_, "cbr") => {
                 let player = parse_action_player(actor)?;
 
-                if game.current_player() != Some(usize::from(player)) {
+                if game.current_player() != Some(player) {
                     return Err("unexpected player in bet/raise".into());
                 }
 
@@ -471,7 +481,7 @@ fn parse_actions(game: &mut Game, actions: &[String]) -> Result<()> {
             (_, "cc") => {
                 let player = parse_action_player(actor)?;
 
-                if game.current_player() != Some(usize::from(player)) {
+                if game.current_player() != Some(player) {
                     return Err("unexpected player in check/call".into());
                 }
 
@@ -486,7 +496,7 @@ fn parse_actions(game: &mut Game, actions: &[String]) -> Result<()> {
             (_, "f") => {
                 let player = parse_action_player(actor)?;
 
-                if game.current_player() != Some(usize::from(player)) {
+                if game.current_player() != Some(player) {
                     return Err("unexpected player in fold".into());
                 }
 
@@ -522,7 +532,7 @@ fn parse_actions(game: &mut Game, actions: &[String]) -> Result<()> {
     Ok(())
 }
 
-fn parse_action_player(player: &str) -> Result<u8> {
+fn parse_action_player(player: &str) -> Result<Player> {
     if player.len() < 2 {
         return Err(format!("invalid action player format '{player}': not long enough").into());
     }
@@ -537,10 +547,10 @@ fn parse_action_player(player: &str) -> Result<u8> {
         return Err("invalid action player format: expected one-based index".into());
     };
 
-    Ok(index)
+    Player::try_from(index)
 }
 
-fn parse_chips_array(doc: &Document<String>, item: Option<&Item>) -> Result<Option<Vec<u32>>> {
+fn parse_chips_array(doc: &Document<String>, item: Option<&Item>) -> Result<Option<Vec<Amount>>> {
     let Some(item) = item else {
         return Ok(None);
     };
@@ -562,7 +572,7 @@ fn parse_chips_array(doc: &Document<String>, item: Option<&Item>) -> Result<Opti
     Ok(Some(out))
 }
 
-fn parse_chips(doc: &Document<String>, value: &Value) -> Result<u32> {
+fn parse_chips(doc: &Document<String>, value: &Value) -> Result<Amount> {
     let Some(span) = value.span() else {
         return Err("unknown error while parsing chips".into());
     };
@@ -574,7 +584,7 @@ fn parse_chips(doc: &Document<String>, value: &Value) -> Result<u32> {
     parse_chips_str(chips_raw)
 }
 
-fn parse_chips_str(chips: &str) -> Result<u32> {
+fn parse_chips_str(chips: &str) -> Result<Amount> {
     let mut split = chips.split('.');
 
     let int: u32 = split.next().unwrap().parse()?;
@@ -599,6 +609,7 @@ fn parse_chips_str(chips: &str) -> Result<u32> {
 
     int.checked_mul(100)
         .and_then(|n| n.checked_add(frac))
+        .map(Amount::new)
         .ok_or_else(|| format!("chips {chips} too large").into())
 }
 
@@ -608,11 +619,11 @@ fn handle_show_muck(game: &mut Game, show_muck: Bitset<2>) -> Result<()> {
             break;
         };
 
-        if !show_muck.has(player) {
+        if !show_muck.has(player.into()) {
             return Err("expected show/muck for player".into());
         }
 
-        if game.get_hand(usize::from(player)).is_some() {
+        if game.get_hand(player).is_some() {
             // We assume shows if we know the player hand.
             game.show_hand()?;
         } else {

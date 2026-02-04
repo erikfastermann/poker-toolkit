@@ -11,7 +11,6 @@ use poker_core::{
     cards::Cards,
     game::Game,
     hand::Hand,
-    init::init,
     range::{RangeConfigEntry, RangeInfo, RangeTable, RangeTableWith, MAX_FREQUENCY},
     result::Result,
 };
@@ -37,8 +36,6 @@ use std::{
 };
 
 fn main() -> Result<()> {
-    unsafe { init() };
-
     let args: Vec<_> = env::args().collect();
 
     if args.len() < 2 {

@@ -15,9 +15,8 @@ use poker_core::{
     cards::Cards,
     db::{HandData, DB},
     equity::EquityTable,
-    game::{milli_big_blind_to_amount_rounded, Action, Board, Game, MilliBigBlind, State, Street},
+    game::{Action, Amount, Board, Game, MilliBigBlind, Player, State, Street},
     hand::Hand,
-    init::init,
     range::{
         frequency_to_f64, range_frequencies_empty, range_frequencies_valid, RangeActionKind,
         RangeConfigEntry, RangeInfo, RangeTable, RangeTableWith, MAX_FREQUENCY,
@@ -81,12 +80,6 @@ impl Dataset {
     #[new]
     #[pyo3(signature = (db_path, limit=None))]
     fn new(py: Python<'_>, db_path: &str, limit: Option<usize>) -> PyResult<Self> {
-        // SAFETY:
-        // If this library is only used from Python,
-        // it is not possible to read from another thread
-        // while init runs.
-        unsafe { init() };
-
         let db = DB::open(db_path).py()?;
 
         let mut showdowns = Vec::new();
@@ -215,8 +208,11 @@ impl Dataset {
     fn action_hands(&mut self, index: usize) -> Vec<(usize, String)> {
         let game = self.get_action_index_game(index);
 
-        (0..game.player_count())
-            .filter_map(|player| game.get_hand(player).map(|hand| (player, hand.to_string())))
+        game.players()
+            .filter_map(|player| {
+                game.get_hand(player)
+                    .map(|hand| (usize::from(player), hand.to_string()))
+            })
             .collect()
     }
 
@@ -332,8 +328,11 @@ impl Dataset {
         let game_index = self.get_showdown_index_game(index);
         let game = &self.games[game_index].0;
 
-        (0..game.player_count())
-            .filter_map(|player| game.get_hand(player).map(|hand| (player, hand.to_string())))
+        game.players()
+            .filter_map(|player| {
+                game.get_hand(player)
+                    .map(|hand| (usize::from(player), hand.to_string()))
+            })
             .collect()
     }
 
@@ -514,7 +513,7 @@ impl Dataset {
         let final_board = game.board();
         let final_board_cards = final_board.cards_set();
 
-        let hero_hand = match game.get_hand(usize::from(hero_player)) {
+        let hero_hand = match game.get_hand(hero_player) {
             Some(hand) if game.hand_shown(hero_player) => hand,
             _ => {
                 // Get the worst score of the showdown winners.
@@ -531,7 +530,7 @@ impl Dataset {
                     .iter()
                     .fold(Bitset::EMPTY, |acc, (_, players)| acc | *players)
                     .iter(game.player_count())
-                    .filter_map(|player| game.get_hand(player))
+                    .filter_map(|player| game.get_hand(Player::try_from(player).unwrap()))
                     .map(|hand| (final_board_cards | hand.to_cards()).score_fast())
                     .min()
                     .unwrap(); // One shows is required in the dataset construction.
@@ -764,7 +763,7 @@ const ACTION_INPUT_ENTRIES: &[(&str, usize, usize)] = &[
 ];
 
 /// Last value includes all values afterwards.
-const OPEN_SIZES: [MilliBigBlind; TARGET_BET_RAISE_COUNT] = [
+const OPEN_SIZES: [i64; TARGET_BET_RAISE_COUNT] = [
     2000, 2200, 2500, 3000, 3500, 4000, 4500, 5000, 7500, 10_000, 20_000,
 ];
 
@@ -781,18 +780,19 @@ pub fn encode_shared_input(game: &Game) -> Vec<f32> {
 
     for (index, player) in players_button_offset(game).enumerate() {
         // We accept the potential loss of precision here.
-        out[STARTING_STACKS_INDEX + index] =
-            starting_stacks[player] as f32 / game.big_blind() as f32;
+        out[STARTING_STACKS_INDEX + index] = u32::from(starting_stacks[usize::from(player)]) as f32
+            / u32::from(game.big_blind()) as f32;
     }
 
     let current_stacks = game.current_stacks();
 
     for (index, player) in players_button_offset(game).enumerate() {
         // We accept the potential loss of precision here.
-        out[CURRENT_STACKS_INDEX + index] = current_stacks[player] as f32 / game.big_blind() as f32;
+        out[CURRENT_STACKS_INDEX + index] = u32::from(current_stacks[usize::from(player)]) as f32
+            / u32::from(game.big_blind()) as f32;
     }
 
-    out[POT_INDEX] = game.total_pot() as f32 / game.big_blind() as f32;
+    out[POT_INDEX] = u32::from(game.total_pot()) as f32 / u32::from(game.big_blind()) as f32;
 
     for (index, player) in players_button_offset(game).enumerate() {
         out[PLAYERS_NOT_FOLDED_INDEX + index] = f32::from(!game.folded(player));
@@ -804,11 +804,10 @@ pub fn encode_shared_input(game: &Game) -> Vec<f32> {
         _ => unreachable!(),
     };
 
-    let player =
-        Game::player_to_button_offset(game.player_count(), game.button_index(), player).unwrap();
+    let player = Game::player_to_button_offset(game.player_count(), game.button(), player).unwrap();
 
     one_hot(
-        player,
+        player.into(),
         &mut out[CURRENT_PLAYER_POSITION_INDEX..CURRENT_PLAYER_POSITION_INDEX + Game::MAX_PLAYERS],
     );
 
@@ -879,7 +878,7 @@ fn encode_actions(game: &Game, out: &mut [f32]) -> [usize; Street::COUNT] {
 
     let mut per_street_index = game.actions().len();
     let mut last_pot = game.total_pot();
-    let mut to_call = game.can_call().unwrap_or(0);
+    let mut to_call = game.can_call().unwrap_or(Amount::ZERO);
     let mut action_lengths = [0usize; Street::COUNT];
 
     while game.next() {
@@ -891,8 +890,8 @@ fn encode_actions(game: &Game, out: &mut [f32]) -> [usize; Street::COUNT] {
 
         let (action_kind, player, amount) = match action {
             Action::Post { .. } | Action::Straddle { .. } => unreachable!(),
-            Action::Fold(player) => (ACTION_FOLD_INDEX, player, 0),
-            Action::Check(player) => (ACTION_CHECK_CALL_INDEX, player, 0),
+            Action::Fold(player) => (ACTION_FOLD_INDEX, player, Amount::ZERO),
+            Action::Check(player) => (ACTION_CHECK_CALL_INDEX, player, Amount::ZERO),
             Action::Call { player, amount } => (ACTION_CHECK_CALL_INDEX, player, amount),
             Action::Bet { player, amount } => (ACTION_BET_RAISE_INDEX, player, amount),
             Action::Raise { player, amount, .. } => (ACTION_BET_RAISE_INDEX, player, amount),
@@ -920,7 +919,7 @@ fn encode_actions(game: &Game, out: &mut [f32]) -> [usize; Street::COUNT] {
 
         per_street_index += 1;
         last_pot = game.total_pot();
-        to_call = game.can_call().unwrap_or(0);
+        to_call = game.can_call().unwrap_or(Amount::ZERO);
     }
 
     action_lengths[game.board().street().to_usize()] = per_street_index;
@@ -930,18 +929,13 @@ fn encode_actions(game: &Game, out: &mut [f32]) -> [usize; Street::COUNT] {
 fn encode_single_action(
     game: &Game,
     action_kind: usize,
-    player: u8,
-    amount: u32,
+    player: Player,
+    amount: Amount,
     percent_pot: f32,
     per_street_index: usize,
     out: &mut [f32],
 ) {
-    let player = Game::player_to_button_offset(
-        game.player_count(),
-        game.button_index(),
-        usize::from(player),
-    )
-    .unwrap();
+    let player = Game::player_to_button_offset(game.player_count(), game.button(), player).unwrap();
 
     let street_index = game.board().street().to_usize() * ACTIONS_STREET_LEN;
 
@@ -952,10 +946,11 @@ fn encode_single_action(
     one_hot(action_kind, &mut out[offset..offset + ACTION_KIND_LEN]);
 
     let offset = index + ACTION_PLAYER_OFFSET;
-    one_hot(player, &mut out[offset..offset + ACTION_PLAYER_LEN]);
+    one_hot(player.into(), &mut out[offset..offset + ACTION_PLAYER_LEN]);
 
     // We accept the potential loss of precision here.
-    out[index + ACTION_AMOUNT_OFFSET] = amount as f32 / game.big_blind() as f32;
+    out[index + ACTION_AMOUNT_OFFSET] =
+        u32::from(amount) as f32 / u32::from(game.big_blind()) as f32;
     out[index + ACTION_RELATIVE_AMOUNT_OFFSET] = percent_pot;
 }
 
@@ -967,17 +962,19 @@ pub fn encode_action_input(game: &Game) -> Vec<f32> {
     out.extend(iter::repeat(0.0).take(ACTION_INPUT_LEN - SHARED_INPUT_LEN));
 
     let total_pot = game.total_pot();
-    assert_ne!(total_pot, 0);
+    assert_ne!(total_pot, Amount::ZERO);
 
     for (index, player) in players_button_offset(game).enumerate() {
-        out[SPR_INDEX + index] = game.current_stacks()[player] as f32 / total_pot as f32;
+        out[SPR_INDEX + index] = u32::from(game.current_stacks()[usize::from(player)]) as f32
+            / u32::from(total_pot) as f32;
     }
 
-    let call_amount = game.can_call().unwrap_or(0);
-    let pot_odds = call_amount as f32 / total_pot.checked_add(call_amount).unwrap() as f32;
+    let call_amount = game.can_call().unwrap_or(Amount::ZERO);
+    let pot_odds = u32::from(call_amount) as f32
+        / u32::from(total_pot.checked_add(call_amount).unwrap()) as f32;
 
     out[POT_ODDS_INDEX] = pot_odds;
-    out[AMOUNT_TO_CALL_INDEX] = call_amount as f32 / game.big_blind() as f32;
+    out[AMOUNT_TO_CALL_INDEX] = u32::from(call_amount) as f32 / u32::from(game.big_blind()) as f32;
 
     let legal_mask = encode_action_legal_mask(game);
     for (index, mask) in legal_mask.into_iter().enumerate() {
@@ -1005,7 +1002,7 @@ pub fn encode_action_legal_mask(game: &Game) -> Vec<i8> {
 
     let player = game.current_player().unwrap();
 
-    let stack = game.current_stacks()[player];
+    let stack = game.current_stacks()[usize::from(player)];
 
     let can_call = game.can_call();
     assert!(game.can_check() || can_call.is_some());
@@ -1015,7 +1012,7 @@ pub fn encode_action_legal_mask(game: &Game) -> Vec<i8> {
         .or_else(|| game.can_raise().map(|(amount, _)| amount));
 
     let pot = game.total_pot();
-    let call_amount = can_call.unwrap_or(0);
+    let call_amount = can_call.unwrap_or(Amount::ZERO);
 
     let can_open = can_open(game);
 
@@ -1042,11 +1039,11 @@ pub fn encode_action_legal_mask(game: &Game) -> Vec<i8> {
     }
 
     if can_open {
-        let previous_street_stack = game.previous_street_stacks()[player];
+        let previous_street_stack = game.previous_street_stacks()[usize::from(player)];
         let previous_street_stack_bb =
             game.amount_to_milli_big_blinds_rounded(previous_street_stack);
 
-        let open_class = class_index(&OPEN_SIZES, previous_street_stack_bb);
+        let open_class = class_index(&OPEN_SIZES, previous_street_stack_bb.into());
 
         if DEBUG {
             eprintln!("legal: max open is {}", OPEN_SIZES[open_class]);
@@ -1118,7 +1115,7 @@ fn encode_action_target_index(game: &mut Game) -> usize {
     assert!(game.can_check() || can_call.is_some());
 
     let pot = game.total_pot();
-    let call_amount = can_call.unwrap_or(0);
+    let call_amount = can_call.unwrap_or(Amount::ZERO);
 
     let can_open = can_open(game);
 
@@ -1128,7 +1125,7 @@ fn encode_action_target_index(game: &mut Game) -> usize {
         Action::Fold(_) => TARGET_FOLD_INDEX,
         Action::Check(_) | Action::Call { .. } => TARGET_CHECK_CALL_INDEX,
         Action::Bet { amount, .. } | Action::Raise { amount, .. } => {
-            let is_all_in = game.current_stacks()[usize::from(player)] == 0;
+            let is_all_in = game.current_stacks()[usize::from(player)] == Amount::ZERO;
 
             if is_all_in {
                 if DEBUG {
@@ -1142,8 +1139,10 @@ fn encode_action_target_index(game: &mut Game) -> usize {
                     _ => unreachable!(),
                 };
 
-                let class_index =
-                    class_index(&OPEN_SIZES, game.amount_to_milli_big_blinds_rounded(to));
+                let class_index = class_index(
+                    &OPEN_SIZES,
+                    game.amount_to_milli_big_blinds_rounded(to).into(),
+                );
 
                 if DEBUG {
                     eprintln!("target: open raise to {}", OPEN_SIZES[class_index]);
@@ -1288,18 +1287,20 @@ fn class_index(classes: &[i64], value: i64) -> usize {
     }
 }
 
-fn players_button_offset(game: &Game) -> impl Iterator<Item = usize> {
-    (game.button_index()..game.player_count()).chain(0..game.button_index())
+fn players_button_offset(game: &Game) -> impl Iterator<Item = Player> {
+    game.players()
+        .skip(game.button().into())
+        .chain(game.players().take(game.button().into()))
 }
 
-fn percent_pot(pot: u32, call_amount: u32, amount: u32) -> u32 {
+fn percent_pot(pot: Amount, call_amount: Amount, amount: Amount) -> u32 {
     // We use the calculation for bets/raises, giving the percentage of the pot.
     // This is typically used to give the caller specific pot odds.
     // Often poker software implements them with configurable percent buttons,
     // although sometimes the calculation is different.
     // But I think this is the best solution to abstract the sizes.
 
-    assert_ne!(pot, 0);
+    assert_ne!(pot, Amount::ZERO);
     let pot_with_call = pot.checked_add(call_amount).unwrap();
     let percent = f64::from(amount) / f64::from(pot_with_call);
     let percent = (percent * 100.0).round();
@@ -1313,8 +1314,8 @@ fn percent_pot_to_amount(pot_with_call: MilliBigBlind, percent: i64) -> MilliBig
     assert!(percent >= 0);
 
     // We accept the precision loss here.
-    let amount = ((percent as f64) / 100.0) * pot_with_call as f64;
-    amount.round() as MilliBigBlind
+    let amount = ((percent as f64) / 100.0) * i64::from(pot_with_call) as f64;
+    MilliBigBlind::new(amount.round() as i64)
 }
 
 pub struct ActionHead(Py<PyAny>);
@@ -1345,10 +1346,10 @@ pub struct ActionProbabilities {
     bet_raise: [f32; TARGET_BET_RAISE_COUNT],
     all_in: f32,
     pot_with_call_for_bet_raise: Option<MilliBigBlind>,
-    raise_offset: u32,
-    big_blind: u32,
-    min_amount: u32,
-    max_amount: u32,
+    raise_offset: Amount,
+    big_blind: Amount,
+    min_amount: Amount,
+    max_amount: Amount,
 }
 
 impl fmt::Display for ActionProbabilities {
@@ -1361,7 +1362,7 @@ impl fmt::Display for ActionProbabilities {
                 f,
                 "bet/raise {} ({}BB) = {:.3}",
                 self.bet_raise_size_string(index),
-                self.bet_raise_size(index) as f64 / 1000.0,
+                i64::from(self.bet_raise_size(index)) as f64 / 1000.0,
                 self.bet_raise(index)
             )?;
         }
@@ -1489,7 +1490,7 @@ impl ActionProbabilities {
         let mut bet_raise = [0.0f32; TARGET_BET_RAISE_COUNT];
         bet_raise.copy_from_slice(bet_raise_data);
 
-        let call_amount = game.can_call().unwrap_or(0);
+        let call_amount = game.can_call().unwrap_or(Amount::ZERO);
 
         let pot_with_call = game.total_pot().checked_add(call_amount).unwrap();
         let pot_with_call = game.amount_to_milli_big_blinds_rounded(pot_with_call);
@@ -1498,10 +1499,10 @@ impl ActionProbabilities {
         let min_amount = game
             .can_bet()
             .or_else(|| game.can_raise().map(|(_, to)| to))
-            .unwrap_or(0);
+            .unwrap_or(Amount::ZERO);
 
         let player = game.current_player().unwrap();
-        let stack = game.current_stacks()[player];
+        let stack = game.current_stacks()[usize::from(player)];
 
         // TODO: Use amount here with AiAction raise amount.
         let max_amount = if game.can_raise().is_some() {
@@ -1516,7 +1517,7 @@ impl ActionProbabilities {
                 .checked_add(call_amount)
                 .unwrap()
         } else {
-            0
+            Amount::ZERO
         };
 
         Ok(Self {
@@ -1552,7 +1553,7 @@ impl ActionProbabilities {
                 &mut s,
                 "bet/raise {} ({}BB) = {:.3} | {:.3}",
                 self.bet_raise_size_string(index),
-                self.bet_raise_size(index) as f64 / 1000.0,
+                i64::from(self.bet_raise_size(index)) as f64 / 1000.0,
                 self.bet_raise(index),
                 other.bet_raise(index)
             )
@@ -1588,7 +1589,7 @@ impl ActionProbabilities {
             let percent = BET_RAISE_PERCENTAGES[index];
             percent_pot_to_amount(pot_with_call, percent)
         } else {
-            OPEN_SIZES[index]
+            MilliBigBlind::new(OPEN_SIZES[index])
         }
     }
 
@@ -1635,7 +1636,7 @@ impl ActionProbabilities {
                 let index = index - 3;
                 let size = self.bet_raise_size(index);
 
-                let amount = milli_big_blind_to_amount_rounded(size, self.big_blind).unwrap();
+                let amount = size.to_amount_rounded(self.big_blind).unwrap();
                 let amount = amount.checked_add(self.raise_offset).unwrap();
                 let amount = cmp::max(amount, self.min_amount);
                 let amount = cmp::min(amount, self.max_amount);

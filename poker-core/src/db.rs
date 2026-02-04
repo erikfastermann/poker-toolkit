@@ -12,7 +12,7 @@ use crate::{
     bitset::Bitset,
     card::Card,
     cards::Cards,
-    game::{Game, GameData, State, Street},
+    game::{Game, GameData, Player, State, Street},
     hand,
     result::Result,
 };
@@ -88,12 +88,17 @@ impl DB {
         let player_count: usize = ctx.get(0)?;
         let button_index: usize = ctx.get(1)?;
         let player: usize = ctx.get(2)?;
-        let Some((short_name, _)) = Game::position_name(player_count, button_index, player) else {
-            return Err(rusqlite::Error::UserFunctionError(
-                "position: invalid indices".into(),
-            ));
-        };
-        Ok(short_name)
+
+        if let (Ok(button), Ok(player)) = (Player::try_from(button_index), Player::try_from(player))
+        {
+            if let Some((short_name, _)) = Game::position_name(player_count, button, player) {
+                return Ok(short_name);
+            }
+        }
+
+        Err(rusqlite::Error::UserFunctionError(
+            "position: invalid indices".into(),
+        ))
     }
 
     fn scalar_unify_cards(ctx: &Context<'_>) -> rusqlite::Result<String> {
@@ -435,10 +440,10 @@ impl Hand {
             table_name: game.table_name(),
             hand_name: game.hand_name(),
             player_count: u8::try_from(game.player_count()).unwrap(),
-            small_blind: game.small_blind(),
-            big_blind: game.big_blind(),
-            button_index: game_data.button_index,
-            hero_index: game_data.hero_index,
+            small_blind: game.small_blind().into(),
+            big_blind: game.big_blind().into(),
+            button_index: game_data.button_index.into(),
+            hero_index: game_data.hero_index.map(u8::from),
             first_flop: first_runout.flop().map(|flop| Flop(flop)),
             first_turn: first_runout.turn(),
             first_river: first_runout.river(),
@@ -450,7 +455,7 @@ impl Hand {
             players_post_flop: None,
             players_at_showdown,
             single_winner,
-            final_full_pot_size: game.total_pot(),
+            final_full_pot_size: game.total_pot().into(),
         };
 
         hand.set_pre_flop(game);
@@ -475,8 +480,7 @@ impl Hand {
         for action in actions {
             match (action, self.pot_kind) {
                 (Post { player, .. }, _)
-                    if usize::from(player) != game.small_blind_index()
-                        && usize::from(player) != game.big_blind_index() =>
+                    if player != game.small_blind_player() && player != game.big_blind_player() =>
                 {
                     self.posting = true;
                 }
@@ -830,12 +834,13 @@ impl HandBundle {
                 hand_id: None,
                 player: u8::try_from(index).unwrap(),
                 player_name: player.name.clone(),
-                seat: player.seat,
+                seat: player.seat.map(u8::from),
                 hand: player.hand,
-                went_to_showdown: hand.players_at_showdown.is_some() && !game.folded(index),
-                starting_stack: player.starting_stack,
-                pot_contribution: game.total_invested(index),
-                showdown_stack: game.current_stacks()[index],
+                went_to_showdown: hand.players_at_showdown.is_some()
+                    && !game.folded(Player::try_from(index).unwrap()),
+                starting_stack: player.starting_stack.into(),
+                pot_contribution: game.total_invested(Player::try_from(index).unwrap()).into(),
+                showdown_stack: game.current_stacks()[index].into(),
                 pre_flop_action: Actions::empty(),
                 flop_action: Actions::empty(),
                 turn_action: Actions::empty(),
@@ -863,7 +868,7 @@ impl HandBundle {
             if let Some(next_street) = game_action.street() {
                 street = next_street;
             } else if let Some(action) = Action::from_game(game_action) {
-                let player = &mut self.players[game_action.player().unwrap()];
+                let player = &mut self.players[usize::from(game_action.player().unwrap())];
                 let actions = match street {
                     Street::PreFlop => &mut player.pre_flop_action,
                     Street::Flop => &mut player.flop_action,

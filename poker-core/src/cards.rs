@@ -3,7 +3,7 @@ use std::{
     collections::HashMap,
     fmt,
     ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, Not, Shl},
-    ptr::addr_of_mut,
+    sync::LazyLock,
 };
 
 use crate::{card::Card, hand::Hand, rank::Rank, result::Result, suite::Suite};
@@ -250,11 +250,15 @@ fn interleave_first_32_bits_with_zeros(mut n: u64) -> u64 {
     n
 }
 
-static mut CARDS_SCORE_MAP: Option<&'static HashMap<u64, Score>> = None;
+static CARDS_SCORE_MAP: LazyLock<HashMap<u64, Score>> = LazyLock::new(|| Cards::build_score_map());
 
 const FLUSH_MAP_SIZE: usize = (Cards::MASK_SINGLE + 1) as usize;
 
-static mut CARDS_FLUSH_MAP: [Score; FLUSH_MAP_SIZE] = [Score::ZERO; FLUSH_MAP_SIZE];
+static CARDS_FLUSH_MAP: LazyLock<[Score; FLUSH_MAP_SIZE]> = LazyLock::new(|| {
+    let mut flush_map = [Score::ZERO; FLUSH_MAP_SIZE];
+    Cards::init_flush_map(&mut flush_map);
+    flush_map
+});
 
 impl Cards {
     pub const EMPTY: Self = Cards(0);
@@ -420,11 +424,11 @@ impl Cards {
     }
 
     fn score_map() -> &'static HashMap<u64, Score> {
-        unsafe { CARDS_SCORE_MAP.unwrap() }
+        &CARDS_SCORE_MAP
     }
 
     fn flush_map_get(cards: CardsByRank) -> Score {
-        unsafe { CARDS_FLUSH_MAP[cards.to_usize()] }
+        CARDS_FLUSH_MAP[cards.to_usize()]
     }
 
     pub fn score_fast(self) -> Score {
@@ -446,20 +450,6 @@ impl Cards {
         }
         debug_assert_eq!(self.top5().to_score(), score);
         score
-    }
-
-    pub(crate) unsafe fn init() {
-        {
-            assert_eq!(CARDS_FLUSH_MAP[0b11111], Score::ZERO);
-            let flush_map = &mut (*addr_of_mut!(CARDS_FLUSH_MAP));
-            Self::init_flush_map(flush_map);
-        }
-        let score_map = Self::build_score_map();
-        {
-            let score_map = &(*addr_of_mut!(CARDS_SCORE_MAP));
-            assert!(score_map.is_none());
-        }
-        CARDS_SCORE_MAP = Some(Box::leak(Box::new(score_map)));
     }
 
     fn init_flush_map(map: &mut [Score; FLUSH_MAP_SIZE]) {
@@ -968,10 +958,6 @@ mod tests {
 
     #[test]
     fn test_unify_suites() {
-        unsafe {
-            crate::init::init();
-        }
-
         let flops: HashSet<_> = Card::all()
             .flat_map(|a| Card::all().map(move |b| (a, b)))
             .flat_map(|(a, b)| Card::all().map(move |c| (a, b, c)))

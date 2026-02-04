@@ -24,8 +24,6 @@ use walkdir::WalkDir;
 const INVALID_COMMAND_ERROR: &'static str = "Invalid command. See README for usage.";
 
 fn main() -> Result<()> {
-    unsafe { poker_core::init::init() };
-
     let args: Vec<_> = std::env::args().collect();
     match args.get(1).map(|s| s.as_str()) {
         Some("enumerate") => enumerate(&args[2..]),

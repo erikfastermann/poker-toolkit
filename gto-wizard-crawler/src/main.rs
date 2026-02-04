@@ -8,8 +8,6 @@ use crate::crawler::Crawler;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    unsafe { poker_core::init::init() };
-
     let args: Vec<_> = std::env::args().collect();
     let Ok([_, config_path]) = <[_; 2]>::try_from(args) else {
         return Err("USAGE: ./gto-wizard-crawler <config path>".into());
