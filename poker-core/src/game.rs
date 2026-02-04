@@ -25,9 +25,8 @@ use crate::result::{Error, Result};
 // - Nicer handling of state method with multiple runouts
 // - Add single mucks action if there is only one winner
 
-// TODO: Player and Seat serialize / deserialize max allowed value.
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "u8")]
 pub struct Player(u8);
 
 impl Display for Player {
@@ -77,6 +76,7 @@ impl Player {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "u8")]
 pub struct Seat(u8);
 
 impl TryFrom<u8> for Seat {
